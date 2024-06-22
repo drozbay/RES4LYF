@@ -1,6 +1,7 @@
 import comfy.samplers
 import comfy.sample
 import comfy.sampler_helpers
+import comfy.utils
 
 import torch
 import math
@@ -25,6 +26,7 @@ def latent_stdize_channels(x):
 def latent_meancenter_channels(x):
     mean = x.mean(dim=(2, 3), keepdim=True)
     return  x - mean
+
 
 class set_precision:
     def __init__(self):
@@ -648,6 +650,56 @@ class LatentPhaseMagnitudePower:
 
         return ({"samples": mixed_phase_magnitude_batch}, )
 
+class StableCascade_StageC_VAEEncode_Exact:
+    def __init__(self, device="cpu"):
+        self.device = device
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {
+            "image": ("IMAGE",),
+            "vae": ("VAE", ),
+            "width": ("INT", {"default": 24, "min": 1, "max": 1024, "step": 1}),
+            "height": ("INT", {"default": 24, "min": 1, "max": 1024, "step": 1}),
+        }}
+    RETURN_TYPES = ("LATENT",)
+    RETURN_NAMES = ("stage_c",)
+    FUNCTION = "generate"
+
+    CATEGORY = "latent/stable_cascade"
+
+    def generate(self, image, vae, width, height):
+        img_width = image.shape[-2]
+        img_height = image.shape[-3]
+        out_width = (width) * vae.downscale_ratio
+        out_height = (height) * vae.downscale_ratio
+
+        s = comfy.utils.common_upscale(image.movedim(-1,1), out_width, out_height, "bicubic", "center").movedim(1,-1)
+
+        c_latent = vae.encode(s[:,:,:,:3])
+        return ({
+            "samples": c_latent,
+        },)
+
+
+class EmptyLatentImage64_CascadeC:
+    def __init__(self):
+        self.device = comfy.model_management.intermediate_device()
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { "width": ("INT", {"default": 24, "min": 16, "max": MAX_RESOLUTION, "step": 1}),
+                              "height": ("INT", {"default": 24, "min": 16, "max": MAX_RESOLUTION, "step": 1}),
+                              "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096})}}
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "generate"
+
+    CATEGORY = "latent"
+
+    def generate(self, width, height, batch_size=1):
+        latent = torch.zeros([batch_size, 16, height, width], dtype=torch.float64, device=self.device)
+        return ({"samples":latent}, )
+
 class EmptyLatentImage64:
     def __init__(self):
         self.device = comfy.model_management.intermediate_device()
@@ -860,6 +912,7 @@ class LatentNoiseBatch_gaussian:
             "optional": {
                 "means": ("SIGMAS", ),
                 "stds": ("SIGMAS", ),
+                "steps_": ("SIGMAS", ),
             }
         }
 
@@ -868,9 +921,9 @@ class LatentNoiseBatch_gaussian:
 
     CATEGORY = "sampling/custom_sampling/samplers"
 
-    def main(self, latent, mean, std, steps, seed, means=None, stds=None):
-        if steps == 0:
-            steps = len(means)
+    def main(self, latent, mean, std, steps, seed, means=None, stds=None, steps_=None):
+        if steps_ is not None:
+            steps = len(steps_)
 
         means = initialize_or_scale(means, mean, steps)
         stds = initialize_or_scale(stds, std, steps)    
@@ -907,6 +960,7 @@ class LatentNoiseBatch_fractal:
             "optional": {
                 "alphas": ("SIGMAS", ),
                 "ks": ("SIGMAS", ),
+                "steps_": ("SIGMAS", ),
             }
         }
 
@@ -915,9 +969,9 @@ class LatentNoiseBatch_fractal:
 
     CATEGORY = "sampling/custom_sampling/samplers"
 
-    def main(self, latent, alpha, k_flip, steps, seed=42, alphas=None, ks=None):
-        if steps == 0:
-            steps = len(alphas)
+    def main(self, latent, alpha, k_flip, steps, seed=42, alphas=None, ks=None, sigmas_=None, steps_=None):
+        if steps_ is not None:
+            steps = len(steps_)
 
         alphas = initialize_or_scale(alphas, alpha, steps)
         k_flip = -1 if k_flip else 1
