@@ -212,7 +212,7 @@ def _refined_exp_sosu_step(
     vel_2=vel_2,
   )
 
-@cast_fp64
+@precision_tool.cast_tensor
 @no_grad()
 def sample_refined_exp_s_advanced(
   model: FloatTensor,

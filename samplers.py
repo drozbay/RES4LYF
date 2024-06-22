@@ -151,11 +151,11 @@ class SharkSampler:
 
     CATEGORY = "sampling/custom_sampling"
     
-    @cast_fp64
+    @precision_tool.cast_tensor
     def sample(self, model, add_noise, noise_is_latent, noise_type, noise_seed, cfg, alpha, k, positive, negative, sampler, 
                sigmas, latent_image, latent_noise=None):
             latent = latent_image
-            latent_image = latent["samples"].to(torch.float64)
+            latent_image = latent["samples"]
 
             if not add_noise:
                 torch.manual_seed(noise_seed)
@@ -164,7 +164,7 @@ class SharkSampler:
                 batch_inds = latent["batch_index"] if "batch_index" in latent else None
                 noise = prepare_noise(latent_image, noise_seed, noise_type, batch_inds, alpha, k)
             else:
-                noise = latent_noise["samples"].to(torch.float64)
+                noise = latent_noise["samples"]
 
             if noise_is_latent:
                 noise += latent_image.cpu()
