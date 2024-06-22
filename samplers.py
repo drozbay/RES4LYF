@@ -217,7 +217,7 @@ class SharkSampler:
 
     CATEGORY = "sampling/custom_sampling"
     
-    #@cast_fp64
+    @precision_tool.cast_tensor
     def sample(self, model, add_noise, noise_is_latent, noise_type, noise_seed, cfg, alpha, k, positive, negative, sampler, 
                sigmas, latent_image, latent_noise=None): #, guide_weights=None):
             latent = latent_image
