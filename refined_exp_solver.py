@@ -390,9 +390,9 @@ def sample_refined_exp_s_advanced(
 
   return x
 
-
 from torch.nn.functional import cosine_similarity
 
+@precision_tool.cast_tensor
 @no_grad()
 def branch_mode_proc(
   x_n, x_h,
