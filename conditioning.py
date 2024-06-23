@@ -5,7 +5,6 @@ import comfy.sample
 import comfy.sampler_helpers
 import node_helpers
 
-
 def initialize_or_scale(tensor, value, steps):
     if tensor is None:
         return torch.full((steps,), value)

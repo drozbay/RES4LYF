@@ -4,11 +4,7 @@ from . import sigmas
 from . import latents
 from . import conditioning
 
-import torch
-
 extra_samplers.add_samplers()
-
-#torch.set_default_dtype(torch.float64)
 
 NODE_CLASS_MAPPINGS = {
     "ConditioningAverageScheduler": conditioning.ConditioningAverageScheduler,

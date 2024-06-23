@@ -444,30 +444,7 @@ def sample_refined_exp_s_advanced(
 
   return x
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-@cast_fp64
+@precision_tool.cast_tensor
 @no_grad()
 def sample_dpmpp_2m_advanced(
   model: FloatTensor,
