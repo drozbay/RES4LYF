@@ -154,7 +154,9 @@ def _refined_exp_sosu_step(
   momentum = 0.0,
   vel = None,
   vel_2 = None,
-  time = None
+  time = None,
+  eulers_mom = 0.0,
+  cfgpp = 0.0,
 ) -> StepOutput:
 
   #Algorithm 1 "RES Second order Single Update Step with c2"
@@ -169,12 +171,22 @@ def _refined_exp_sosu_step(
   #  extra_args (`Dict[str, Any]`, *optional*, defaults to `{}`): kwargs to pass to `model#__call__()`
   #  pbar (`tqdm`, *optional*, defaults to `None`): progress bar to update after each model call
   #  simple_phi_calc (`bool`, *optional*, defaults to `True`): True = calculate phi_i,j(-h) via simplified formulae specific to j={1,2}. False = Use general solution that works for any j. Mathematically equivalent, but could be numeric differences.
+  if cfgpp != 0.0:
+    temp = [0]
+    def post_cfg_function(args):
+        temp[0] = args["uncond_denoised"]
+        return args["denoised"]
+
+    model_options = extra_args.get("model_options", {}).copy()
+    extra_args["model_options"] = comfy.model_patcher.set_model_options_post_cfg_function(model_options, post_cfg_function, disable_cfg1_optimization=True)
 
   def momentum_func(diff, velocity, timescale=1.0, offset=-momentum / 2.0): # Diff is current diff, vel is previous diff
     if velocity is None:
         momentum_vel = diff
     else:
         momentum_vel = momentum * (timescale + offset) * velocity + (1 - momentum * (timescale + offset)) * diff
+    #print(momentum_vel)
+    #return 0
     return momentum_vel
 
   lam_next, lam = (s.log().neg() for s in (sigma_next, sigma))
@@ -184,25 +196,51 @@ def _refined_exp_sosu_step(
   a2_1, b1, b2 = _de_second_order(h=h, c2=c2, simple_phi_calc=simple_phi_calc)
   
   denoised: FloatTensor = model(x, sigma * s_in, **extra_args)
+  #d = to_d(x, sigma, denoised) #ADDED
+  #dt = sigma_next - sigma #ADDED
+  #x = x + eulers_mom * d * dt
+
+  #x_2 = x + d * dt
+  #denoised_2 = model(x_2, sigma_next * s_in, **extra_args)
+  #_2 = to_d(x_2, sigma_next, denoised_2) #ALL THREE ADDED
+  #d_prime = (d + d_2) / 2
+  #x = x + d_prime * dt
+  
   if pbar is not None:
     pbar.update(0.5)
 
   c2_h: float = c2*h
 
   diff_2 = momentum_func(a2_1*h*denoised, vel_2, time)
+
   vel_2 = diff_2
   x_2: FloatTensor = math.exp(-c2_h)*x + diff_2
+  if cfgpp == False:
+    x_2: FloatTensor = math.exp(-c2_h)*x + diff_2
+  else:
+    #x_2: FloatTensor = math.exp(-c2_h) * (x + (denoised - temp[0])) + diff_2
+    x_2: FloatTensor = math.exp(-c2_h) * (x + cfgpp*denoised - cfgpp*temp[0]) + diff_2
   lam_2: float = lam + c2_h
   sigma_2: float = lam_2.neg().exp()
 
+  #temp_0 = temp[0]
+
+  #x_2 = x + d * dt #ADDED
+
   denoised2: FloatTensor = model(x_2, sigma_2 * s_in, **extra_args)
+
   if pbar is not None:
     pbar.update(0.5)
 
   diff = momentum_func(h*(b1*denoised + b2*denoised2), vel, time)
+
   vel = diff
 
-  x_next: FloatTensor = math.exp(-h)*x + diff
+  if cfgpp == False:
+    x_next: FloatTensor = math.exp(-h)*x + diff
+  else:
+    #x_next: FloatTensor = math.exp(-h) * (x + denoised - temp[0])) + diff
+    x_next: FloatTensor = math.exp(-h) * (x + cfgpp*denoised - cfgpp*temp[0]) + diff
   
   return StepOutput(
     x_next=x_next,
@@ -211,6 +249,18 @@ def _refined_exp_sosu_step(
     vel=vel,
     vel_2=vel_2,
   )
+
+def get_ancestral_step(sigma_from, sigma_to, eta=1.):
+    """Calculates the noise level (sigma_down) to step down to and the amount
+    of noise to add (sigma_up) when doing an ancestral sampling step."""
+    if not eta:
+        return sigma_to, 0.
+    sigma_up = min(sigma_to, eta * (sigma_to ** 2 * (sigma_from ** 2 - sigma_to ** 2) / sigma_from ** 2) ** 0.5)
+    sigma_down = (sigma_to ** 2 - sigma_up ** 2) ** 0.5
+    return sigma_down, sigma_up
+
+from comfy.k_diffusion.sampling import to_d
+import comfy.model_patcher
 
 @precision_tool.cast_tensor
 @no_grad()
@@ -229,7 +279,9 @@ def sample_refined_exp_s_advanced(
   disable: Optional[bool] = None,
   ita: FloatTensor = torch.zeros((1,)),
   momentum: FloatTensor = torch.zeros((1,)),
+  eulers_mom: FloatTensor = torch.zeros((1,)),
   c2: FloatTensor = torch.zeros((1,)),
+  cfgpp: FloatTensor = torch.zeros((1,)),
   offset: FloatTensor = torch.zeros((1,)),
   alpha: FloatTensor = torch.zeros((1,)),
   latent_guide_1: FloatTensor = torch.zeros((1,)),  
@@ -237,6 +289,7 @@ def sample_refined_exp_s_advanced(
   noise_sampler: NoiseSampler = torch.randn_like,
   noise_sampler_type=None,
   simple_phi_calc = False,
+  #cfgpp = False,
   k=1.0,
   clownseed=0,
   latent_noise=None,
@@ -261,6 +314,15 @@ def sample_refined_exp_s_advanced(
     noise_sampler (`NoiseSampler`, *optional*, defaults to `torch.randn_like`): method used for adding noise
     simple_phi_calc (`bool`, *optional*, defaults to `True`): True = calculate phi_i,j(-h) via simplified formulae specific to j={1,2}. False = Use general solution that works for any j. Mathematically equivalent, but could be numeric differences.
   """
+  
+  """  temp = [0]
+  def post_cfg_function(args):
+      temp[0] = args["uncond_denoised"]
+      return args["denoised"]
+
+  model_options = extra_args.get("model_options", {}).copy()
+  extra_args["model_options"] = comfy.model_patcher.set_model_options_post_cfg_function(model_options, post_cfg_function, disable_cfg1_optimization=True)
+  """
 
   #import pdb; pdb.set_trace()
   #assert sigmas[-1] == 0
@@ -272,11 +334,15 @@ def sample_refined_exp_s_advanced(
   if latent_guide_2 is not None:
     latent_guide_crushed_2 = (latent_guide_2 - latent_guide_2.min()) / (latent_guide_2 - latent_guide_2.min()).max()
 
+  b, c, h, w = x.shape
+
+  dt = None
   vel, vel_2 = None, None
   with tqdm(disable=disable, total=len(sigmas)-(1 if denoise_to_zero else 2)) as pbar:
     for i, (sigma, sigma_next) in enumerate(pairwise(sigmas[:-1].split(1))):
       time = sigmas[i] / sigma_max
 
+      sigma_down, sigma_up = get_ancestral_step(sigma, sigma_next, eta=ita[i].item())    
       if 'sigma' not in locals():
         sigma = sigmas[i]
 
@@ -292,38 +358,122 @@ def sample_refined_exp_s_advanced(
 
         eps = noise_sampler(sigma=sigma, sigma_next=sigma_next)
 
-      sigma_hat = sigma * (1 + ita[i])
-      x_hat = x + ((sigma_hat ** 2 - sigma ** 2).sqrt() * eps)
+      sigma_hat = sigma * (1 + ita[i]) # ita -> gamma (stochastic euler)
+      #sigma_hat = sigma * (1 + sigma_up)
 
-      x_next, denoised, denoised2, vel, vel_2 = _refined_exp_sosu_step(
-        model,
-        x_hat,
-        sigma_hat,
-        sigma_next,
-        c2=c2[i],
-        extra_args=extra_args,
-        pbar=pbar,
-        simple_phi_calc=simple_phi_calc,
-        momentum = momentum[i],
-        vel = vel,
-        vel_2 = vel_2,
-        time = time
-      )
+      x_hat = x + ((sigma_hat ** 2 - sigma ** 2).sqrt() * eps)
+      #x_hat = x + eps * sigma_up
+
+      #print("\nita: ", ita[i], "     sigma_up: ", sigma_up, "     sigma*ita: ", sigma*ita[i], "\n")
+      #sigma_hat = sigma + sigma_up
+
+
+      if(guide_mode_1 == -3): #SUCKS
+        sigma_hat = sigma+sigma_up
+        sigma_next = sigma_down
+        x_hat = x + eps * sigma_up
+
+      if(guide_mode_1 == -4): #GOOD... framed one that is structurally similar to orig
+        sigma_hat = sigma+sigma_up # GOOD WITH MODE2=-1
+        sigma_next = sigma_down
+        x_hat = x + eps * (sigma_hat ** 2 - sigma ** 2).sqrt()
+
+      if(guide_mode_1 == -5): #GOOD... fairly simple/clean
+        sigma_hat = sigma
+        sigma_next = sigma_down
+        x_hat = x + eps * sigma_up
+
+      if(guide_mode_1 == -6): #SUCKS.... HOWEVER GOOD-ish WITH mode 2 = -1
+        sigma_hat = sigma
+        sigma_next = sigma_down
+        x_hat = x + eps * (sigma_hat ** 2 - sigma ** 2).sqrt()
+
+      if(guide_mode_1 == -7): #SUCKS TOTAL ASS... mode 2 = -1 HORRID
+        sigma_hat = sigma * (1 + sigma_up)
+        sigma_next = sigma_down
+        x_hat = x + eps * sigma_up
+
+      if(guide_mode_1 == -8): #GOOD... closest to standard... MODE2=-1 is very good
+        sigma_hat = sigma * (1 + sigma_up)
+        sigma_next = sigma_down
+        x_hat = x + eps * (sigma_hat ** 2 - sigma ** 2).sqrt()
+
+      if(guide_mode_1 == -9): #
+        sigma_hat = sigma_up
+        sigma_next = sigma_down
+        x_hat = x + eps * sigma_up
+
+      if(guide_mode_1 == -10): #
+        sigma_hat = sigma_up
+        sigma_next = sigma_down
+        x_hat = x + eps * (sigma_hat ** 2 - sigma ** 2).sqrt()
+
+      if(guide_mode_2 == -1): #CONSERVE sigma_next
+        sigma_next = sigmas[i + 1]
+
+      #x_hat = x + eps * sigma_up
+      if latent_guide_1 is not None:
+        if(guide_mode_1 == -2):
+          x_hat = x + latent_guide_1 * (sigma_hat ** 2 - sigma ** 2).sqrt()
+        else:
+          x_hat = x + ((sigma_hat ** 2 - sigma ** 2).sqrt() * eps) # x -> x_hat (stoch euler)
+
+      x_next, denoised, denoised2, vel, vel_2 = _refined_exp_sosu_step(model, x_hat, sigma_hat, sigma_next, c2=c2[i],
+                                                                      extra_args=extra_args, pbar=pbar, simple_phi_calc=simple_phi_calc,
+                                                                      momentum = momentum[i], vel = vel, vel_2 = vel_2, time = time, eulers_mom = eulers_mom[i].item(), cfgpp = cfgpp[i].item()
+                                                                      )
+      
+      """d = to_d(x_hat, sigma_hat, x_next)
+      #dt = sigma - sigma_next
+      #dt = sigma_next - sigma_hat
+      dt = sigmas[i + 1] - sigma_hat
+      #dt2 = sigma_next - sigma_hat
+      x_hat = x - eulers_mom[i].item() * d * dt"""
+
+      #d = to_d(x, sigmas[i], x_next)
+      #dt = sigma_down - sigmas[i]
+      #x_next = x_next + d * dt
+
+      #d = to_d(x_hat, sigma_hat - sigma_next, x_next)
+      """d = to_d(x_hat, sigma_hat, x_next)
+      dt = sigma_next - sigma_hat
+      x_next = x_next + eulers_mom[i].item() * d * dt"""
+
+      if latent_guide_1 is not None:
+        if(guide_mode_1 == -1):
+           d = to_d(x_hat, sigma_hat, latent_guide_1)
+           #d = x_next - latent_guide_1
+           dt = sigma_next - sigma_hat
+           x_next = x_next + guide_1[i].item() * d * dt
+
+      d = to_d(x_hat, sigma_hat, x_next)
+      dt = sigma_next - sigma_hat
+      x_next = x_next + eulers_mom[i].item() * d * dt
+
+      #d = to_d(x_hat, sigma_hat, x_next)
+      #dt = sigma_next - sigma_hat
+      #x_next = x_next + eulers_mom[i].item() * d * dt
+
+      #d = to_d(x, sigma_hat, denoised)
+      #dt = sigmas[i + 1] - sigma_hat
+
       if callback is not None:
-        payload = RefinedExpCallbackPayload(
-          x=x,
-          i=i,
-          sigma=sigma,
-          sigma_hat=sigma_hat,
-          denoised=denoised,
-          denoised2=denoised2,
-        )
+        payload = RefinedExpCallbackPayload(x=x, i=i, sigma=sigma, sigma_hat=sigma_hat, denoised=denoised, denoised2=denoised2,)                               
         callback(payload)
+
+      #s_noise = 1
+      #d = to_d(x, sigmas[i], denoised)
+      # Euler method
+      #dt = sigma_down - sigmas[i]
+      #x = x + d * dt
+      #if sigmas[i + 1] > 0:
+      #    x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+
+
 
       x = x_next - sigma_next*offset[i]
       if latent_shift_guide_1 is True:
-        #x = x - sigma_next * guide_1[i] * guide_1_channels.view(1,4,1,1)
-        x = x - sigma_next * guide_1[i] * guide_1_channels.view(1,4,1,1)
+        x = x - sigma_next * guide_1[i] * guide_1_channels.view(1,c,1,1)
         #latent_guide_1 = x
 
       if latent_self_guide_1 is True:
@@ -331,66 +481,66 @@ def sample_refined_exp_s_advanced(
 
       if latent_guide_1 is not None:
         if(guide_mode_1 == 1):
-          x = x - sigma_next * guide_1[i] * latent_guide_1 * guide_1_channels.view(1,4,1,1)
+          x = x - sigma_next * guide_1[i] * latent_guide_1 * guide_1_channels.view(1,c,1,1)
 
         if(guide_mode_1 == 2):
-          x = x - sigma_next * guide_1[i] * latent_guide_crushed_1 * guide_1_channels.view(1,4,1,1)
+          x = x - sigma_next * guide_1[i] * latent_guide_crushed_1 * guide_1_channels.view(1,c,1,1)
 
         if(guide_mode_1 == 3):
-          x = (1 - guide_1[i]) * x * guide_1_channels.view(1,4,1,1) + (guide_1[i] * latent_guide_1 * guide_1_channels.view(1,4,1,1))
+          x = (1 - guide_1[i]) * x * guide_1_channels.view(1,c,1,1) + (guide_1[i] * latent_guide_1 * guide_1_channels.view(1,c,1,1))
 
         if(guide_mode_1 == 4):
-          x = (1 - guide_1[i]) * x * guide_1_channels.view(1,4,1,1) + (guide_1[i] * latent_guide_crushed_1 * guide_1_channels.view(1,4,1,1))   
+          x = (1 - guide_1[i]) * x * guide_1_channels.view(1,c,1,1) + (guide_1[i] * latent_guide_crushed_1 * guide_1_channels.view(1,c,1,1))   
 
         if(guide_mode_1 == 5):
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * latent_guide_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * latent_guide_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 6):
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * latent_guide_crushed_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * latent_guide_crushed_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 7):
           hard_light_blend_1 = hard_light_blend(x, latent_guide_1)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 8):
           hard_light_blend_1 = hard_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 9):
           soft_light_blend_1 = soft_light_blend(x, latent_guide_1)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * soft_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * soft_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 10):
           soft_light_blend_1 = soft_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * soft_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * soft_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 11):
           linear_light_blend_1 = linear_light_blend(x, latent_guide_1)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * linear_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * linear_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 12):
           linear_light_blend_1 = linear_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * linear_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * linear_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 13):
           vivid_light_blend_1 = vivid_light_blend(x, latent_guide_1)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * vivid_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * vivid_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 14):
           vivid_light_blend_1 = vivid_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * vivid_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * vivid_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 801):
           hard_light_blend_1 = bold_hard_light_blend(x, latent_guide_1)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 802):
           hard_light_blend_1 = bold_hard_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 803):
           hard_light_blend_1 = fix_hard_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 804):
           hard_light_blend_1 = fix2_hard_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 805):
           hard_light_blend_1 = fix3_hard_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 806):
           hard_light_blend_1 = fix4_hard_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 807):
           hard_light_blend_1 = fix4_hard_light_blend(x, latent_guide_1)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
 
       if latent_guide_2 is not None:
         if(guide_mode_2 == 1):
@@ -579,66 +729,66 @@ def sample_dpmpp_2m_advanced(
 
       if latent_guide_1 is not None:
         if(guide_mode_1 == 1):
-          x = x - sigma_next * guide_1[i] * latent_guide_1 * guide_1_channels.view(1,4,1,1)
+          x = x - sigma_next * guide_1[i] * latent_guide_1 * guide_1_channels.view(1,c,1,1)
 
         if(guide_mode_1 == 2):
-          x = x - sigma_next * guide_1[i] * latent_guide_crushed_1 * guide_1_channels.view(1,4,1,1)
+          x = x - sigma_next * guide_1[i] * latent_guide_crushed_1 * guide_1_channels.view(1,c,1,1)
 
         if(guide_mode_1 == 3):
-          x = (1 - guide_1[i]) * x * guide_1_channels.view(1,4,1,1) + (guide_1[i] * latent_guide_1 * guide_1_channels.view(1,4,1,1))
+          x = (1 - guide_1[i]) * x * guide_1_channels.view(1,c,1,1) + (guide_1[i] * latent_guide_1 * guide_1_channels.view(1,c,1,1))
 
         if(guide_mode_1 == 4):
-          x = (1 - guide_1[i]) * x * guide_1_channels.view(1,4,1,1) + (guide_1[i] * latent_guide_crushed_1 * guide_1_channels.view(1,4,1,1))   
+          x = (1 - guide_1[i]) * x * guide_1_channels.view(1,c,1,1) + (guide_1[i] * latent_guide_crushed_1 * guide_1_channels.view(1,c,1,1))   
 
         if(guide_mode_1 == 5):
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * latent_guide_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * latent_guide_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 6):
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * latent_guide_crushed_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * latent_guide_crushed_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 7):
           hard_light_blend_1 = hard_light_blend(x, latent_guide_1)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 8):
           hard_light_blend_1 = hard_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 9):
           soft_light_blend_1 = soft_light_blend(x, latent_guide_1)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * soft_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * soft_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 10):
           soft_light_blend_1 = soft_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * soft_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * soft_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 11):
           linear_light_blend_1 = linear_light_blend(x, latent_guide_1)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * linear_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * linear_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 12):
           linear_light_blend_1 = linear_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * linear_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * linear_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 13):
           vivid_light_blend_1 = vivid_light_blend(x, latent_guide_1)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * vivid_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * vivid_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 14):
           vivid_light_blend_1 = vivid_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * vivid_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * vivid_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 801):
           hard_light_blend_1 = bold_hard_light_blend(x, latent_guide_1)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 802):
           hard_light_blend_1 = bold_hard_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 803):
           hard_light_blend_1 = fix_hard_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 804):
           hard_light_blend_1 = fix2_hard_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 805):
           hard_light_blend_1 = fix3_hard_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 806):
           hard_light_blend_1 = fix4_hard_light_blend(latent_guide_1, x)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
         if(guide_mode_1 == 807):
           hard_light_blend_1 = fix4_hard_light_blend(x, latent_guide_1)
-          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,4,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,4,1,1))
+          x = (x - guide_1[i] * sigma_next * x * guide_1_channels.view(1,c,1,1)) + (guide_1[i] * sigma_next * hard_light_blend_1 * guide_1_channels.view(1,c,1,1))
 
       if latent_guide_2 is not None:
         if(guide_mode_2 == 1):
