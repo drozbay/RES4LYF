@@ -4,6 +4,7 @@ import comfy.samplers
 import comfy.sample
 import comfy.sampler_helpers
 import node_helpers
+from noise_classes import precision_tool
 
 def initialize_or_scale(tensor, value, steps):
     if tensor is None:
@@ -167,7 +168,7 @@ class StableCascade_StageB_Conditioning64:
 
     CATEGORY = "conditioning/stable_cascade"
 
-    @cast_fp64
+    @precision_tool.cast_tensor
     def set_prior(self, conditioning, stage_c):
         c = []
         for t in conditioning:
