@@ -36,8 +36,8 @@ class set_precision:
         return {
             "required": {
                     "latent_image": ("LATENT", ),      
-                    "global_precision": (["16", "32", "64"], ),
-                    "shark_precision": (["16", "32", "64"], ),
+                    "global_precision": (["64", "32", "16"], ),
+                    "shark_precision": (["64", "32", "16"], ),
                      },
                 }
 
