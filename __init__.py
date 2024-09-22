@@ -74,6 +74,7 @@ NODE_CLASS_MAPPINGS = {
     "LatentPhaseMagnitudeOffset": latents.LatentPhaseMagnitudeOffset,
     "LatentPhaseMagnitudePower": latents.LatentPhaseMagnitudePower,
 
+    "KSamplerSelectAdvanced": samplers.KSamplerSelectAdvanced,
     "AdvancedNoise": samplers.AdvancedNoise,
     "ClownGuides": samplers.ClownGuides,
     "ClownSampler": samplers.ClownSampler,

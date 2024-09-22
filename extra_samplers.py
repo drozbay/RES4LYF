@@ -176,7 +176,7 @@ def sample_dpmpp_sde_advanced_RF(
             x = (sigma_fn(t_next_) / sigma_fn(t)) * x - (t - t_next_).expm1() * denoised_d
             x = alpha_ratio * x + noise_sampler(sigma=sigma_fn(t), sigma_next=sigma_fn(t_next)) * s_noise * su
             
-            print("alpha__: ", alpha_ratio, sd, su)
+            #print("alpha__: ", alpha_ratio, sd, su)
             del denoised, denoised_d, denoised_2, x_2
             import gc
             gc.collect()
@@ -1016,10 +1016,15 @@ from comfy.k_diffusion.sampling import deis
 #From https://github.com/zju-pi/diff-sampler/blob/main/diff-solvers-main/solvers.py
 #under Apache 2 license
 @torch.no_grad()
-def sample_deis_sde(model, x, sigmas, extra_args=None, callback=None, disable=None, max_order=3, deis_mode='tab', momentums=None, etas=None, s_noise=1.0, noise_sampler_type="gaussian",k=1.0, scale=0.1, alpha=None,):
+def sample_deis_sde(model, x, sigmas, extra_args=None, callback=None, disable=None, max_order=3, deis_mode='tab', momentums=None, etas=None, eta=None, s_noise=1.0, noise_sampler_type="gaussian",k=1.0, scale=0.1, alpha=None,):
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
     
+    if etas is None:
+        etas = torch.full(10000, eta) if eta is not None else torch.zeros(10000)
+    elif etas is not None and eta is not None:
+        etas = etas * eta
+
     alpha = torch.zeros_like(sigmas) if alpha is None else alpha
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
     seed = extra_args.get("seed", None) + 1
