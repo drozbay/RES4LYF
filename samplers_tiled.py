@@ -465,7 +465,9 @@ def sample_common(model, x, noise, noise_mask, noise_seed, tile_width, tile_heig
                     tiled_latent_batch = torch.cat(tiled_latent_list[start_idx:end_idx])
                     tiled_mask_batch   = torch.cat(tiled_mask_list  [start_idx:end_idx])
                     
-                    print("Tiled batch size: ", tiled_latent_batch.shape[0])
+                    # Only print on first iteration
+                    if start_idx == 0:
+                        print("\nTiled batch size: ", tiled_latent_batch.shape[0])
 
                     pos[0][1]['stable_cascade_prior'] = torch.cat(effnet_slices[start_idx:end_idx])
                     neg[0][1]['stable_cascade_prior'] = torch.cat(effnet_slices[start_idx:end_idx])
@@ -499,44 +501,46 @@ def sample_common(model, x, noise, noise_mask, noise_seed, tile_width, tile_heig
 class UltraSharkSampler_Tiled:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required":
-                    {
-                    "add_noise": ("BOOLEAN", {"default": True}),
-                    "noise_is_latent": ("BOOLEAN", {"default": False}),
-                    "noise_type": (NOISE_GENERATOR_NAMES, ),
-                    "alpha": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": 0.01}),
-                    "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": 0.01}),
-                    "noise_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-                    "cfg": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0}),
-                    "guide_type": (['residual', 'weighted'], ),
-                    "guide_weight": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": 0.01}),
-                    
-                    "tile_width": ("INT", {"default": 1024, "min": 2, "max": MAX_RESOLUTION, "step": 1}),
-                    "tile_height": ("INT", {"default": 1024, "min": 2, "max": MAX_RESOLUTION, "step": 1}),
-                    "tiling_strategy": (["padded", "random", "random strict",  'simple'], ),
-                    "max_tile_batch_size": ("INT", {"default": 64, "min": 1, "max": 256, "step": 1}),
+        return {
+            "required":
+            {
+                "add_noise": ("BOOLEAN", {"default": True}),
+                "noise_is_latent": ("BOOLEAN", {"default": False}),
+                "noise_type": (NOISE_GENERATOR_NAMES, ),
+                "alpha": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": 0.01}),
+                "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": 0.01}),
+                "noise_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "cfg": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0}),
+                "guide_type": (['residual', 'weighted'], ),
+                "guide_weight": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": 0.01}),
+                
+                "tile_width": ("INT", {"default": 1024, "min": 2, "max": MAX_RESOLUTION, "step": 1}),
+                "tile_height": ("INT", {"default": 1024, "min": 2, "max": MAX_RESOLUTION, "step": 1}),
+                "tiling_strategy": (["padded", "random", "random strict",  'simple'], ),
+                "max_tile_batch_size": ("INT", {"default": 64, "min": 1, "max": 256, "step": 1}),
 
-                    "model": ("MODEL",),
-                    "positive": ("CONDITIONING", ),
-                    "negative": ("CONDITIONING", ),
-                    "sampler": ("SAMPLER",),
-                    "sigmas": ("SIGMAS",),
-                    "latent_image": ("LATENT", ),
-                    
-                    "clip_name":            (folder_paths.get_filename_list("clip_vision"), {'default': "clip-vit-large-patch14.safetensors"}),
-                    "strength":           ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01}),
-                    "noise_augment":      ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "model": ("MODEL",),
+                "positive": ("CONDITIONING", ),
+                "negative": ("CONDITIONING", ),
+                "sampler": ("SAMPLER",),
+                "sigmas": ("SIGMAS",),
+                "latent_image": ("LATENT", ),
+                
+                "clip_name":            (folder_paths.get_filename_list("clip_vision"), {'default': "clip-vit-large-patch14.safetensors"}),
+                "strength":           ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01}),
+                "noise_augment":      ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
 
-                    },
-                    "optional": {
-                        "latent_noise": ("LATENT", ),
-                        "guide": ("LATENT", ),
-                        "guide_weights": ("SIGMAS",),
-                        "image_cv": ("IMAGE",),
+            },
+            "optional":
+            {
+                "latent_noise": ("LATENT", ),
+                "guide": ("LATENT", ),
+                "guide_weights": ("SIGMAS",),
+                "image_cv": ("IMAGE",),
 
-                    },
-                    
-                    }
+            },
+                
+        }
 
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "sample"

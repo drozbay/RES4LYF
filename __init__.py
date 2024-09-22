@@ -7,6 +7,7 @@ from . import conditioning
 from . import images
 from . import models
 from .res4lyf import init, get_ext_dir
+from pathlib import Path
 
 import torch
 
@@ -142,6 +143,5 @@ NODE_CLASS_MAPPINGS = {
     "UNetSave": models.UNetSave,
 }
 
-WEB_DIRECTORY = "./web"
-__all__ = ["NODE_CLASS_MAPPINGS",  "WEB_DIRECTORY"]
-
+WEB_DIRECTORY = "./web/js"
+__all__ = ["NODE_CLASS_MAPPINGS", "WEB_DIRECTORY"]

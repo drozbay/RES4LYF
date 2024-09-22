@@ -30,9 +30,10 @@ class AdvancedNoise:
     @classmethod
     def INPUT_TYPES(s):
         return {
-            "required":{
-                "alpha": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": 0.01}),
-                "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": 0.01}),
+            "required":
+            {
+                "alpha": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": 0.01, "visibility": "noise_type|fractal"}),
+                "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": 0.01, "visibility": "noise_type|fractal"}),
                 "noise_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "noise_type": (NOISE_GENERATOR_NAMES, ),
             },
@@ -61,7 +62,8 @@ class ClownGuides:
     @classmethod
     def INPUT_TYPES(s):
         return {
-            "required": {
+            "required":
+            {
                 "offset": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step": 0.001}),
                 "guide_1": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step": 0.001}),
                 "guide_2": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step": 0.001}),
@@ -74,7 +76,8 @@ class ClownGuides:
                 "guide_1_LimePurple": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step": 0.1}),
                 "guide_1_PatternStruct": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step": 0.1}),             
             },
-            "optional": {
+            "optional":
+            {
                 "offsets": ("SIGMAS", ),
                 "guides_1": ("SIGMAS", ),
                 "guides_2": ("SIGMAS", ),
@@ -115,7 +118,8 @@ class ClownSampler:
     @classmethod
     def INPUT_TYPES(s):
         return {
-            "required": {
+            "required": 
+            {
                 "eulers_mom": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step": 0.01}),
                 "momentum": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step": 0.01}),
                 "eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10000.0, "step": 0.01}),
@@ -132,7 +136,8 @@ class ClownSampler:
                 "denoise_to_zero": ("BOOLEAN", {"default": True}),
                 "simple_phi_calc": ("BOOLEAN", {"default": False}),       
             },
-            "optional": {
+            "optional":
+            {
                 "eulers_moms": ("SIGMAS", ),
                 "momentums": ("SIGMAS", ),
                 "etas": ("SIGMAS", ),
@@ -220,24 +225,25 @@ class ClownSampler:
 class LatentNoised:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required":
-                    {
-                    "add_noise": ("BOOLEAN", {"default": True}),
-                    "noise_is_latent": ("BOOLEAN", {"default": False}),
-                    "noise_type": (NOISE_GENERATOR_NAMES, ),
-                    "alpha": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": 0.01}),
-                    "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": 0.01}),
-                    "noise_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-                    "latent_image": ("LATENT", ),
-                    "noise_strength": ("FLOAT", {"default": 1.0, "min": -20.0, "max": 20.0, "step": 0.01, "round": 0.01}),
-                    "normalize": (["false", "true"], {"default": "false"}),
-                     },
-                "optional": 
-                    {
-                    "latent_noise": ("LATENT", ),
-                    "mask": ("MASK", ),
-                    }
-                }
+        return {
+            "required":
+            {
+                "add_noise": ("BOOLEAN", {"default": True}),
+                "noise_is_latent": ("BOOLEAN", {"default": False}),
+                "noise_type": (NOISE_GENERATOR_NAMES, ),
+                "alpha": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": 0.01}),
+                "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": 0.01}),
+                "noise_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "latent_image": ("LATENT", ),
+                "noise_strength": ("FLOAT", {"default": 1.0, "min": -20.0, "max": 20.0, "step": 0.01, "round": 0.01}),
+                "normalize": (["false", "true"], {"default": "false"}),
+            },
+            "optional": 
+            {
+                "latent_noise": ("LATENT", ),
+                "mask": ("MASK", ),
+            }
+        }
 
     RETURN_TYPES = ("LATENT",)
     RETURN_NAMES = ("latent_noised",)
@@ -295,25 +301,28 @@ class LatentNoised:
 class SharkSampler:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required":
-                    {"model": ("MODEL",),
-                    "add_noise": ("BOOLEAN", {"default": True}),
-                    "noise_is_latent": ("BOOLEAN", {"default": False}),
-                    "noise_type": (NOISE_GENERATOR_NAMES, ),
-                    "alpha": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": 0.01}),
-                    "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": 0.01}),
-                    "noise_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-                    "cfg": ("FLOAT", {"default": 6.0, "min": 0.0, "max": 100.0, "step":0.5, "round": 0.01}),
-                    "positive": ("CONDITIONING", ),
-                    "negative": ("CONDITIONING", ),
-                    "sampler": ("SAMPLER", ),
-                    "sigmas": ("SIGMAS", ),
-                    "latent_image": ("LATENT", ),               
-                     },
-                "optional": 
-                    {"latent_noise": ("LATENT", ),
-                    }
-                }
+        return {
+            "required":
+            {
+                "model": ("MODEL",),
+                "add_noise": ("BOOLEAN", {"default": True}),
+                "noise_is_latent": ("BOOLEAN", {"default": False}),
+                "noise_type": (NOISE_GENERATOR_NAMES, ),
+                "alpha": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": 0.01}),
+                "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": 0.01}),
+                "noise_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "cfg": ("FLOAT", {"default": 6.0, "min": 0.0, "max": 100.0, "step":0.5, "round": 0.01}),
+                "positive": ("CONDITIONING", ),
+                "negative": ("CONDITIONING", ),
+                "sampler": ("SAMPLER", ),
+                "sigmas": ("SIGMAS", ),
+                "latent_image": ("LATENT", ),               
+            },
+            "optional": 
+            {
+                "latent_noise": ("LATENT", ),
+            }
+        }
 
     RETURN_TYPES = ("LATENT","LATENT","LATENT")
     RETURN_NAMES = ("output", "denoised_output", "latent_batch")
@@ -365,7 +374,8 @@ class UltraSharkSampler:
     @classmethod
     def INPUT_TYPES(s):
         return {
-            "required": {
+            "required":
+            {
                 "model": ("MODEL",),
                 "add_noise": ("BOOLEAN", {"default": True}),
                 "noise_is_latent": ("BOOLEAN", {"default": False}),
@@ -382,7 +392,8 @@ class UltraSharkSampler:
                 "guide_type": (['residual', 'weighted'], ),
                 "guide_weight": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": 0.01}),
             },
-            "optional": {
+            "optional":
+            {
                 "latent_noise": ("LATENT", ),
                 "guide": ("LATENT",),
                 "guide_weights": ("SIGMAS",),
@@ -471,24 +482,25 @@ class UltraSharkSampler:
                 
             return (out, out_denoised)
 
-
 class SamplerDPMPP_SDE_ADVANCED:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required":
-                    {"momentum": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
-                     "eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "r": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "alpha": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
-                     "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": False}),
-                     "noise_sampler_type": (NOISE_GENERATOR_NAMES, ),
-                      },
-                    "optional": 
-                    {
-                        "alphas": ("SIGMAS", ),
-                    }  
-               }
+        return {
+            "required":
+            {
+                "momentum": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                "eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                "r": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                "alpha": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
+                "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": False}),
+                "noise_sampler_type": (NOISE_GENERATOR_NAMES, ),
+            },
+            "optional": 
+            {
+                "alphas": ("SIGMAS", ),
+            }  
+        }
     RETURN_TYPES = ("SAMPLER",)
     CATEGORY = "sampling/custom_sampling/samplers"
 
@@ -506,22 +518,23 @@ class SamplerDPMPP_SDE_ADVANCED:
 class SamplerDEIS_SDE:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required":
-                    {"momentum": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
-                     "eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     #"r": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "alpha": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
-                     "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": False}),
-                     "noise_sampler_type": (NOISE_GENERATOR_NAMES, ),
-                      },
-                    "optional": 
-                    {
-                        "momentums": ("SIGMAS", ),
-                        "etas": ("SIGMAS", ),
-                        "alphas": ("SIGMAS", ),
-                    }  
-               }
+        return {
+            "required":
+            {
+                "momentum": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                "eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                "alpha": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
+                "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": False}),
+                "noise_sampler_type": (NOISE_GENERATOR_NAMES, ),
+            },
+            "optional": 
+            {
+                "momentums": ("SIGMAS", ),
+                "etas": ("SIGMAS", ),
+                "alphas": ("SIGMAS", ),
+            }  
+        }
     RETURN_TYPES = ("SAMPLER",)
     CATEGORY = "sampling/custom_sampling/samplers"
 
@@ -541,20 +554,22 @@ class SamplerDEIS_SDE:
 """class SamplerDPMPP_SDE_ADVANCED:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required":
-                    {"eta":     ("FLOAT", {"default": 1.0, "min": 0.0,      "max": 100.0,   "step":0.01, "round": False}),
-                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0,      "max": 100.0,   "step":0.01, "round": False}),
-                     "r":       ("FLOAT", {"default": 0.5, "min": 0.0,      "max": 100.0,   "step":0.01, "round": False}),
-                     "alpha":   ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.1,  "round": False}),
-                     "k":       ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0,  "round": False}),
-                     "noise_device": (['gpu', 'cpu'], ),
-                     "noise_sampler_type": (NOISE_GENERATOR_NAMES, ),
-                      },
-                    "optional": 
-                    {
-                        "alphas": ("SIGMAS", ),
-                    }  
-               }
+        return {
+            "required":
+            {
+                "eta":     ("FLOAT", {"default": 1.0, "min": 0.0,      "max": 100.0,   "step":0.01, "round": False}),
+                "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0,      "max": 100.0,   "step":0.01, "round": False}),
+                "r":       ("FLOAT", {"default": 0.5, "min": 0.0,      "max": 100.0,   "step":0.01, "round": False}),
+                "alpha":   ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.1,  "round": False}),
+                "k":       ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0,  "round": False}),
+                "noise_device": (['gpu', 'cpu'], ),
+                "noise_sampler_type": (NOISE_GENERATOR_NAMES, ),
+            },
+            "optional": 
+            {
+                "alphas": ("SIGMAS", ),
+            }  
+        }
     RETURN_TYPES = ("SAMPLER",)
     CATEGORY = "sampling/custom_sampling/samplers"
 
@@ -577,24 +592,26 @@ class SamplerDEIS_SDE:
 class SamplerDPMPP_SDE_CFGPP_ADVANCED:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required":
-                    {"eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "r": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "eulers_mom": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.01, "round": False}),
-                     "cfgpp": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step": 0.01}),
-                     "alpha": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
-                     "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": False}),
-                     #"noise_device": (['gpu', 'cpu'], ),
-                     "noise_sampler_type": (NOISE_GENERATOR_NAMES, ),
-                      },
-                    "optional": 
-                    {
-                        "eulers_moms": ("SIGMAS", ),
-                        "cfgpps": ("SIGMAS", ),
-                        "alphas": ("SIGMAS", ),
-                    }  
-               }
+        return {
+            "required":
+            {
+                "eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                "r": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                "eulers_mom": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.01, "round": False}),
+                "cfgpp": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step": 0.01}),
+                "alpha": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
+                "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": False}),
+                #"noise_device": (['gpu', 'cpu'], ),
+                "noise_sampler_type": (NOISE_GENERATOR_NAMES, ),
+            },
+            "optional": 
+            {
+                "eulers_moms": ("SIGMAS", ),
+                "cfgpps": ("SIGMAS", ),
+                "alphas": ("SIGMAS", ),
+            }  
+        }
     RETURN_TYPES = ("SAMPLER",)
     CATEGORY = "sampling/custom_sampling/samplers"
 
@@ -618,18 +635,20 @@ class SamplerDPMPP_SDE_CFGPP_ADVANCED:
 class SamplerEulerAncestral_Advanced:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required":
-                    {"eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "alpha": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
-                     "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": False}),
-                      "noise_sampler_type": (NOISE_GENERATOR_NAMES, ),
-                      },
-                    "optional": 
-                    {
-                        "alphas": ("SIGMAS", ),
-                    }  
-               }
+        return {
+            "required":
+            {
+                "eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                "alpha": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
+                "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": False}),
+                "noise_sampler_type": (NOISE_GENERATOR_NAMES, ),
+            },
+            "optional": 
+            {
+                "alphas": ("SIGMAS", ),
+            }  
+        }
     RETURN_TYPES = ("SAMPLER",)
     CATEGORY = "sampling/custom_sampling/samplers"
 
@@ -649,12 +668,14 @@ class SamplerEulerAncestral_Advanced:
 class SamplerDPMPP_2S_Ancestral_Advanced:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required":
-                    {"eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                      "noise_sampler_type": (NOISE_GENERATOR_NAMES, ),
-                      }
-               }
+        return {
+            "required":
+            {
+                "eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                "noise_sampler_type": (NOISE_GENERATOR_NAMES, ),
+            }
+        }
     RETURN_TYPES = ("SAMPLER",)
     CATEGORY = "sampling/custom_sampling/samplers"
 
@@ -667,12 +688,14 @@ class SamplerDPMPP_2S_Ancestral_Advanced:
 class SamplerDPMPP_2M_SDE_Advanced:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required":
-                    {"eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                      "noise_sampler_type": (NOISE_GENERATOR_NAMES, ),
-                      }
-               }
+        return {
+            "required":
+            {
+                "eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                "noise_sampler_type": (NOISE_GENERATOR_NAMES, ),
+            }
+        }
     RETURN_TYPES = ("SAMPLER",)
     CATEGORY = "sampling/custom_sampling/samplers"
 
@@ -685,12 +708,14 @@ class SamplerDPMPP_2M_SDE_Advanced:
 class SamplerDPMPP_3M_SDE_Advanced:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required":
-                    {"eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                      "noise_sampler_type": (NOISE_GENERATOR_NAMES, ),
-                      }
-               }
+        return {
+            "required":
+            {
+                "eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                "noise_sampler_type": (NOISE_GENERATOR_NAMES, ),
+            }
+        }
     RETURN_TYPES = ("SAMPLER",)
     CATEGORY = "sampling/custom_sampling/samplers"
 
@@ -748,7 +773,7 @@ class SamplerDPMPP_DUALSDE_MOMENTUMIZED_ADVANCED:
                     "etas": etas,
                     "s_noises": s_noises,
                     "rs": rs,
-                    "scheduled_r": scheduled_r
+                    "scheduled_r": scheduled_r,
                 }
             )
             return (sampler, )
