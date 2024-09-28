@@ -73,7 +73,8 @@ function toggleWidget(node, widget, show = false) {
     else
         widget.computedHeight = 0;
 
-    const height = show ? Math.max(node.computeSize()[1], origSize[1]) : node.size[1];
+    const newSize = node.computeSize();
+    const height = show ? Math.max(newSize[1], origSize[1]) : newSize[1];
     node.setSize([node.size[0], height]);
 }
 
