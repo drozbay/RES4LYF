@@ -159,28 +159,34 @@ class ClownSampler:
                 "momentum": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step": 0.01}),
                 "eta1": ("FLOAT", {"default": 0.25, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
                 "eta2": ("FLOAT", {"default": 0.5, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                "eta_var1": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                "eta_var2": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
                 "s_noise1": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
                 "s_noise2": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
                 "c2": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 10000.0, "step": 0.01}),
+                "c3": ("FLOAT", {"default": 0.666, "min": 0.0, "max": 10000.0, "step": 0.01}),
+                "auto_c2": ("BOOLEAN", {"default": True}),
                 "cfgpp": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step": 0.01}),
                 "branch_mode": (['latent_match', 'latent_match_d', 'latent_match_sdxl_color_d', 'latent_match_sdxl_luminosity_d','latent_match_sdxl_pattern_d','cos_reversal', 'mean', 'mean_d', 'median', 'median_d', 'zmean_d','zmedian_d','gradient_max_full', 'gradient_max_full_d', 'gradient_min_full', 'gradient_min_full_d', 'gradient_max', 'gradient_max_d', 'gradient_min', 'gradient_min_d', 'cos_similarity', 'cos_similarity_d','cos_linearity', 'cos_linearity_d', 'cos_perpendicular', 'cos_perpendicular_d'], {"default": 'mean'}),
                 "branch_depth": ("INT", {"default": 1, "min": 1, "max": 0xffffffffffffffff}),
                 "branch_width": ("INT", {"default": 1, "min": 1, "max": 0xffffffffffffffff}),
 
                 "noise_sampler_type": (NOISE_GENERATOR_NAMES, {"default": "brownian"}),
-                "noise_mode": (["hard", "hard_var", "soft", "softer"], {"default": 'hard'}), 
+                "noise_mode": (["hard", "soft", "softer"], {"default": 'hard'}), 
                 "noise_scale": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
                 "ancestral_noise": ("BOOLEAN", {"default": True}),   
-                "noisy_cfg": ("BOOLEAN", {"default": False}),
+                #"noisy_cfg": ("BOOLEAN", {"default": False}),
                 "clownseed": ("INT", {"default": -1.0, "min": -10000.0, "max": 0xffffffffffffffff}),
                 "alpha": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step": 0.1}),
                 "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step": 2}),      
                 "denoise_to_zero": ("BOOLEAN", {"default": False}),
                 "simple_phi_calc": ("BOOLEAN", {"default": False}),    
-                "skip_corrector": ("BOOLEAN", {"default": False}), 
-                "corrector_is_predictor": ("BOOLEAN", {"default": False}), 
-                "t_fn_formula": ("STRING", {"default": "sigma.log().neg()", "multiline": True}),
-                "sigma_fn_formula": ("STRING", {"default": "t.neg().exp()", "multiline": True}),   
+                #"skip_corrector": ("BOOLEAN", {"default": False}), 
+                "step_type": (["res_a", "dpmpp_sde_alt"], {"default": "res_a"}),
+                #"order": ("INT", {"default": 2, "min": 1, "max": 2}),
+                "order": (["1", "2a", "2b", "2c", "3"], {"default": "2b"}),
+                "t_fn_formula": ("STRING", {"default": "", "multiline": True}),
+                "sigma_fn_formula": ("STRING", {"default": "", "multiline": True}),   
             },
             "optional":
             {
@@ -188,9 +194,12 @@ class ClownSampler:
                 "momentums": ("SIGMAS", ),
                 "etas1": ("SIGMAS", ),
                 "etas2": ("SIGMAS", ),
+                "eta_vars1": ("SIGMAS", ),
+                "eta_vars2": ("SIGMAS", ),
                 "s_noises1": ("SIGMAS", ),
                 "s_noises2": ("SIGMAS", ),
                 "c2s": ("SIGMAS", ),
+                "c3s": ("SIGMAS", ),
                 "cfgpps": ("SIGMAS", ),
                 "alphas": ("SIGMAS", ),
                 "latent_noise": ("LATENT", ),  
@@ -204,11 +213,11 @@ class ClownSampler:
 
     FUNCTION = "get_sampler"
 
-    def get_sampler(self, clownseed, noise_sampler_type, noise_mode, noise_scale, ancestral_noise, denoise_to_zero, simple_phi_calc, cfgpp, eulers_mom, momentum, c2, eta1, eta2, s_noise1, s_noise2, branch_mode, branch_depth, branch_width,
-                    alpha, k, noisy_cfg, 
+    def get_sampler(self, clownseed, noise_sampler_type, noise_mode, noise_scale, ancestral_noise, denoise_to_zero, simple_phi_calc, cfgpp, eulers_mom, momentum, c2, c3, eta1, eta2, eta_var1, eta_var2, s_noise1, s_noise2, branch_mode, branch_depth, branch_width,
+                    alpha, k, noisy_cfg=False, 
                     alphas=None, latent_noise=None,
-                    eulers_moms=None, momentums=None, etas1=None, etas2=None, s_noises1=None, s_noises2=None, c2s=None, cfgpps=None, offsets=None, guides=None, alpha_ratios=None, t_fn_formula=None, sigma_fn_formula=None,skip_corrector=False,
-                    corrector_is_predictor=False,
+                    eulers_moms=None, momentums=None, etas1=None, etas2=None, eta_vars1=None, eta_vars2=None, s_noises1=None, s_noises2=None, c2s=None, c3s=None, cfgpps=None, offsets=None, guides=None, alpha_ratios=None, t_fn_formula=None, sigma_fn_formula=None,skip_corrector=False,
+                    corrector_is_predictor=False, step_type="res_a", order="2b", auto_c2=False,
                     ):
         
         if guides is not None:
@@ -224,9 +233,13 @@ class ClownSampler:
         momentums = initialize_or_scale(momentums, momentum, steps)
         etas1 = initialize_or_scale(etas1, eta1, steps)
         etas2 = initialize_or_scale(etas2, eta2, steps)
+        eta_vars1 = initialize_or_scale(eta_vars1, eta_var1, steps)
+        eta_vars2 = initialize_or_scale(eta_vars2, eta_var2, steps)
+
         s_noises1 = initialize_or_scale(s_noises1, s_noise1, steps)
         s_noises2 = initialize_or_scale(s_noises2, s_noise2, steps)
         c2s = initialize_or_scale(c2s, c2, steps)
+        c3s = initialize_or_scale(c3s, c3, steps)
         cfgpps = initialize_or_scale(cfgpps, cfgpp, steps)
         offsets = initialize_or_scale(offsets, offset, steps)
         guides_1 = initialize_or_scale(guides_1, guide_1, steps)
@@ -262,9 +275,12 @@ class ClownSampler:
                 "momentums": momentums,
                 "etas1": etas1,
                 "etas2": etas2,
+                "eta_vars1": eta_vars1,
+                "eta_vars2": eta_vars2,
                 "s_noises1": s_noises1,
                 "s_noises2": s_noises2,
                 "c2s": c2s,
+                "c3s": c3s,
                 "cfgpps": cfgpps,
                 "offsets": offsets,
                 "guides_1": guides_1,
@@ -285,9 +301,174 @@ class ClownSampler:
                 "sigma_fn_formula": sigma_fn_formula,
                 "skip_corrector": skip_corrector,
                 "corrector_is_predictor": corrector_is_predictor,
+                "step_type": step_type, 
+                "order": order,
+                "auto_c2": auto_c2,
             }
         )
         return (sampler, )
+
+
+
+
+"""class ClownODE:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "eulers_mom": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step": 0.01}),
+                "momentum": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step": 0.01}),
+                "eta1": ("FLOAT", {"default": 0.25, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                "eta2": ("FLOAT", {"default": 0.5, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                "eta_var1": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                "eta_var2": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                "s_noise1": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                "s_noise2": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                "c2": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 10000.0, "step": 0.01}),
+                "c3": ("FLOAT", {"default": 0.666, "min": 0.0, "max": 10000.0, "step": 0.01}),
+                "auto_c2": ("BOOLEAN", {"default": True}),
+                "cfgpp": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step": 0.01}),
+                "branch_mode": (['latent_match', 'latent_match_d', 'latent_match_sdxl_color_d', 'latent_match_sdxl_luminosity_d','latent_match_sdxl_pattern_d','cos_reversal', 'mean', 'mean_d', 'median', 'median_d', 'zmean_d','zmedian_d','gradient_max_full', 'gradient_max_full_d', 'gradient_min_full', 'gradient_min_full_d', 'gradient_max', 'gradient_max_d', 'gradient_min', 'gradient_min_d', 'cos_similarity', 'cos_similarity_d','cos_linearity', 'cos_linearity_d', 'cos_perpendicular', 'cos_perpendicular_d'], {"default": 'mean'}),
+                "branch_depth": ("INT", {"default": 1, "min": 1, "max": 0xffffffffffffffff}),
+                "branch_width": ("INT", {"default": 1, "min": 1, "max": 0xffffffffffffffff}),
+
+                "noise_sampler_type": (NOISE_GENERATOR_NAMES, {"default": "brownian"}),
+                "noise_mode": (["hard", "soft", "softer"], {"default": 'hard'}), 
+                "noise_scale": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
+                "ancestral_noise": ("BOOLEAN", {"default": True}),   
+                #"noisy_cfg": ("BOOLEAN", {"default": False}),
+                "clownseed": ("INT", {"default": -1.0, "min": -10000.0, "max": 0xffffffffffffffff}),
+                "alpha": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step": 0.1}),
+                "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step": 2}),      
+                "denoise_to_zero": ("BOOLEAN", {"default": False}),
+                "simple_phi_calc": ("BOOLEAN", {"default": False}),    
+                #"skip_corrector": ("BOOLEAN", {"default": False}), 
+                "step_type": (["res_a", "dpmpp_sde_alt"], {"default": "res_a"}),
+                #"order": ("INT", {"default": 2, "min": 1, "max": 2}),
+                "order": (["1", "2a", "2b", "2c", "3"], {"default": "2b"}),
+                "t_fn_formula": ("STRING", {"default": "", "multiline": True}),
+                "sigma_fn_formula": ("STRING", {"default": "", "multiline": True}),   
+            },
+            "optional": {
+                "eulers_moms": ("SIGMAS", ),
+                "momentums": ("SIGMAS", ),
+                "etas1": ("SIGMAS", ),
+                "etas2": ("SIGMAS", ),
+                "eta_vars1": ("SIGMAS", ),
+                "eta_vars2": ("SIGMAS", ),
+                "s_noises1": ("SIGMAS", ),
+                "s_noises2": ("SIGMAS", ),
+                "c2s": ("SIGMAS", ),
+                "c3s": ("SIGMAS", ),
+                "cfgpps": ("SIGMAS", ),
+                "alphas": ("SIGMAS", ),
+                "latent_noise": ("LATENT", ),  
+                "guides": ("GUIDES", ),
+                "alpha_ratios": ("SIGMAS", ),
+            }
+        }
+    
+    RETURN_TYPES = ("SAMPLER",)
+    CATEGORY = "sampling/custom_sampling/samplers"
+
+    FUNCTION = "get_sampler"
+
+    def get_sampler(self, clownseed, noise_sampler_type, noise_mode, noise_scale, ancestral_noise, denoise_to_zero, simple_phi_calc, cfgpp, eulers_mom, momentum, c2, c3, eta1=None, eta2=None, eta_var1=None, eta_var2=None, s_noise1=None, s_noise2=None, branch_mode=None, branch_depth=None, branch_width=None,
+                    alpha, k, noisy_cfg=False, 
+                    alphas=None, latent_noise=None,
+                    eulers_moms=None, momentums=None, etas1=None, etas2=None, eta_vars1=None, eta_vars2=None, s_noises1=None, s_noises2=None, c2s=None, c3s=None, cfgpps=None, offsets=None, guides=None, alpha_ratios=None, t_fn_formula=None, sigma_fn_formula=None,skip_corrector=False,
+                    corrector_is_predictor=False, step_type="res_a", order="2b", auto_c2=False,
+                    ):
+        
+        if guides is not None:
+            (offset, guide_1, guide_2, guide_mode_1, guide_mode_2, 
+            guide_1_Luminosity, guide_1_CyanRed, guide_1_LimePurple, guide_1_PatternStruct, 
+            offsets, guides_1, guides_2, latent_guide_1, latent_guide_2, latent_self_guide_1, latent_shift_guide_1) = guides
+        else:
+            offset, guide_1, guide_2, guide_mode_1, guide_mode_2, guide_1_Luminosity, guide_1_CyanRed, guide_1_LimePurple, guide_1_PatternStruct = 0.0, 0.0, 0.0, 0, 0, 0.0, 0.0, 0.0, 0.0
+            offsets, guides_1, guides_2, latent_guide_1, latent_guide_2, latent_self_guide_1, latent_shift_guide_1 = None, None, None, None, None, None, None
+
+        steps = 10000
+        eulers_moms = initialize_or_scale(eulers_moms, eulers_mom, steps)
+        momentums = initialize_or_scale(momentums, momentum, steps)
+        etas1 = initialize_or_scale(etas1, eta1, steps)
+        etas2 = initialize_or_scale(etas2, eta2, steps)
+        eta_vars1 = initialize_or_scale(eta_vars1, eta_var1, steps)
+        eta_vars2 = initialize_or_scale(eta_vars2, eta_var2, steps)
+
+        s_noises1 = initialize_or_scale(s_noises1, s_noise1, steps)
+        s_noises2 = initialize_or_scale(s_noises2, s_noise2, steps)
+        c2s = initialize_or_scale(c2s, c2, steps)
+        c3s = initialize_or_scale(c3s, c3, steps)
+        cfgpps = initialize_or_scale(cfgpps, cfgpp, steps)
+        offsets = initialize_or_scale(offsets, offset, steps)
+        guides_1 = initialize_or_scale(guides_1, guide_1, steps)
+        guides_2 = initialize_or_scale(guides_2, guide_2, steps)
+        alphas = initialize_or_scale(alphas, alpha, steps)
+
+        #import pdb; pdb.set_trace()
+
+        if latent_guide_1 is not None:
+            latent_guide_1 = latent_guide_1["samples"]
+
+        if latent_guide_2 is not None:
+            latent_guide_2 = latent_guide_2["samples"]
+
+        guide_1_channels = torch.tensor([guide_1_Luminosity, guide_1_CyanRed, guide_1_LimePurple, guide_1_PatternStruct])
+
+        latent_noise_samples = latent_noise["samples"] if latent_noise and "samples" in latent_noise else None
+        
+        sampler = comfy.samplers.ksampler(
+            "res_momentumized_advanced",
+            {
+                "noise_sampler_type": noise_sampler_type,
+                "noise_mode": noise_mode,
+                "noise_scale": noise_scale, 
+                "ancestral_noise": ancestral_noise,
+                "noisy_cfg": noisy_cfg,
+                "denoise_to_zero": denoise_to_zero,
+                "simple_phi_calc": simple_phi_calc,
+                "branch_mode": branch_mode,
+                "branch_depth": branch_depth,
+                "branch_width": branch_width,
+                "eulers_moms": eulers_moms,
+                "momentums": momentums,
+                "etas1": etas1,
+                "etas2": etas2,
+                "eta_vars1": eta_vars1,
+                "eta_vars2": eta_vars2,
+                "s_noises1": s_noises1,
+                "s_noises2": s_noises2,
+                "c2s": c2s,
+                "c3s": c3s,
+                "cfgpps": cfgpps,
+                "offsets": offsets,
+                "guides_1": guides_1,
+                "guides_2": guides_2,
+                "latent_guide_1": latent_guide_1,
+                "latent_guide_2": latent_guide_2,
+                "guide_mode_1": guide_mode_1,
+                "guide_mode_2": guide_mode_2,
+                "guide_1_channels": guide_1_channels,
+                "alphas": alphas,
+                "k": k,
+                "clownseed": clownseed+1,
+                "latent_noise": latent_noise_samples,
+                "latent_self_guide_1": latent_self_guide_1,
+                "latent_shift_guide_1": latent_shift_guide_1,
+                "alpha_ratios": alpha_ratios,
+                "t_fn_formula": t_fn_formula,
+                "sigma_fn_formula": sigma_fn_formula,
+                "skip_corrector": skip_corrector,
+                "corrector_is_predictor": corrector_is_predictor,
+                "step_type": step_type, 
+                "order": order,
+                "auto_c2": auto_c2,
+            }
+        )
+        return (sampler, )
+"""
+
 
 class LatentNoised:
     @classmethod
@@ -560,12 +741,14 @@ class SamplerDPMPP_SDE_ADVANCED:
                      "s_noise2": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
                      "denoise_boost": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
                      "r": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                     "auto_r": ("BOOLEAN", {"default": False}), 
                      "alpha": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
                      "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": False}),
                      "noise_sampler_type": (NOISE_GENERATOR_NAMES, {"default": "brownian"}),
                      "noise_mode": (["hard", "hard_var", "soft", "softer"], {"default": 'hard'}), 
                      "noisy_cfg": ("BOOLEAN", {"default": False}),
                      "noise_scale": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
+                     "order": ("INT", {"default": 2, "min": 1, "max": 2}),
                      "t_fn_formula": ("STRING", {"default": "1/((sigma).exp()+1)", "multiline": True}),
                      "sigma_fn_formula": ("STRING", {"default": "((1-t)/t).log()", "multiline": True}),
                       },
@@ -586,8 +769,8 @@ class SamplerDPMPP_SDE_ADVANCED:
 
     FUNCTION = "get_sampler"
 
-    def get_sampler(self, momentum=0.0, eta1=1.0, eta2=1.0, s_noise1=1.0, s_noise2=1.0, denoise_boost=0.0, r=0.5, alpha=-1.0, k=1.0, noise_sampler_type="brownian", noise_mode="soft", noise_scale=1.0, noisy_cfg=False,
-                    momentums=None, etas1=None, etas2=None, s_noises1=None, s_noises2=None, denoise_boosts=None, rs=None, alphas=None, t_fn_formula=None, sigma_fn_formula=None,
+    def get_sampler(self, momentum=0.0, eta1=1.0, eta2=1.0, s_noise1=1.0, s_noise2=1.0, denoise_boost=0.0, r=0.5, auto_r=False, alpha=-1.0, k=1.0, noise_sampler_type="brownian", noise_mode="soft", noise_scale=1.0, noisy_cfg=False,
+                    momentums=None, etas1=None, etas2=None, s_noises1=None, s_noises2=None, denoise_boosts=None, rs=None, alphas=None, order=2, t_fn_formula=None, sigma_fn_formula=None,
                     ):
         sampler_name = "dpmpp_sde_advanced"
 
@@ -602,7 +785,7 @@ class SamplerDPMPP_SDE_ADVANCED:
         alphas = initialize_or_scale(alphas, alpha, steps)
 
         sampler = comfy.samplers.ksampler(sampler_name, {"momentums": momentums, "etas1": etas1, "etas2": etas2, "s_noises1": s_noises1, "s_noises2": s_noises2, "noisy_cfg": noisy_cfg,
-                                                         "denoise_boosts": denoise_boosts, "alphas": alphas, "rs": rs, "k": k, "noise_sampler_type": noise_sampler_type, "noise_mode": noise_mode, "noise_scale": noise_scale,
+                                                         "denoise_boosts": denoise_boosts, "alphas": alphas, "rs": rs, "auto_r": auto_r, "k": k, "noise_sampler_type": noise_sampler_type, "noise_mode": noise_mode, "noise_scale": noise_scale, "order": order,
                                                          "t_fn_formula": t_fn_formula, "sigma_fn_formula": sigma_fn_formula,})
         return (sampler, )
     
@@ -716,6 +899,80 @@ class SamplerEulerAncestral_Advanced:
         sampler = comfy.samplers.ksampler("euler_ancestral_advanced", {"eta": eta, "s_noise": s_noise, "alpha": alphas, "k": k, "noise_sampler_type": noise_sampler_type, "noise_mode": noise_mode,})
         return (sampler, )
     
+    
+class SamplerRES_Implicit:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required":
+                    {"eta": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "eta_var": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "s_noise": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "alpha": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
+                     "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": False}),
+                     "noise_sampler_type": (NOISE_GENERATOR_NAMES, {"default": "brownian"}),
+                     "noise_mode": (["hard", "soft", "softer"], {"default": 'hard'}), 
+                     "c2": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "auto_c2": ("BOOLEAN", {"default": False}),
+                     "iter_c2": ("INT", {"default": 0, "min": 0, "max": 100, "step": 1}), 
+                     "iter": ("INT", {"default": 3, "min": 0, "max": 100, "step": 1}), 
+                     "reverse_weight_c2": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "reverse_weight": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "tol": ("FLOAT", {"default": 0.1, "min": 0, "max": 100, "step": 0.01}), 
+                      },
+                    "optional": 
+                    {
+                        "alphas": ("SIGMAS", ),
+                    }  
+               }
+    RETURN_TYPES = ("SAMPLER",)
+    CATEGORY = "sampling/custom_sampling/samplers"
+
+    FUNCTION = "get_sampler"
+
+    def get_sampler(self, eta, eta_var, s_noise, c2, auto_c2, alpha, k, noise_sampler_type, noise_mode, alphas=None, iter_c2=0, iter=3, reverse_weight_c2=0.0, reverse_weight=0.0, tol=0.1):
+        
+        steps = 10000
+        alphas = initialize_or_scale(alphas, alpha, steps)
+
+        sampler = comfy.samplers.ksampler("RES_implicit_advanced_RF_PC", {"eta": eta, "eta_var": eta_var, "s_noise": s_noise, "c2": c2, "auto_c2": auto_c2, "alpha": alphas, "k": k, "noise_sampler_type": noise_sampler_type, "noise_mode": noise_mode,
+                                                                          "iter_c2": iter_c2, "iter": iter, "reverse_weight_c2": reverse_weight_c2, "reverse_weight": reverse_weight, "tol":tol,})
+        return (sampler, )
+    
+    
+class SamplerSDE_Implicit:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required":
+                    {"eta": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                     "eta_var": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                     "alpha": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
+                     "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": False}),
+                     "noise_sampler_type": (NOISE_GENERATOR_NAMES, {"default": "brownian"}),
+                     "noise_mode": (["hard", "soft", "softer"], {"default": 'hard'}), 
+                     "reversible": (["off", "pre", "post"], {"default": "post"}), 
+                     "reverse_weight": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                     "iter": ("INT", {"default": 2, "min": 0, "max": 100, "step": 1}), 
+                     "tol": ("FLOAT", {"default": 0.1, "min": 0, "max": 1, "step": 0.01}), 
+                      },
+                    "optional": 
+                    {
+                        "alphas": ("SIGMAS", ),
+                    }  
+               }
+    RETURN_TYPES = ("SAMPLER",)
+    CATEGORY = "sampling/custom_sampling/samplers"
+
+    FUNCTION = "get_sampler"
+
+    def get_sampler(self, eta, eta_var, s_noise, alpha, k, noise_sampler_type, noise_mode, reversible, reverse_weight, alphas=None, iter=3, tol=0.00001):
+        
+        steps = 10000
+        alphas = initialize_or_scale(alphas, alpha, steps)
+
+        sampler = comfy.samplers.ksampler("SDE_implicit_advanced_RF_hard", {"eta": eta, "eta_var": eta_var, "s_noise": s_noise, "alpha": alphas, "k": k, "noise_sampler_type": noise_sampler_type, "noise_mode": noise_mode, 
+            "reversible": reversible, "reverse_weight": reverse_weight, "iter": iter,"tol":tol,})
+        return (sampler, )
     
 class SamplerDPMPP_2S_Ancestral_Advanced:
     @classmethod
