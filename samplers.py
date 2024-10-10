@@ -833,6 +833,54 @@ class SamplerDEIS_SDE:
                                                          "denoised_type": denoised_type, "max_order": max_order,})
         return (sampler, )
 
+
+class SamplerDEIS_SDE_Implicit:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required":
+                    {"momentum": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "eta": ("FLOAT", {"default": 0.5, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "s_noise": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "alpha": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
+                     "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": False}),
+                     "noise_sampler_type": (NOISE_GENERATOR_NAMES, {"default": "brownian"}),
+                     "noise_mode": (["hard", "hard_var", "soft", "softer"], {"default": "hard"}), 
+                     "noise_scale": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
+                     "deis_mode": (["rhoab", "tab"], {"default": "rhoab"}), 
+                     "step_type": (["simple", "res_a", "dpmpp_sde"], {"default": "simple"}), 
+                     "denoised_type": (["1_2", "2"], {"default": "1_2"}), 
+                     "max_order": ("INT", {"default": 3, "min": 1, "max": 4, "step":1}),
+                     "iter": ("INT", {"default": 3, "min": 0, "max": 100, "step": 1}), 
+                     "reverse_weight": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "tol": ("FLOAT", {"default": 0.1, "min": 0, "max": 100, "step": 0.01}), 
+                      },
+                    "optional": 
+                    {
+                        "momentums": ("SIGMAS", ),
+                        "etas": ("SIGMAS", ),
+                        "s_noises": ("SIGMAS", ),
+                        "alphas": ("SIGMAS", ),
+                    }  
+               }
+    RETURN_TYPES = ("SAMPLER",)
+    CATEGORY = "sampling/custom_sampling/samplers"
+
+    FUNCTION = "get_sampler"
+
+    def get_sampler(self, momentum, eta, s_noise, alpha, k, noise_sampler_type, noise_mode, noise_scale, deis_mode, step_type, denoised_type, max_order, momentums=None, etas=None, s_noises=None, alphas=None, iter=3, reverse_weight=1.0, tol=0.1):
+        sampler_name = "deis_sde_implicit"
+
+        steps = 10000
+        momentums = initialize_or_scale(momentums, momentum, steps)
+        etas = initialize_or_scale(etas, eta, steps)
+        s_noises = initialize_or_scale(s_noises, s_noise, steps)
+        alphas = initialize_or_scale(alphas, alpha, steps)
+
+        sampler = comfy.samplers.ksampler(sampler_name, {"momentums": momentums, "etas": etas, "s_noises": s_noises, "alpha": alphas, "k": k, 
+                                                         "noise_sampler_type": noise_sampler_type, "noise_mode": noise_mode, "noise_scale": noise_scale, "deis_mode": deis_mode, "step_type": step_type, 
+                                                         "denoised_type": denoised_type, "max_order": max_order, "iter": iter, "reverse_weight": reverse_weight, "tol": tol,})
+        return (sampler, )
+
  
 class SamplerDPMPP_SDE_CFGPP_ADVANCED:
     @classmethod
@@ -904,9 +952,12 @@ class SamplerRES_Implicit:
     @classmethod
     def INPUT_TYPES(s):
         return {"required":
-                    {"eta": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
-                     "eta_var": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
-                     "s_noise": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                    {"eta1": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "eta2": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "eta_var1": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "eta_var2": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "s_noise1": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "s_noise2": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
                      "alpha": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
                      "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": False}),
                      "noise_sampler_type": (NOISE_GENERATOR_NAMES, {"default": "brownian"}),
@@ -915,8 +966,8 @@ class SamplerRES_Implicit:
                      "auto_c2": ("BOOLEAN", {"default": False}),
                      "iter_c2": ("INT", {"default": 0, "min": 0, "max": 100, "step": 1}), 
                      "iter": ("INT", {"default": 3, "min": 0, "max": 100, "step": 1}), 
-                     "reverse_weight_c2": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
-                     "reverse_weight": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "reverse_weight_c2": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "reverse_weight": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
                      "tol": ("FLOAT", {"default": 0.1, "min": 0, "max": 100, "step": 0.01}), 
                       },
                     "optional": 
@@ -929,13 +980,62 @@ class SamplerRES_Implicit:
 
     FUNCTION = "get_sampler"
 
-    def get_sampler(self, eta, eta_var, s_noise, c2, auto_c2, alpha, k, noise_sampler_type, noise_mode, alphas=None, iter_c2=0, iter=3, reverse_weight_c2=0.0, reverse_weight=0.0, tol=0.1):
+    def get_sampler(self, eta1, eta2, eta_var1, eta_var2, s_noise1, s_noise2, c2, auto_c2, alpha, k, noise_sampler_type, noise_mode, alphas=None, iter_c2=0, iter=3, reverse_weight_c2=0.0, reverse_weight=0.0, tol=0.1):
         
         steps = 10000
         alphas = initialize_or_scale(alphas, alpha, steps)
 
-        sampler = comfy.samplers.ksampler("RES_implicit_advanced_RF_PC", {"eta": eta, "eta_var": eta_var, "s_noise": s_noise, "c2": c2, "auto_c2": auto_c2, "alpha": alphas, "k": k, "noise_sampler_type": noise_sampler_type, "noise_mode": noise_mode,
+        sampler = comfy.samplers.ksampler("RES_implicit_advanced_RF_PC", {"eta1": eta1, "eta2": eta2, "eta_var1": eta_var1, "eta_var2": eta_var2, "s_noise1": s_noise1, "s_noise2": s_noise2, "c2": c2, "auto_c2": auto_c2, "alpha": alphas, "k": k, "noise_sampler_type": noise_sampler_type, "noise_mode": noise_mode,
                                                                           "iter_c2": iter_c2, "iter": iter, "reverse_weight_c2": reverse_weight_c2, "reverse_weight": reverse_weight, "tol":tol,})
+        return (sampler, )
+    
+    
+    
+class SamplerRES3_Implicit:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required":
+                    {"eta1": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "eta2": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "eta3": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "eta_var1": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "eta_var2": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "eta_var3": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "s_noise1": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "s_noise2": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "s_noise3": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "alpha": ("FLOAT", {"default": 0.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": False}),
+                     "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": False}),
+                     "noise_sampler_type": (NOISE_GENERATOR_NAMES, {"default": "brownian"}),
+                     "noise_mode": (["hard", "soft", "softer"], {"default": 'hard'}), 
+                     "c2": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "c3": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "auto_c2": ("BOOLEAN", {"default": False}),
+                     "iter_c2": ("INT", {"default": 0, "min": 0, "max": 100, "step": 1}), 
+                     "iter_c3": ("INT", {"default": 0, "min": 0, "max": 100, "step": 1}), 
+                     "iter": ("INT", {"default": 3, "min": 0, "max": 100, "step": 1}), 
+                     "reverse_weight_c2": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "reverse_weight_c3": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "reverse_weight": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                     "tol": ("FLOAT", {"default": 0.1, "min": 0, "max": 100, "step": 0.01}), 
+                      },
+                    "optional": 
+                    {
+                        "alphas": ("SIGMAS", ),
+                    }  
+               }
+    RETURN_TYPES = ("SAMPLER",)
+    CATEGORY = "sampling/custom_sampling/samplers"
+
+    FUNCTION = "get_sampler"
+
+    def get_sampler(self, eta1, eta2, eta3, eta_var1, eta_var2, eta_var3, s_noise1, s_noise2, s_noise3, c2, c3, auto_c2, alpha, k, noise_sampler_type, noise_mode, alphas=None, iter_c2=0, iter_c3=0, iter=3, reverse_weight_c2=0.0, reverse_weight_c3=0.0, reverse_weight=0.0, tol=0.1):
+        
+        steps = 10000
+        alphas = initialize_or_scale(alphas, alpha, steps)
+
+        sampler = comfy.samplers.ksampler("RES_implicit_advanced_RF_PC_3rd_order", {"eta1": eta1, "eta2": eta2, "eta3": eta3, "eta_var1": eta_var1, "eta_var2": eta_var2, "eta_var3": eta_var3, "s_noise1": s_noise1, "s_noise2": s_noise2, "s_noise3": s_noise3, "c2": c2, "c3": c3, "auto_c2": auto_c2, "alpha": alphas, "k": k, "noise_sampler_type": noise_sampler_type, "noise_mode": noise_mode,
+                                                                          "iter_c2": iter_c2, "iter_c3": iter_c3, "iter": iter, "reverse_weight_c2": reverse_weight_c2, "reverse_weight_c3": reverse_weight_c3, "reverse_weight": reverse_weight, "tol":tol,})
         return (sampler, )
     
     
@@ -950,8 +1050,7 @@ class SamplerSDE_Implicit:
                      "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": False}),
                      "noise_sampler_type": (NOISE_GENERATOR_NAMES, {"default": "brownian"}),
                      "noise_mode": (["hard", "soft", "softer"], {"default": 'hard'}), 
-                     "reversible": (["off", "pre", "post"], {"default": "post"}), 
-                     "reverse_weight": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                     "reverse_weight": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
                      "iter": ("INT", {"default": 2, "min": 0, "max": 100, "step": 1}), 
                      "tol": ("FLOAT", {"default": 0.1, "min": 0, "max": 1, "step": 0.01}), 
                       },
@@ -965,13 +1064,13 @@ class SamplerSDE_Implicit:
 
     FUNCTION = "get_sampler"
 
-    def get_sampler(self, eta, eta_var, s_noise, alpha, k, noise_sampler_type, noise_mode, reversible, reverse_weight, alphas=None, iter=3, tol=0.00001):
+    def get_sampler(self, eta, eta_var, s_noise, alpha, k, noise_sampler_type, noise_mode, reverse_weight, alphas=None, iter=3, tol=0.00001):
         
         steps = 10000
         alphas = initialize_or_scale(alphas, alpha, steps)
 
-        sampler = comfy.samplers.ksampler("SDE_implicit_advanced_RF_hard", {"eta": eta, "eta_var": eta_var, "s_noise": s_noise, "alpha": alphas, "k": k, "noise_sampler_type": noise_sampler_type, "noise_mode": noise_mode, 
-            "reversible": reversible, "reverse_weight": reverse_weight, "iter": iter,"tol":tol,})
+        sampler = comfy.samplers.ksampler("SDE_implicit_advanced_RF", {"eta": eta, "eta_var": eta_var, "s_noise": s_noise, "alpha": alphas, "k": k, "noise_sampler_type": noise_sampler_type, "noise_mode": noise_mode, 
+            "reverse_weight": reverse_weight, "iter": iter,"tol":tol,})
         return (sampler, )
     
 class SamplerDPMPP_2S_Ancestral_Advanced:
