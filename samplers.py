@@ -67,10 +67,10 @@ class AdvancedNoise:
         return {
             "required":
             {
-                "alpha": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": 0.01, "visibility": "noise_type|fractal"}),
-                "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": 0.01, "visibility": "noise_type|fractal"}),
                 "noise_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "noise_type": (NOISE_GENERATOR_NAMES, ),
+                "alpha": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":0.1, "round": 0.01, "visibility": "noise_type|fractal"}),
+                "k": ("FLOAT", {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":2.0, "round": 0.01, "visibility": "noise_type|fractal"}),
             },
         }
 
