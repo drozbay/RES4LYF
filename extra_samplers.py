@@ -1428,32 +1428,24 @@ def sample_RES_implicit_advanced_RF_PC(
 
 
 def compute_laplacian(image):
-    # Laplacian filter (simple edge detection)
     laplacian_filter = torch.tensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=image.dtype, device=image.device).unsqueeze(0).unsqueeze(0)
     
-    # Apply Laplacian filter separately for each channel
     laplacian_per_channel = []
     for channel in range(image.shape[1]):
         laplacian = F.conv2d(image[:, channel:channel+1, :, :], laplacian_filter, padding=1)
         laplacian_per_channel.append(laplacian)
     
-    # Stack the results back together across channels
     laplacian = torch.cat(laplacian_per_channel, dim=1)
     return laplacian
 
 
 
-# Function to apply the sharpening kernel using conv2d
 def sharpen(input_image):
-    # Apply the sharpening kernel using conv2d
-    # 'groups' is set to the number of channels to apply the filter across all channels
-        
-        # Define the sharpening kernel
+
     sharpen_kernel = torch.tensor([[0, -1, 0],
                                 [-1, 5, -1],
                                 [0, -1, 0]], dtype=input_image.dtype)
 
-    # Reshape the kernel to match the input dimensions (for conv2d)
     sharpen_kernel = sharpen_kernel.view(1, 1, 3, 3).to(input_image.device)
     return F.conv2d(input_image, sharpen_kernel.repeat(input_image.shape[1], 1, 1, 1), padding=1, groups=input_image.shape[1])
 
@@ -1462,9 +1454,9 @@ from .refined_exp_solver import hard_light_blend
 @torch.no_grad()
 def sample_RES_implicit_advanced_RF_PC_3rd_order(
     model, x, sigmas, extra_args=None, callback=None, disable=None, c2=0.5, c3=1.5, auto_c2=False, eta1=0.0, eta2=0.0, eta3=0.0, eta_var1=0.0, eta_var2=0.0, eta_var3=0.0, s_noise1=1.0, s_noise2=1.0, s_noise3=0.0,
-    noise_sampler=None, noise_sampler_type="gaussian", noise_mode="hard", k=1.0, scale=0.1, 
+    noise_sampler=None, noise_sampler_type1="gaussian", noise_sampler_type2="gaussian", noise_sampler_type3="gaussian",noise_mode="hard", k=1.0, scale=0.1, 
     alpha=None, iter_c2=0, iter_c3=0, iter=3, tol=1e-5, reverse_weight_c2=0.0, reverse_weight_c3=0.0, reverse_weight=0.0,
-    latent_guide=None, latent_guide_weight=0.0, latent_guide_weights=None):
+    latent_guide=None, latent_guide_weight=0.0, latent_guide_weights=None, mask=None):
 
     
     extra_args = {} if extra_args is None else extra_args
@@ -1473,13 +1465,21 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
     s_in = x.new_ones([x.shape[0]])
     alpha = torch.zeros_like(sigmas) if alpha is None else alpha
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-    noise_sampler = NOISE_GENERATOR_CLASSES.get(noise_sampler_type)(x=x, seed=seed, sigma_min=sigma_min, sigma_max=sigma_max)
+    noise_sampler1 = NOISE_GENERATOR_CLASSES.get(noise_sampler_type1)(x=x, seed=seed, sigma_min=sigma_min, sigma_max=sigma_max)
+    noise_sampler2 = NOISE_GENERATOR_CLASSES.get(noise_sampler_type2)(x=x, seed=seed, sigma_min=sigma_min, sigma_max=sigma_max)
+    noise_sampler3 = NOISE_GENERATOR_CLASSES.get(noise_sampler_type3)(x=x, seed=seed, sigma_min=sigma_min, sigma_max=sigma_max)
     
     sigma_fn = lambda t: t.neg().exp()
     t_fn = lambda sigma: sigma.log().neg()
     vel, vel_2, denoised, denoised2, denoised1_2, h_last = None, None, None, None, None, None
     
-        
+    if mask is None:
+        mask = torch.ones_like(x)
+    else:
+        mask = mask.unsqueeze(1)
+        mask = mask.repeat(1, 16, 1, 1) 
+        mask = F.interpolate(mask, size=(x.shape[2], x.shape[3]), mode='bilinear', align_corners=False)
+        mask = mask.to(x.dtype).to(x.device)
 
     if sigmas[-1] == 0.0:
         sigmas[-1] = min(sigmas[-2]**2, 0.00001)
@@ -1508,15 +1508,23 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
     #sigma_fn = lambda t: ((1-t)/t).log()
     
     for i in trange(len(sigmas) - 1, disable=disable):
-        if noise_sampler_type == "fractal":
-            noise_sampler.alpha = alpha[i]
-            noise_sampler.k = k
-            noise_sampler.scale = scale
+        if noise_sampler_type1 == "fractal":
+            noise_sampler1.alpha = alpha[i]
+            noise_sampler1.k = k
+            noise_sampler1.scale = scale
+        if noise_sampler_type2 == "fractal":
+            noise_sampler2.alpha = alpha[i]
+            noise_sampler2.k = k
+            noise_sampler2.scale = scale
+        if noise_sampler_type3 == "fractal":
+            noise_sampler3.alpha = alpha[i]
+            noise_sampler3.k = k
+            noise_sampler3.scale = scale
         
         sigma, sigma_next = sigmas[i], sigmas[i+1]
         
         
-        t = t_fn(sigma)
+        t      = t_fn(sigma)
         t_next = t_fn(sigma_next)
         
         h = t_next - t
@@ -1528,18 +1536,16 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
         
         s2 = t + h * c2
         s3 = t + h * c3
-        sigma_2 = sigma_fn(s2)
-        sigma_3 = sigma_fn(s3)
         
         a21, a31, a32, b1, b2, b3 = calculate_third_order_coeffs(h, c2, c3)
-        print("sigmas: ", sigma.item(), sigma_next.item(), sigma_2.item(), sigma_3.item())
-    
-        #sigma_up, sigma_down, alpha_ratio = get_res4lyf_step(sigma, sigma_next, eta, eta_var, noise_mode)
+
         sigma_up, sigma_down, alpha_ratio = get_res4lyf_step_with_model(model, sigma, sigma_next, eta3, eta_var3, noise_mode)
+            
+        
         if isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST) == False and noise_mode == "hard":
             sigma = sigma * (1 + eta3)
         
-        t = t_fn(sigma)
+        t      = t_fn(sigma)
         t_next = t_fn(sigma_down)
         
         h = t_next - t
@@ -1554,15 +1560,31 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
         s3 = t + h * c3
         sigma_2 = sigma_fn(s2)
         sigma_3 = sigma_fn(s3)
+
+
+        su_2, sd_2, alpha_ratio_2 = get_res4lyf_step(sigma, sigma_next, eta1, eta_var1, noise_mode)
+        su_3, sd_3, alpha_ratio_3 = get_res4lyf_step(sigma, sigma_next, eta2, eta_var2, noise_mode)
         
+        print("sigma_down orig: ", sigma_down.item())
+        su_total = sigma_up #+ su_2 + su_3
+        
+        #s_d = (-sigma_next**2 + su_total**2 + sigma_next * torch.sqrt((su_total+sigma_next)*(sigma_next - su_total)) - torch.sqrt((su_total+sigma_next)*(sigma_next-su_total)) )   /   (-2*sigma_next + 1 + su_total**2) #values end up being > 1.0
+        s_d = (-sigma_next**2 + su_total**2 - sigma_next * torch.sqrt((su_total+sigma_next)*(sigma_next - su_total)) + torch.sqrt((su_total+sigma_next)*(sigma_next-su_total)) )   /   (-2*sigma_next + 1 + su_total**2) #this one works and should be very general. this assumes alpha_ratio = (1 - sigma_down)/(1 - sigma_next)
+        s_u = torch.sqrt(sigma_next**2 - 2*sigma_down*sigma_next**2 + sigma_next**2 * sigma_down**2 - sigma_down**2 + 2*sigma_down**2 * sigma_next - sigma_down**2 * sigma_next**2 ) / (1 - sigma_down)
+        
+        print(su_total.item(), sigma_next.item(), sigma_down.item(), s_d.item(), s_u.item())
+        sigma_down = s_d
+        
+
         k1 = model(x, sigma * s_in, **extra_args)
         
         if latent_guide is not None:
             lg_weight = latent_guide_weights[i] * sigma
             #k1 = lg_weight*latent_guide + (1-lg_weight)*k1            
             hard_light_blend_1 = hard_light_blend(latent_guide, k1)
-            k1 = k1 - lg_weight * sigma_next * k1  + (lg_weight * sigma_next * hard_light_blend_1)
+            k1 = k1 - lg_weight * sigma_next * k1  + (lg_weight * sigma_next * hard_light_blend_1 * mask)
         
+        #su_2, sd_2, alpha_ratio_2 = get_res4lyf_step(sigma, sigma_next, eta1, eta_var1, noise_mode)
         x_2 = ((sigma_down/sigma)**c2)*x + h*(a21*k1)
         
         gc.collect()
@@ -1594,7 +1616,9 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
             torch.cuda.empty_cache()
 
         su_2, sd_2, alpha_ratio_2 = get_res4lyf_step(sigma, sigma_next, eta1, eta_var1, noise_mode)
-        x_2 = alpha_ratio_2 * x_2 + noise_sampler(sigma=sigma, sigma_next=sigma_2) * s_noise1 * su_2
+        x_2 = alpha_ratio_2 * x_2 + noise_sampler1(sigma=sigma, sigma_next=sigma_2) * s_noise1 * su_2
+        
+        
         
         k2 = model(x_2, sigma_2 * s_in, **extra_args)
         
@@ -1602,7 +1626,9 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
             lg_weight = latent_guide_weights[i] * sigma
             #k2 = lg_weight*latent_guide + (1-lg_weight)*k2
             hard_light_blend_1 = hard_light_blend(latent_guide, k2)
-            k2 = k2 - lg_weight * sigma_next * k2  + (lg_weight * sigma_next * hard_light_blend_1)
+            k2 = k2 - lg_weight * sigma_next * k2  + (lg_weight * sigma_next * hard_light_blend_1 * mask)
+            
+        #su_3, sd_3, alpha_ratio_3 = get_res4lyf_step(sigma, sigma_next, eta2, eta_var2, noise_mode)
         x_3 = ((sigma_down/sigma)**c3)*x + h*(a31*k1 + a32*k2)
         
         gc.collect()
@@ -1634,18 +1660,17 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
             torch.cuda.empty_cache()
             
         su_3, sd_3, alpha_ratio_3 = get_res4lyf_step(sigma, sigma_next, eta2, eta_var2, noise_mode)
-        x_3 = alpha_ratio_3 * x_3 + noise_sampler(sigma=sigma, sigma_next=sigma_3) * s_noise2 * su_3
+        x_3 = alpha_ratio_3 * x_3 + noise_sampler2(sigma=sigma, sigma_next=sigma_3) * s_noise2 * su_3
+
+
 
         k3 = model(x_3, sigma_3 * s_in, **extra_args)
         if latent_guide is not None:
             lg_weight = latent_guide_weights[i] * sigma
             #k3 = lg_weight*latent_guide + (1-lg_weight)*k3
             hard_light_blend_1 = hard_light_blend(latent_guide, k3)
-            k3 = k3 - lg_weight * sigma_next * k3  + (lg_weight * sigma_next * hard_light_blend_1)
-            
+            k3 = k3 - lg_weight * sigma_next * k3  + (lg_weight * sigma_next * hard_light_blend_1 * mask)
 
-      
-      
         x_next =  ((sigma_down/sigma))*x + h*(b1*k1 + b2*k2 + b3*k3)
         
         gc.collect()
@@ -1707,7 +1732,7 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
         x = alpha_ratio * x + noise"""
                 
         #if sigmas[i + 1] > 0 and eta > 0 and isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST) == True:
-        x = alpha_ratio * x + noise_sampler(sigma=sigma, sigma_next=sigma_next) * s_noise3 * sigma_up
+        x = alpha_ratio * x + noise_sampler3(sigma=sigma, sigma_next=sigma_next) * s_noise3 * sigma_up
         
         #epsilon = epsilons.pop()
         #epsilon = (epsilon - epsilon.mean()) / epsilon.std()
