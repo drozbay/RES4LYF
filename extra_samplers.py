@@ -126,13 +126,39 @@ def get_sigma_down_RF(sigma_next, eta):
 def get_sigma_up_RF(sigma_next, eta):
     return sigma_next * eta
 
-def get_ancestral_step_RF(sigma_next, eta):
+"""def get_ancestral_step_RF_maybe_works_with_variance_exploding(sigma_next, eta):
+    sigma_up = sigma_next * eta
+    eta_scaled = (1 - eta**2)**0.5
+    #sigma_down = (sigma_next * eta_scaled) / (1 - sigma_next + sigma_next * eta_scaled)
+    #alpha_ratio = (1 - sigma_next) + sigma_next * eta_scaled
+    #alpha_ratio = (1 - sigma_next) / (1 - sigma_down)
+    sigma_down = (sigma_next * eta_scaled)
+    alpha_ratio = 1.0
+    return sigma_up, sigma_down, alpha_ratio"""
+
+
+def get_ancestral_step_RF_correct_working(sigma_next, eta):
     sigma_up = sigma_next * eta
     eta_scaled = (1 - eta**2)**0.5
     sigma_down = (sigma_next * eta_scaled) / (1 - sigma_next + sigma_next * eta_scaled)
-    #alpha_ratio = (1 - sigma_next) + sigma_next * eta_scaled
-    alpha_ratio = (1 - sigma_next) / (1 - sigma_down)
+    alpha_ratio =                             1 - sigma_next + sigma_next * eta_scaled
+    #alpha_ratio = (1 - sigma_next) / (1 - sigma_down)
     return sigma_up, sigma_down, alpha_ratio
+
+
+
+def get_ancestral_step_RF(sigma_next, eta, sigma_max=1.0):
+    sigma_up = sigma_next * eta #or whatever the f
+    
+    sigma_signal = sigma_max - sigma_next
+    sigma_residual = torch.sqrt(sigma_next**2 - sigma_up**2)
+
+    alpha_ratio = sigma_signal + sigma_residual
+    sigma_down = sigma_residual / alpha_ratio
+    
+    return sigma_up, sigma_down, alpha_ratio
+
+
 
 
 
@@ -159,6 +185,12 @@ def sample_dpmpp_sde_advanced(
         return x
 
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    if isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST):
+        sigma_max = torch.full_like(sigma_max, 1.0)
+        sigma_min = torch.full_like(sigma_min, min(sigma_min.item(), 0.00001))
+    if sigmas[-1] == 0.0:
+        sigmas[-1] = min(sigmas[-2]**2, 0.00001)
+        
     seed = extra_args.get("seed", None) + 1
 
     noise_sampler = NOISE_GENERATOR_CLASSES.get(noise_sampler_type)(x=x, seed=seed, sigma_min=sigma_min, sigma_max=sigma_max)
@@ -235,6 +267,8 @@ def get_res4lyf_step(sigma, sigma_next, eta=0.0, eta_var=1.0, noise_mode="hard")
       su, sd, alpha_ratio = get_RF_step_traditional(sigma, sigma_next, eta)
     elif noise_mode == "hard":
       su, sd, alpha_ratio = get_ancestral_step_RF(sigma_next, eta)
+    elif noise_mode == "e**(-2*eta*h)":
+      su, sd, alpha_ratio = get_ancestral_step_RF(sigma_next, eta)
   return su, sd, alpha_ratio
 
 
@@ -294,7 +328,10 @@ def _step_RF_sde(model, x, sigma, sigma_next, c2 = 0.5, eta1=0.25, eta2=0.5, eta
 
   if sigma_next > 0.00001:
     su_2, sd_2, alpha_ratio_2 = get_res4lyf_step(sigma, sigma_next, eta1, eta_var1, noise_mode)
-    x_2 = alpha_ratio_2 * x_2 + noise_sampler(sigma=sigma, sigma_next=sigma_s) * s_noise2 * su_2
+    noise = noise_sampler(sigma=sigma, sigma_next=sigma_s)
+    noise = (noise - noise.mean()) / noise.std()
+    x_2 = alpha_ratio_2 * x_2 + noise * s_noise2 * su_2
+    #x_2 = alpha_ratio_2 * x_2 + noise_sampler(sigma=sigma, sigma_next=sigma_s) * s_noise2 * su_2
     denoised2 = model(x_2, sigma_s * s_in, **extra_args)
   else: 
     denoised2 = model(x_2, sigma_s * s_in, **extra_args)   #last step!
@@ -304,7 +341,10 @@ def _step_RF_sde(model, x, sigma, sigma_next, c2 = 0.5, eta1=0.25, eta2=0.5, eta
   denoised1_2 = (1 - fac) * denoised + fac * diff #denoised2
   x = (sd / sigma) * x + (1 - (sd / sigma))  * denoised1_2
   
-  x = alpha_ratio * x + noise_sampler(sigma=sigma, sigma_next=sigma_next) * s_noise1 * su
+  noise = noise_sampler(sigma=sigma, sigma_next=sigma_next)
+  noise = (noise - noise.mean()) / noise.std()
+  x = alpha_ratio * x + noise * s_noise1 * su
+  #x = alpha_ratio * x + noise_sampler(sigma=sigma, sigma_next=sigma_next) * s_noise1 * su
 
   return x, denoised, denoised2, denoised1_2, vel, vel_2, h
 
@@ -322,6 +362,12 @@ def sample_dpmpp_sde_advanced_RF(
         return x
 
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    if isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST):
+        sigma_max = torch.full_like(sigma_max, 1.0)
+        sigma_min = torch.full_like(sigma_min, min(sigma_min.item(), 0.00001))
+    if sigmas[-1] == 0.0:
+        sigmas[-1] = min(sigmas[-2]**2, 0.00001)
+        
     seed = extra_args.get("seed", None) + 1
 
     noise_sampler = NOISE_GENERATOR_CLASSES.get(noise_sampler_type)(x=x, seed=seed, sigma_min=sigma_min, sigma_max=sigma_max)
@@ -1254,15 +1300,14 @@ def sample_RES_implicit_advanced_RF(
     return x
 
 
-
-
 from .refined_exp_solver import get_res4lyf_step_with_model, calculate_third_order_coeffs
 
 @torch.no_grad()
 def sample_RES_implicit_advanced_RF_PC(
     model, x, sigmas, extra_args=None, callback=None, disable=None, c2=1.0, auto_c2=False, eta1=0.0, eta2=0.0, eta_var1=0.0, eta_var2=0.0, s_noise1=1.0, s_noise2=1.0,
     noise_sampler=None, noise_sampler_type="gaussian", noise_mode="hard", k=1.0, scale=0.1, 
-    alpha=None, iter_c2=0, iter=3, tol=1e-5, reverse_weight_c2=0.0, reverse_weight=0.0,):
+    alpha=None, iter_c2=0, iter=3, tol=1e-5, reverse_weight_c2=0.0, reverse_weight=0.0,
+    latent_guide=None, latent_guide_weight=0.0, latent_guide_weights=None, mask=None):
     
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None) + 1
@@ -1270,6 +1315,11 @@ def sample_RES_implicit_advanced_RF_PC(
     s_in = x.new_ones([x.shape[0]])
     alpha = torch.zeros_like(sigmas) if alpha is None else alpha
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    
+    if isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST):
+        sigma_max = torch.full_like(sigma_max, 1.0)
+        sigma_min = torch.full_like(sigma_min, min(sigma_min.item(), 0.00001))
+    
     noise_sampler = NOISE_GENERATOR_CLASSES.get(noise_sampler_type)(x=x, seed=seed, sigma_min=sigma_min, sigma_max=sigma_max)
     
     sigma_fn = lambda t: t.neg().exp()
@@ -1280,6 +1330,14 @@ def sample_RES_implicit_advanced_RF_PC(
     if sigmas[-1] == 0.0:
         sigmas[-1] = min(sigmas[-2]**2, 0.00001)
     
+    if mask is None:
+        mask = torch.ones_like(x)
+    else:
+        mask = mask.unsqueeze(1)
+        mask = mask.repeat(1, 16, 1, 1) 
+        mask = F.interpolate(mask, size=(x.shape[2], x.shape[3]), mode='bilinear', align_corners=False)
+        mask = mask.to(x.dtype).to(x.device)
+        
     #t_fn = lambda sigma: 1/((sigma).exp()+1)
     #sigma_fn = lambda t: ((1-t)/t).log()
     
@@ -1303,6 +1361,13 @@ def sample_RES_implicit_advanced_RF_PC(
         a2_1, b1, b2 = _de_second_order(h=h, c2=c2, simple_phi_calc=False)
 
         denoised = model(x, sigma * s_in, **extra_args)
+        
+        if latent_guide is not None:
+            lg_weight = latent_guide_weights[i] * sigma
+            #k2 = lg_weight*latent_guide + (1-lg_weight)*k2
+            hard_light_blend_1 = hard_light_blend(latent_guide, denoised)
+            denoised = denoised - lg_weight * sigma_next * denoised  + (lg_weight * sigma_next * hard_light_blend_1 * mask)
+            
         x_2 = ((sigma_down/sigma)**c2)*x + h*a2_1*denoised
         gc.collect()
         torch.cuda.empty_cache()
@@ -1311,6 +1376,13 @@ def sample_RES_implicit_advanced_RF_PC(
             time = sigmas[i] / sigma_max
             
             denoised_next = model(x_2, sigma_s * s_in, **extra_args)
+            
+            if latent_guide is not None:
+                lg_weight = latent_guide_weights[i] * sigma
+                #k2 = lg_weight*latent_guide + (1-lg_weight)*k2
+                hard_light_blend_1 = hard_light_blend(latent_guide, denoised_next)
+                denoised_next = denoised_next - lg_weight * sigma_next * denoised_next  + (lg_weight * sigma_next * hard_light_blend_1 * mask)
+                
             x_2_new = ((sigma_down/sigma)**c2)*x + h*a2_1*denoised_next
             
             # x = (x_new - h*denoised1_2*(b1 + b2)) / (sd/sigma)   # projection back to x
@@ -1353,9 +1425,19 @@ def sample_RES_implicit_advanced_RF_PC(
 
             #x  = (x_new - (1 - sigma_next/sigma) * denoised_next) / (sigma_next/sigma) # projection back to x with alternative math
         su_2, sd_2, alpha_ratio_2 = get_res4lyf_step(sigma, sigma_next, eta1, eta_var1, noise_mode)
-        x_2 = alpha_ratio_2 * x_2 + noise_sampler(sigma=sigma, sigma_next=sigma_s) * s_noise1 * su_2
+        noise1 = noise_sampler(sigma=sigma, sigma_next=sigma_s)
+        noise1 = (noise1 - noise1.mean()) / noise1.std()
+        x_2 = alpha_ratio_2 * x_2 + noise1 * s_noise1 * su_2
+        #x_2 = alpha_ratio_2 * x_2 + noise_sampler(sigma=sigma, sigma_next=sigma_s) * s_noise1 * su_2
         
         denoised2 = model(x_2, sigma_s * s_in, **extra_args)
+        
+        if latent_guide is not None:
+            lg_weight = latent_guide_weights[i] * sigma
+            #k2 = lg_weight*latent_guide + (1-lg_weight)*k2
+            hard_light_blend_1 = hard_light_blend(latent_guide, denoised2)
+            denoised2 = denoised2 - lg_weight * sigma_next * denoised2  + (lg_weight * sigma_next * hard_light_blend_1 * mask)
+            
         x_next = (sigma_down/sigma)*x + h*(b1*denoised + b2*denoised2)
         denoised_next = (b1*denoised + b2*denoised2) / (b1 + b2)
         
@@ -1366,6 +1448,13 @@ def sample_RES_implicit_advanced_RF_PC(
             time = sigmas[i] / sigma_max
             
             denoised2_next = model(x_next, sigma_down * s_in, **extra_args)
+            
+            if latent_guide is not None:
+                lg_weight = latent_guide_weights[i] * sigma
+                #k2 = lg_weight*latent_guide + (1-lg_weight)*k2
+                hard_light_blend_1 = hard_light_blend(latent_guide, denoised2_next)
+                denoised2_next = denoised2_next - lg_weight * sigma_next * denoised2_next  + (lg_weight * sigma_next * hard_light_blend_1 * mask)
+                
             x_new = (sigma_down/sigma)*x + h*(b1*denoised + b2*denoised2_next)
             
             # x = (x_new - h*denoised1_2*(b1 + b2)) / (sd/sigma)   # projection back to x
@@ -1413,7 +1502,10 @@ def sample_RES_implicit_advanced_RF_PC(
         h_last = h
         
         #if sigmas[i + 1] > 0 and eta > 0 and isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST) == True:
-        x = alpha_ratio * x + noise_sampler(sigma=sigma, sigma_next=sigma_next) * s_noise2 * sigma_up
+        noise2 = noise_sampler(sigma=sigma, sigma_next=sigma_next)
+        noise2 = (noise2 - noise2.mean()) / noise2.std()
+        x = alpha_ratio * x + noise2 * s_noise2 * sigma_up
+        #x = alpha_ratio * x + noise_sampler(sigma=sigma, sigma_next=sigma_next) * s_noise2 * sigma_up
 
         denoised_next = denoised if denoised_next is None else denoised_next
         if callback is not None:
@@ -1463,8 +1555,13 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
     seed = extra_args.get("seed", None) + 1
     
     s_in = x.new_ones([x.shape[0]])
-    alpha = torch.zeros_like(sigmas) if alpha is None else alpha
-    sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    alpha = torch.zeros_like(sigmas) if alpha is None else alpha 
+    sigma_min, sigma_max = sigmas[sigmas > 0].min()**2, sigmas.max() #squaring sigma_min to avoid sigma_next == sigma_min issue with brownian...
+    
+    if isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST):
+        sigma_max = torch.full_like(sigma_max, 1.0)
+        sigma_min = torch.full_like(sigma_min, min(sigma_min.item(), 0.00001))
+    
     noise_sampler1 = NOISE_GENERATOR_CLASSES.get(noise_sampler_type1)(x=x, seed=seed, sigma_min=sigma_min, sigma_max=sigma_max)
     noise_sampler2 = NOISE_GENERATOR_CLASSES.get(noise_sampler_type2)(x=x, seed=seed, sigma_min=sigma_min, sigma_max=sigma_max)
     noise_sampler3 = NOISE_GENERATOR_CLASSES.get(noise_sampler_type3)(x=x, seed=seed, sigma_min=sigma_min, sigma_max=sigma_max)
@@ -1539,11 +1636,11 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
         
         a21, a31, a32, b1, b2, b3 = calculate_third_order_coeffs(h, c2, c3)
 
-        sigma_up, sigma_down, alpha_ratio = get_res4lyf_step_with_model(model, sigma, sigma_next, eta3, eta_var3, noise_mode)
+        sigma_up, sigma_down, alpha_ratio = get_res4lyf_step_with_model(model, sigma, sigma_next, eta3[i], eta_var3[i], noise_mode, h)
             
         
         if isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST) == False and noise_mode == "hard":
-            sigma = sigma * (1 + eta3)
+            sigma = sigma * (1 + eta3[i])
         
         t      = t_fn(sigma)
         t_next = t_fn(sigma_down)
@@ -1562,8 +1659,8 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
         sigma_3 = sigma_fn(s3)
 
 
-        su_2, sd_2, alpha_ratio_2 = get_res4lyf_step(sigma, sigma_next, eta1, eta_var1, noise_mode)
-        su_3, sd_3, alpha_ratio_3 = get_res4lyf_step(sigma, sigma_next, eta2, eta_var2, noise_mode)
+        su_2, sd_2, alpha_ratio_2 = get_res4lyf_step_with_model(model, sigma, sigma_next, eta1[i], eta_var1[i], noise_mode, h)
+        su_3, sd_3, alpha_ratio_3 = get_res4lyf_step_with_model(model, sigma, sigma_next, eta2[i], eta_var2[i], noise_mode, h)
         
         print("sigma_down orig: ", sigma_down.item())
         su_total = sigma_up #+ su_2 + su_3
@@ -1575,6 +1672,13 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
         print(su_total.item(), sigma_next.item(), sigma_down.item(), s_d.item(), s_u.item())
         sigma_down = s_d
         
+        """noise1 = noise_sampler1(sigma=sigma, sigma_next=sigma_2)
+        noise2 = noise_sampler2(sigma=sigma, sigma_next=sigma_3)
+        noise3 = noise_sampler3(sigma=sigma, sigma_next=sigma_next)
+        
+        noise1 = (noise1 - noise1.mean()) / noise1.std()
+        noise2 = (noise2 - noise2.mean()) / noise2.std()
+        noise3 = (noise3 - noise3.mean()) / noise3.std()"""
 
         k1 = model(x, sigma * s_in, **extra_args)
         
@@ -1584,7 +1688,7 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
             hard_light_blend_1 = hard_light_blend(latent_guide, k1)
             k1 = k1 - lg_weight * sigma_next * k1  + (lg_weight * sigma_next * hard_light_blend_1 * mask)
         
-        #su_2, sd_2, alpha_ratio_2 = get_res4lyf_step(sigma, sigma_next, eta1, eta_var1, noise_mode)
+        #su_2, sd_2, alpha_ratio_2 = get_res4lyf_step(sigma, sigma_next, eta1[i], eta_var1[i], noise_mode)
         x_2 = ((sigma_down/sigma)**c2)*x + h*(a21*k1)
         
         gc.collect()
@@ -1594,6 +1698,12 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
             time = sigmas[i] / sigma_max
             
             k1_new = model(x_2, sigma_2 * s_in, **extra_args)
+            if latent_guide is not None:
+                lg_weight = latent_guide_weights[i] * sigma
+                #k1 = lg_weight*latent_guide + (1-lg_weight)*k1            
+                hard_light_blend_1 = hard_light_blend(latent_guide, k1_new)
+                k1_new = k1_new - lg_weight * sigma_next * k1_new  + (lg_weight * sigma_next * hard_light_blend_1 * mask)
+            
             x_2_new = ((sigma_down/sigma)**c2)*x + h*(a21*k1_new)
             
             error = torch.norm(x_2_new - x_2)
@@ -1615,8 +1725,12 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
             gc.collect()
             torch.cuda.empty_cache()
 
-        su_2, sd_2, alpha_ratio_2 = get_res4lyf_step(sigma, sigma_next, eta1, eta_var1, noise_mode)
-        x_2 = alpha_ratio_2 * x_2 + noise_sampler1(sigma=sigma, sigma_next=sigma_2) * s_noise1 * su_2
+        su_2, sd_2, alpha_ratio_2 = get_res4lyf_step_with_model(model, sigma, sigma_next, eta1[i], eta_var1[i], noise_mode, h)
+        #su_2, sd_2, alpha_ratio_2 =                   get_res4lyf_step(sigma, sigma_next, eta1[i], eta_var1[i], noise_mode)
+        #x_2 = alpha_ratio_2 * x_2 + noise_sampler1(sigma=sigma, sigma_next=sigma_2) * s_noise1[i] * su_2
+        noise1 = noise_sampler1(sigma=sigma, sigma_next=sigma_2)
+        noise1 = (noise1 - noise1.mean()) / noise1.std()
+        x_2 = alpha_ratio_2 * x_2 + noise1 * s_noise1[i] * su_2
         
         
         
@@ -1628,7 +1742,7 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
             hard_light_blend_1 = hard_light_blend(latent_guide, k2)
             k2 = k2 - lg_weight * sigma_next * k2  + (lg_weight * sigma_next * hard_light_blend_1 * mask)
             
-        #su_3, sd_3, alpha_ratio_3 = get_res4lyf_step(sigma, sigma_next, eta2, eta_var2, noise_mode)
+        #su_3, sd_3, alpha_ratio_3 = get_res4lyf_step(sigma, sigma_next, eta2[i], eta_var2[i], noise_mode)
         x_3 = ((sigma_down/sigma)**c3)*x + h*(a31*k1 + a32*k2)
         
         gc.collect()
@@ -1638,6 +1752,12 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
             time = sigmas[i] / sigma_max
             
             k2_new = model(x_3, sigma_3 * s_in, **extra_args)
+            if latent_guide is not None:
+                lg_weight = latent_guide_weights[i] * sigma
+                #k1 = lg_weight*latent_guide + (1-lg_weight)*k1            
+                hard_light_blend_1 = hard_light_blend(latent_guide, k2_new)
+                k2_new = k2_new - lg_weight * sigma_next * k2_new  + (lg_weight * sigma_next * hard_light_blend_1 * mask)
+                
             x_3_new = ((sigma_down/sigma)**c3)*x + h*(a31*k1 + a32*k2_new)
             
             error = torch.norm(x_3_new - x_3)
@@ -1659,12 +1779,17 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
             gc.collect()
             torch.cuda.empty_cache()
             
-        su_3, sd_3, alpha_ratio_3 = get_res4lyf_step(sigma, sigma_next, eta2, eta_var2, noise_mode)
-        x_3 = alpha_ratio_3 * x_3 + noise_sampler2(sigma=sigma, sigma_next=sigma_3) * s_noise2 * su_3
+        su_3, sd_3, alpha_ratio_3 = get_res4lyf_step_with_model(model, sigma, sigma_next, eta2[i], eta_var2[i], noise_mode, h)
+        #su_3, sd_3, alpha_ratio_3 =                   get_res4lyf_step(sigma, sigma_next, eta2[i], eta_var2[i], noise_mode)
+        #x_3 = alpha_ratio_3 * x_3 + noise_sampler2(sigma=sigma, sigma_next=sigma_3) * s_noise2[i] * su_3
+        noise2 = noise_sampler2(sigma=sigma, sigma_next=sigma_3)
+        noise2 = (noise2 - noise2.mean()) / noise2.std()
+        x_3 = alpha_ratio_3 * x_3 + noise2 * s_noise2[i] * su_3
 
 
 
         k3 = model(x_3, sigma_3 * s_in, **extra_args)
+
         if latent_guide is not None:
             lg_weight = latent_guide_weights[i] * sigma
             #k3 = lg_weight*latent_guide + (1-lg_weight)*k3
@@ -1680,6 +1805,12 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
             time = sigmas[i] / sigma_max
 
             k3_new = model(x_next, sigma_down * s_in, **extra_args)
+            if latent_guide is not None:
+                lg_weight = latent_guide_weights[i] * sigma
+                #k1 = lg_weight*latent_guide + (1-lg_weight)*k1            
+                hard_light_blend_1 = hard_light_blend(latent_guide, k3_new)
+                k3_new = k3_new - lg_weight * sigma_next * k3_new  + (lg_weight * sigma_next * hard_light_blend_1 * mask)
+                
             x_next_new = ((sigma_down/sigma))*x + h*(b1*k1 + b2*k2 + b3*k3_new)
             
             error = torch.norm(x_next_new - x_next)
@@ -1702,43 +1833,14 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
             torch.cuda.empty_cache()
 
         x = x_next
-        h_last = h
         
         
-        
-        # Step 2: Compute the Laplacian of the denoised latent to detect sharp/blurred regions
-        """laplacian = compute_laplacian(k3_new)
-        
-        # Step 3: Normalize Laplacian to create a mask (higher values in blurry regions)
-        blur_mask = 1 - torch.clamp(laplacian / laplacian.max(), 0, 1)  # Inverted Laplacian for mask (blurry regions get higher values)
-
-
-        noise = noise_sampler(sigma=sigma, sigma_next=sigma_next) * s_noise3 * sigma_up
-
-        # Step 4: Adjust denoising using the mask
-        # You can now apply the mask to adjust how much noise to remove in each region
-        epsilon = x_next - k3_new
-        adjusted_epsilon = epsilon * blur_mask  # Apply the mask
-
-        # Step 5: Normalize noise removal to ensure total noise removed remains the same
-        # Calculate the total adjustment factor based on the average mask value
-        mask_avg = blur_mask.mean()
-        noise *= (1.0 / mask_avg)  # Compensate for the masking
-
-        # Step 6: Compute the new latent by removing noise according to the adjusted epsilon
-        #k3_new = x - (adjusted_epsilon*0.1 + 0.9*epsilon)
-        #k3_new = x - adjusted_epsilon
-        
-        x = alpha_ratio * x + noise"""
-                
         #if sigmas[i + 1] > 0 and eta > 0 and isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST) == True:
-        x = alpha_ratio * x + noise_sampler3(sigma=sigma, sigma_next=sigma_next) * s_noise3 * sigma_up
-        
-        #epsilon = epsilons.pop()
-        #epsilon = (epsilon - epsilon.mean()) / epsilon.std()
-        #x = alpha_ratio * x + epsilon * s_noise3 * sigma_up
+        #x = alpha_ratio * x + noise_sampler3(sigma=sigma, sigma_next=sigma_next) * s_noise3[i] * sigma_up
+        noise3 = noise_sampler3(sigma=sigma, sigma_next=sigma_next)
+        noise3 = (noise3 - noise3.mean()) / noise3.std()
+        x = alpha_ratio * x + noise3 * s_noise3[i] * sigma_up
 
-        #denoised_next = denoised if denoised_next is None else denoised_next
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigma, 'denoised': k3})
 
@@ -1753,7 +1855,7 @@ def sample_RES_implicit_advanced_RF_PC_3rd_order(
 def sample_SDE_implicit_advanced_RF(
     model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., eta_var=1., s_noise=1., 
     noise_sampler=None, noise_sampler_type="gaussian", noise_mode="hard",reverse_weight=0.0, k=1.0, scale=0.1, 
-    alpha=None, iter=3, tol=1e-5):
+    alpha=None, iter=3, tol=1e-5, latent_guide=None, latent_guide_weight=0.0, latent_guide_weights=None, mask=None):
     
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None) + 1
@@ -1761,6 +1863,22 @@ def sample_SDE_implicit_advanced_RF(
     s_in = x.new_ones([x.shape[0]])
     alpha = torch.zeros_like(sigmas) if alpha is None else alpha
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+
+    if isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST):
+        sigma_max = torch.full_like(sigma_max, 1.0)
+        sigma_min = torch.full_like(sigma_min, min(sigma_min.item(), 0.00001))
+        
+    if sigmas[-1] == 0.0:
+        sigmas[-1] = min(sigmas[-2]**2, 0.00001)
+    
+    if mask is None:
+        mask = torch.ones_like(x)
+    else:
+        mask = mask.unsqueeze(1)
+        mask = mask.repeat(1, 16, 1, 1) 
+        mask = F.interpolate(mask, size=(x.shape[2], x.shape[3]), mode='bilinear', align_corners=False)
+        mask = mask.to(x.dtype).to(x.device)
+        
     noise_sampler = NOISE_GENERATOR_CLASSES.get(noise_sampler_type)(x=x, seed=seed, sigma_min=sigma_min, sigma_max=sigma_max)
     
     sigma_fn = lambda t: t.neg().exp()
@@ -1784,6 +1902,12 @@ def sample_SDE_implicit_advanced_RF(
            
         sigma_next = sigma_down
         denoised = model(x, sigma * s_in, **extra_args)
+        
+        if latent_guide is not None:
+            lg_weight = latent_guide_weights[i] * sigma
+            #k2 = lg_weight*latent_guide + (1-lg_weight)*k2
+            hard_light_blend_1 = hard_light_blend(latent_guide, denoised)
+            denoised = denoised - lg_weight * sigma_next * denoised  + (lg_weight * sigma_next * hard_light_blend_1 * mask)
 
         x_next = (sigma_next/sigma) * x + (1 - sigma_next/sigma) * denoised 
         denoised_next = denoised
@@ -1791,8 +1915,13 @@ def sample_SDE_implicit_advanced_RF(
         for iteration in range(iter):  
             #x = x_reverse_new if x_reverse_new is not None else x
             denoised_next = model(x_next, sigma_next * s_in, **extra_args)
-            if reverse_weight > 0.0:
-                x_reverse_new = (x_next - (1 - sigma_next/sigma) * denoised_next) / (sigma_next/sigma)
+            
+            if latent_guide is not None:
+                lg_weight = latent_guide_weights[i] * sigma
+                #k2 = lg_weight*latent_guide + (1-lg_weight)*k2
+                hard_light_blend_1 = hard_light_blend(latent_guide, denoised_next)
+                denoised_next = denoised_next - lg_weight * sigma_next * denoised_next  + (lg_weight * sigma_next * hard_light_blend_1 * mask)
+            
             x_new = (sigma_next/sigma) * x + (1 - sigma_next/sigma) * denoised_next
 
             error = torch.norm(x_new - x_next)
@@ -1802,9 +1931,15 @@ def sample_SDE_implicit_advanced_RF(
                 print(f"Converged after {iteration + 1} iterations with error {error.item()}")
                 x_next = x_new
                 break
-
+            
+            if reverse_weight > 0.0:
+                x_reverse_new = (x_next - (1 - sigma_next/sigma) * denoised_next) / (sigma_next/sigma)
+                x = reverse_weight * x_reverse_new + (1-reverse_weight) * x
+                
             x_next = x_new
-            x = reverse_weight * x_reverse_new + (1-reverse_weight) * x
+            denoised = denoised_next
+            #x = reverse_weight * x_reverse_new + (1-reverse_weight) * x
+            
 
         x = x_next
         
@@ -2219,13 +2354,30 @@ from .refined_exp_solver import _refined_exp_sosu_step_RF
 #under Apache 2 license
 @torch.no_grad()
 def sample_deis_sde(model, x, sigmas, extra_args=None, callback=None, disable=None, max_order=3, deis_mode='rhoab', step_type='res_a', denoised_type="1_2",
-                    momentums=None, etas=None, s_noises=None, noise_sampler_type="gaussian", noise_mode="hard", noise_scale=0.0, k=1.0, scale=0.1, alpha=None,):
+                    momentums=None, etas=None, s_noises=None, noise_sampler_type="gaussian", noise_mode="hard", noise_scale=0.0, k=1.0, scale=0.1, alpha=None,   
+                    latent_guide=None, latent_guide_weight=0.0, latent_guide_weights=None, mask=None):
 
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
     
     alpha = torch.zeros_like(sigmas) if alpha is None else alpha
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    
+    if isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST):
+        sigma_max = torch.full_like(sigma_max, 1.0)
+        sigma_min = torch.full_like(sigma_min, min(sigma_min.item(), 0.00001))
+        
+    if sigmas[-1] == 0.0:
+        sigmas[-1] = min(sigmas[-2]**2, 0.00001)
+
+    if mask is None:
+        mask = torch.ones_like(x)
+    else:
+        mask = mask.unsqueeze(1)
+        mask = mask.repeat(1, 16, 1, 1) 
+        mask = F.interpolate(mask, size=(x.shape[2], x.shape[3]), mode='bilinear', align_corners=False)
+        mask = mask.to(x.dtype).to(x.device)
+        
     seed = extra_args.get("seed", None) + 1
     noise_sampler = NOISE_GENERATOR_CLASSES.get(noise_sampler_type)(x=x, seed=seed, sigma_min=sigma_min, sigma_max=sigma_max)
     print("DEIS_SDE seed set to: ", seed)
@@ -2266,7 +2418,10 @@ def sample_deis_sde(model, x, sigmas, extra_args=None, callback=None, disable=No
             sigma_var = (-1 + torch.sqrt(1 + 4 * sigma)) / 2
             if sigma_next > sigma_var:
                 sigma_up, sigma_down, alpha_ratio = get_ancestral_step_RF_var(sigma, sigma_next, etas[i])
-                  
+        elif noise_mode == "exp": 
+            h = sigma_next.log().neg() - sigma.log().neg()
+            sigma_up, sigma_down, alpha_ratio = get_res4lyf_step_with_model(model, sigma, sigma_next, etas[i], torch.full_like(etas[i], 0.0), noise_mode, h)
+
 
             #sigma_up, sigma_down, alpha_ratio = get_scaled_ancestral_step_RF(sigma_next, etas[i], 1.1)
             #sigma_up = sigmas[i] * etas[i]
@@ -2281,6 +2436,13 @@ def sample_deis_sde(model, x, sigmas, extra_args=None, callback=None, disable=No
 
         if step_type == "simple": 
             denoised = model(x_cur, sigma * s_in, **extra_args)
+            
+            if latent_guide is not None:
+                lg_weight = latent_guide_weights[i] * sigma
+                #k2 = lg_weight*latent_guide + (1-lg_weight)*k2
+                hard_light_blend_1 = hard_light_blend(latent_guide, denoised)
+                denoised = denoised - lg_weight * sigma_next * denoised  + (lg_weight * sigma_next * hard_light_blend_1 * mask)
+            
             denoised = momentum_func(denoised, vel, sigmas[i], -momentums[i] / 2.0)
         elif step_type == "res_a":
             """x, denoised, denoised2, denoised1_2, vel, vel_2 = _refined_exp_sosu_step_RF_hard_deis(model, x_cur, sigma, sigma_next, sigmas[i+2], c2=0.5,eta=etas[i], noise_sampler=noise_sampler, s_noise=s_noises[i], noise_mode=noise_mode, ancestral_noise=True,
@@ -2494,7 +2656,9 @@ def sample_deis_sde_implicit(model, x, sigmas, extra_args=None, callback=None, d
             sigma_var = (-1 + torch.sqrt(1 + 4 * sigma)) / 2
             if sigma_next > sigma_var:
                 sigma_up, sigma_down, alpha_ratio = get_ancestral_step_RF_var(sigma, sigma_next, etas[i])
-                  
+        elif noise_mode == "exp": 
+            h = sigma_next.log().neg() - sigma.log().neg()
+            sigma_up, sigma_down, alpha_ratio = get_res4lyf_step_with_model(model, sigma, sigma_next, etas[i], torch.full_like(etas[i], 0.0), noise_mode, h)
 
             #sigma_up, sigma_down, alpha_ratio = get_scaled_ancestral_step_RF(sigma_next, etas[i], 1.1)
             #sigma_up = sigmas[i] * etas[i]
@@ -2539,6 +2703,7 @@ def sample_deis_sde_implicit(model, x, sigmas, extra_args=None, callback=None, d
             
         
         for iteration in range(iter):  
+            #denoised_new = model(x_next, sigma_next * s_in, **extra_args)
             denoised_new = model(x_next, sigma_down * s_in, **extra_args)
             denoised_new = momentum_func(denoised_new, vel, sigmas[i], -momentums[i] / 2.0)
             if callback is not None:
@@ -2566,6 +2731,7 @@ def sample_deis_sde_implicit(model, x, sigmas, extra_args=None, callback=None, d
             if error < tol:
                 print(f"Converged after {iteration + 1} iterations with error {error.item()}")
                 x_next = x_new
+                denoised = denoised_new
                 break
             
             if reverse_weight > 0.0:
@@ -2601,7 +2767,9 @@ def sample_deis_sde_implicit(model, x, sigmas, extra_args=None, callback=None, d
                 buffer_model.append(d_cur.detach())
             
         if sigma_next > 0 and etas[i] > 0:
-            noise = noise_sampler(sigma=sigma, sigma_next=sigma_next) * s_noises[i] * sigma_up   
+            noise = noise_sampler(sigma=sigma, sigma_next=sigma_next)
+            noise = (noise - noise.mean()) / noise.std()
+            noise = noise * s_noises[i] * sigma_up   
             x_next = x_next * alpha_ratio   +   noise                                            
             
         gc.collect() #necessary after every step to minimize OOM errors with flux dev
