@@ -454,9 +454,10 @@ class ReFluxPatcherAdvanced:
         #model.model.diffusion_model.Retrojector = Retrojector(model.model.diffusion_model.img_in, pinv_dtype=style_dtype, dtype=style_dtype)
         #model.model.diffusion_model.Retrojector2 = Retrojector(model.model.diffusion_model.double_blocks[17].img_attn.qkv, pinv_dtype=style_dtype, dtype=style_dtype)
         
-        dct_64_3072   = make_synthetic_linear(in_dim=64,   out_dim=3072*6)
-        dct_3072_9216 = make_synthetic_linear(in_dim=3072, out_dim=3072*6)
-        dct_9216_2    = make_synthetic_linear(in_dim=9216, out_dim=9216*2)
+        dct_64_3072   = make_synthetic_linear(in_dim=64,   out_dim=3072)
+        # dct_64_3072   = make_synthetic_linear(in_dim=64,   out_dim=3072*6)
+        # dct_3072_9216 = make_synthetic_linear(in_dim=3072, out_dim=3072*6)
+        # dct_9216_2    = make_synthetic_linear(in_dim=9216, out_dim=9216*2)
         
         #dct_64_3072   = make_synthetic_linear(in_dim=64,   out_dim=3072)
         #dct_3072_9216 = make_synthetic_linear(in_dim=3072, out_dim=3072)
