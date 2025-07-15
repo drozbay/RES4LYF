@@ -316,6 +316,111 @@ class ReSingleStreamBlockNoMask(ReSingleStreamBlock):
     def forward(self, c, mask=None):
         return super().forward(c, mask=None)
 
+
+import torch
+import torch.nn as nn
+import numpy as np
+from scipy.fftpack import dct
+
+def make_dct_proj_scipy(in_dim=3072, expansion=3):
+    identity_np = np.eye(in_dim)
+    base_np = dct(identity_np, norm='ortho', axis=0)
+    base = torch.from_numpy(base_np).float()
+    blocks = [base * (i + 1) for i in range(expansion)]
+    W = torch.cat(blocks, dim=0)  # [9216, 3072]
+    return W
+
+def make_synthetic_linear_scipy(in_dim=3072, out_dim=9216, bias_type='zero'):
+    linear = nn.Linear(in_dim, out_dim, bias=True)
+    with torch.no_grad():
+        W = make_dct_proj(in_dim, expansion=out_dim // in_dim)  # [9216, 3072]
+        linear.weight.copy_(W)
+
+        if bias_type == 'zero':
+            linear.bias.zero_()
+        elif bias_type == 'ramp':
+            linear.bias.copy_(torch.linspace(-1, 1, out_dim))
+        elif bias_type == 'sine':
+            linear.bias.copy_(torch.sin(torch.linspace(0, 3.1415 * 10, out_dim)))
+        else:
+            raise ValueError(f"Unknown bias_type: {bias_type}")
+    
+    return linear
+
+import torch
+import torch.nn as nn
+import torch_dct as dct
+
+def make_dct_proj(in_dim=3072, expansion=3):
+    """
+    Creates a DCT-based projection matrix using type-II DCT basis
+    """
+    identity = torch.eye(in_dim)
+    base = dct.dct(identity, norm='ortho')  # [in_dim, in_dim]
+
+    # Stack multiple copies with increasing frequency emphasis
+    blocks = [base * (i + 1) for i in range(expansion)]
+    W = torch.cat(blocks, dim=0)  # [in_dim * expansion, in_dim]
+    return W
+
+def make_synthetic_linear(in_dim=3072, out_dim=9216, bias_type='zero'):
+    """
+    Creates a synthetic nn.Linear using DCT-projected weights.
+    """
+    linear = nn.Linear(in_dim, out_dim, bias=True)
+    with torch.no_grad():
+        W = make_dct_proj(in_dim, expansion=out_dim // in_dim)
+        linear.weight.copy_(W)
+
+        if bias_type == 'zero':
+            linear.bias.zero_()
+        elif bias_type == 'ramp':
+            linear.bias.copy_(torch.linspace(-1, 1, out_dim))
+        elif bias_type == 'sine':
+            linear.bias.copy_(torch.sin(torch.linspace(0, 3.1415 * 10, out_dim)))
+        else:
+            raise ValueError(f"Unknown bias_type: {bias_type}")
+
+    return linear
+
+
+
+
+import pywt
+import numpy as np
+
+def make_wavelet_proj(in_dim=3072, expansion=3, wavelet='haar'):
+    base = []
+    for i in range(in_dim):
+        signal = np.zeros(in_dim)
+        signal[i] = 1.0
+        coeffs = pywt.wavedec(signal, wavelet=wavelet, level=None)
+        wavelet_vec = np.concatenate(coeffs)
+        base.append(wavelet_vec[:in_dim])  # Truncate/pad to in_dim if needed
+    base = torch.from_numpy(np.stack(base)).float()  # [in_dim, in_dim]
+
+    blocks = [base * (i + 1) for i in range(expansion)]
+    W = torch.cat(blocks, dim=0)  # [in_dim * expansion, in_dim]
+    return W  # [9216, 3072]
+
+def make_linear_wavelet(in_dim=3072, out_dim=9216, bias_type='zero'):
+    linear = nn.Linear(in_dim, out_dim, bias=True)
+    with torch.no_grad():
+        W = make_wavelet_proj(in_dim, expansion=out_dim // in_dim)  # [9216, 3072]
+        linear.weight.copy_(W)
+
+        if bias_type == 'zero':
+            linear.bias.zero_()
+        elif bias_type == 'ramp':
+            linear.bias.copy_(torch.linspace(-1, 1, out_dim))
+        elif bias_type == 'sine':
+            linear.bias.copy_(torch.sin(torch.linspace(0, 3.1415 * 10, out_dim)))
+        else:
+            raise ValueError(f"Unknown bias_type: {bias_type}")
+    
+    return linear
+
+
 class ReFluxPatcherAdvanced:
     @classmethod
     def INPUT_TYPES(s):
@@ -346,7 +451,28 @@ class ReFluxPatcherAdvanced:
         model.model.diffusion_model.adain_pw_cache = None
         
         model.model.diffusion_model.StyleWCT = StyleWCT()
-        model.model.diffusion_model.Retrojector = Retrojector(model.model.diffusion_model.img_in, pinv_dtype=style_dtype, dtype=style_dtype)
+        #model.model.diffusion_model.Retrojector = Retrojector(model.model.diffusion_model.img_in, pinv_dtype=style_dtype, dtype=style_dtype)
+        #model.model.diffusion_model.Retrojector2 = Retrojector(model.model.diffusion_model.double_blocks[17].img_attn.qkv, pinv_dtype=style_dtype, dtype=style_dtype)
+        
+        dct_64_3072   = make_synthetic_linear(in_dim=64,   out_dim=3072*6)
+        dct_3072_9216 = make_synthetic_linear(in_dim=3072, out_dim=3072*6)
+        dct_9216_2    = make_synthetic_linear(in_dim=9216, out_dim=9216*2)
+        
+        #dct_64_3072   = make_synthetic_linear(in_dim=64,   out_dim=3072)
+        #dct_3072_9216 = make_synthetic_linear(in_dim=3072, out_dim=3072)
+        #dct_9216_2    = make_synthetic_linear(in_dim=9216, out_dim=9216)
+        
+        #dct_64_3072   = make_linear_wavelet(in_dim=64,   out_dim=3072)
+        #dct_3072_9216 = make_linear_wavelet(in_dim=3072, out_dim=3072*7)
+        
+        model.model.diffusion_model.Retrojector  = Retrojector(dct_64_3072,   pinv_dtype=style_dtype, dtype=torch.float32)
+        
+                
+        model.model.diffusion_model.Retrojector2 = model.model.diffusion_model.Retrojector
+        model.model.diffusion_model.Retrojector3 = model.model.diffusion_model.Retrojector
+        
+        #model.model.diffusion_model.Retrojector2 = Retrojector(dct_3072_9216, pinv_dtype=style_dtype, dtype=torch.bfloat16)
+        #model.model.diffusion_model.Retrojector3 = Retrojector(dct_9216_2, pinv_dtype=torch.float32, dtype=torch.bfloat16)
         
         if (enable or force) and model.model.diffusion_model.__class__ == Flux:
             m = model.clone()
@@ -358,6 +484,8 @@ class ReFluxPatcherAdvanced:
                     block.__class__ = ReDoubleStreamBlock
                 else:
                     block.__class__ = ReDoubleStreamBlockNoMask
+                block.Retrojector2 = model.model.diffusion_model.Retrojector2
+                block.Retrojector3 = model.model.diffusion_model.Retrojector3
                 block.idx       = i
 
             for i, block in enumerate(m.model.diffusion_model.single_blocks):
@@ -365,6 +493,8 @@ class ReFluxPatcherAdvanced:
                     block.__class__ = ReSingleStreamBlock
                 else:
                     block.__class__ = ReSingleStreamBlockNoMask
+                block.Retrojector2 = model.model.diffusion_model.Retrojector2
+                block.Retrojector3 = model.model.diffusion_model.Retrojector3
                 block.idx       = i
                 
         

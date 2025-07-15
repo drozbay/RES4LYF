@@ -170,6 +170,13 @@ class DoubleStreamBlock(nn.Module):
         
         ### ATTN ###
         img_qkv             = self.img_attn.qkv(img_norm)
+        img_qkv = style_block.img.ATTN(img_qkv, "qkv")
+        
+        #img_qkv_embed = self.Retrojector3.embed(img_qkv)
+        #img_qkv_embed = style_block.img.ATTN(img_qkv_embed, "qkv")
+        #img_qkv[0:1] = self.Retrojector3.unembed(img_qkv_embed[0:1])
+        
+        
         img_q, img_k, img_v = img_qkv.view(img_qkv.shape[0], img_qkv.shape[1], 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
         
         img_q = style_block.img.ATTN(img_q, "q_proj")
@@ -182,6 +189,7 @@ class DoubleStreamBlock(nn.Module):
         img_k = style_block.img.ATTN(img_k, "k_norm")
         
         txt_qkv             = self.txt_attn.qkv(txt_norm)
+        txt_qkv = style_block.img.ATTN(txt_qkv, "qkv")
         txt_q, txt_k, txt_v = txt_qkv.view(txt_qkv.shape[0], txt_qkv.shape[1], 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
         
         txt_q = style_block.txt.ATTN(txt_q, "q_proj")
@@ -198,6 +206,10 @@ class DoubleStreamBlock(nn.Module):
         
         txt_attn = attn[:,:txt_len]                         # 1, 768,3072
         img_attn = attn[:,txt_len:]  
+        
+        #img_attn_embed = self.Retrojector2.embed(img_attn)
+        #img_attn_embed = style_block.img.ATTN(img_attn_embed, "out")
+        #img_attn[0:1]  = self.Retrojector2.unembed(img_attn_embed[0:1])
         
         img_attn = style_block.img.ATTN(img_attn, "out")
         txt_attn = style_block.txt.ATTN(txt_attn, "out")
@@ -371,7 +383,12 @@ class SingleStreamBlock(nn.Module):      #attn.shape = 1,4608,3072       mlp.sha
         
         ### ATTN ###
         qkv, mlp = torch.split(self.linear1(img_norm), [3*self.hidden_size, self.mlp_hidden_dim], dim=-1)
-
+        qkv = style_block.img.ATTN(qkv, "qkv")
+        
+        #qkv_embed = self.Retrojector3.embed(qkv)
+        #qkv_embed = style_block.img.ATTN(qkv_embed, "qkv")
+        #qkv[0:1] = self.Retrojector3.unembed(qkv_embed[0:1])
+        
         q, k, v  = qkv.view(qkv.shape[0], qkv.shape[1], 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)     #q, k, v  = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
         
         q = style_block.img.ATTN(q, "q_proj")
@@ -387,7 +404,9 @@ class SingleStreamBlock(nn.Module):      #attn.shape = 1,4608,3072       mlp.sha
         attn = style_block.img.ATTN(attn, "out")
         ### ATTN ###
 
-
+        #attn_embed = self.Retrojector2.embed(attn)
+        #attn_embed = style_block.img.ATTN(attn_embed, "out")
+        #attn[0:1]  = self.Retrojector2.unembed(attn_embed[0:1])
 
         mlp = style_block.img(mlp, "ff_norm")
 

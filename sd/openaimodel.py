@@ -791,11 +791,11 @@ class ReUNetModel(nn.Module):
             elif StyleMMDiT.noise_mode == "bonanza":
                 x_init = torch.randn_like(x_init)
 
-            if y0_style_active:
-                if y0_style.sum() == 0.0 and y0_style.std() == 0.0:
-                    y0_style_noised = x.clone()
-                else:
-                    y0_style_noised = (y0_style + ISIGMA.to(y0_style) * x_init.expand_as(x).to(y0_style)) / ((ISIGMA.to(y0_style) ** 2 + 1) ** 0.5)    #x_init.expand(x.shape[0],-1,-1,-1).to(y0_style)) 
+            #if y0_style_active:
+            #    if y0_style.sum() == 0.0 and y0_style.std() == 0.0:
+            #        y0_style_noised = x.clone()
+            #    else:
+            #        y0_style_noised = (y0_style + ISIGMA.to(y0_style) * x_init.expand_as(x).to(y0_style)) / ((ISIGMA.to(y0_style) ** 2 + 1) ** 0.5)    #x_init.expand(x.shape[0],-1,-1,-1).to(y0_style)) 
 
             out_list = []
             for cond_iter in range(len(transformer_options['cond_or_uncond'])):
@@ -807,6 +807,11 @@ class ReUNetModel(nn.Module):
                 h, timesteps, context = clone_inputs(h_orig[cond_iter].unsqueeze(0), timesteps_orig[cond_iter].unsqueeze(0), context_orig[cond_iter].unsqueeze(0))
                 y = y_orig[cond_iter].unsqueeze(0).clone() if y_orig is not None else None
                 
+                if y0_style_active:
+                    if y0_style.sum() == 0.0 and y0_style.std() == 0.0:
+                        y0_style_noised = x.clone()
+                    else:
+                        y0_style_noised = (y0_style + ISIGMA.to(y0_style) * x_init.expand_as(h)[cond_iter].unsqueeze(0).to(y0_style)) / ((ISIGMA.to(y0_style) ** 2 + 1) ** 0.5)    #x_init.expand(x.shape[0],-1,-1,-1).to(y0_style)) 
 
                 mask, mask_up, mask_down, mask_down2 = None, None, None, None
                 if not UNCOND and 'AttnMask' in transformer_options: # and weight != 0:

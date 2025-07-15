@@ -810,10 +810,13 @@ class HDModel(nn.Module):
             elif StyleMMDiT.noise_mode == "bonanza":
                 x_init = torch.randn_like(x_init)
 
-            if y0_style_active:
-                SIGMA_ADAIN         = (SIGMA * EO("eps_adain_sigma_factor", 1.0)).to(y0_style)
-                y0_style_noised     = (1-SIGMA_ADAIN) * y0_style + SIGMA_ADAIN * x_init[0:1].to(y0_style)   #always only use first batch of noise to avoid broadcasting
-                img_y0_style_orig   = comfy.ldm.common_dit.pad_to_patch_size(y0_style_noised, (self.patch_size, self.patch_size))
+            #if y0_style_active:
+            #    if y0_style.sum() == 0.0 and y0_style.std() == 0.0:
+            #        y0_style_noised = x.clone()
+            #    else:
+            #        SIGMA_ADAIN         = (SIGMA * EO("eps_adain_sigma_factor", 1.0)).to(y0_style)
+            #        y0_style_noised     = (1-SIGMA_ADAIN) * y0_style + SIGMA_ADAIN * x_init.expand_as(x).to(y0_style)   #always only use first batch of noise to avoid broadcasting
+            #        img_y0_style_orig   = comfy.ldm.common_dit.pad_to_patch_size(y0_style_noised, (self.patch_size, self.patch_size))
 
             mask_zero = None
             
@@ -828,6 +831,15 @@ class HDModel(nn.Module):
                 bsz       = 1 if HDModel.RECON_MODE else bsz_style + 1
 
                 img, t, y, context, llama3 = clone_inputs(img_orig, t_orig, y_orig, context_orig, llama3_orig, index=cond_iter)
+                
+                if y0_style_active:
+                    if y0_style.sum() == 0.0 and y0_style.std() == 0.0:
+                        y0_style_noised = img.clone()
+                        img_y0_style_orig = y0_style_noised.clone()             ### accomodate cfg-like attention debauchery?
+                    else:
+                        SIGMA_ADAIN         = (SIGMA * EO("eps_adain_sigma_factor", 1.0)).to(y0_style)
+                        y0_style_noised     = (1-SIGMA_ADAIN) * y0_style + SIGMA_ADAIN * x_init.expand_as(img_orig)[cond_iter].unsqueeze(0).to(y0_style)   #always only use first batch of noise to avoid broadcasting
+                        img_y0_style_orig   = comfy.ldm.common_dit.pad_to_patch_size(y0_style_noised, (self.patch_size, self.patch_size))
                 
                 mask = None
                 if not UNCOND and 'AttnMask' in transformer_options: # and weight != 0:
@@ -899,7 +911,7 @@ class HDModel(nn.Module):
                         context = context.repeat(bsz_style + 1, 1, 1)
                         y = y.repeat(bsz_style + 1, 1)                   if y      is not None else None
                         llama3  =  llama3.repeat(bsz_style + 1, 1, 1, 1) if llama3 is not None else None
-                    img_y0_style = img_y0_style_orig.clone()
+                    img_y0_style = img_y0_style_orig[cond_iter:cond_iter+1].clone()
 
                 if mask is not None and not type(mask[0][0].item()) == bool:
                     mask = mask.to(x.dtype)

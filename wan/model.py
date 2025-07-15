@@ -1230,7 +1230,7 @@ class ReWanModel(torch.nn.Module):
                     AttnMask.attn_mask_recast(x.dtype)
                     context_tmp = RegContext.get().to(context.dtype)
                     clip_fea    = RegContext.get_clip_fea()
-                    clip_fea     = clip_fea.to(x.dtype) if clip_fea else None
+                    clip_fea    = clip_fea.to(x.dtype) if clip_fea else None
                     
                     A = context[i][None,...].clone()
                     B = context_tmp

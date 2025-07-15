@@ -1228,6 +1228,7 @@ class ClownRegionalConditioning_AB:
             
             if 'clip_vision_output' in conditioning_A[0][1]: # For WAN... dicey results
                 RegContext.add_region_clip_fea(conditioning_A[0][1]['clip_vision_output'].penultimate_hidden_states)
+            if 'clip_vision_output' in conditioning_B[0][1]: # For WAN... dicey results
                 RegContext.add_region_clip_fea(conditioning_B[0][1]['clip_vision_output'].penultimate_hidden_states)
             if 'unclip_conditioning' in conditioning_A[0][1]:
                 RegContext.add_region_clip_fea(conditioning_A[0][1]['unclip_conditioning'][0]['clip_vision_output'].image_embeds) #['penultimate_hidden_states'])
@@ -1472,6 +1473,19 @@ class ClownRegionalConditioning_ABC:
             #if 'pooled_output' in conditioning_A[0][1]:
             #    RegContext.pooled_output = conditioning_A[0][1]['pooled_output'] + conditioning_B[0][1]['pooled_output'] + conditioning_C[0][1]['pooled_output']
             
+            if 'clip_vision_output' in conditioning_A[0][1]: # For WAN... dicey results
+                RegContext.add_region_clip_fea(conditioning_A[0][1]['clip_vision_output'].penultimate_hidden_states)
+            if 'clip_vision_output' in conditioning_B[0][1]: # For WAN... dicey results
+                RegContext.add_region_clip_fea(conditioning_B[0][1]['clip_vision_output'].penultimate_hidden_states)
+            if 'clip_vision_output' in conditioning_C[0][1]: # For WAN... dicey results
+                RegContext.add_region_clip_fea(conditioning_C[0][1]['clip_vision_output'].penultimate_hidden_states)
+            if 'unclip_conditioning' in conditioning_A[0][1]:
+                RegContext.add_region_clip_fea(conditioning_A[0][1]['unclip_conditioning'][0]['clip_vision_output'].image_embeds) #['penultimate_hidden_states'])
+            if 'unclip_conditioning' in conditioning_B[0][1]:
+                RegContext.add_region_clip_fea(conditioning_B[0][1]['unclip_conditioning'][0]['clip_vision_output'].image_embeds) #['penultimate_hidden_states'])
+            if 'unclip_conditioning' in conditioning_C[0][1]:
+                RegContext.add_region_clip_fea(conditioning_C[0][1]['unclip_conditioning'][0]['clip_vision_output'].image_embeds) #['penultimate_hidden_states'])
+                
             conditioning[0][1]['AttnMask']   = AttnMask
             conditioning[0][1]['RegContext'] = RegContext
             
@@ -1752,14 +1766,14 @@ class ClownRegionalConditionings:
         
         conditioning = copy.deepcopy(cond_list[0])
         
-        if isinstance(model.model.model_config, comfy.supported_models.WAN21_T2V) or isinstance(model.model.model_config, comfy.supported_models.WAN21_I2V):
+        if isinstance(model.model.model_config, (comfy.supported_models.WAN21_T2V, comfy.supported_models.WAN21_I2V)):
             if model.model.diffusion_model.blocks[0].self_attn.winderz_type != "false":
                 AttnMask = CrossAttentionMask  (mask_type, edge_width_list=edge_width_list, use_self_attn_mask_list=use_self_attn_mask_list)
             else:
                 AttnMask = SplitAttentionMask  (mask_type, edge_width_list=edge_width_list, use_self_attn_mask_list=use_self_attn_mask_list)
         elif isinstance(model.model.model_config, comfy.supported_models.HiDream):
             AttnMask = FullAttentionMaskHiDream(mask_type, edge_width_list=edge_width_list, use_self_attn_mask_list=use_self_attn_mask_list)
-        elif isinstance(model.model.model_config, comfy.supported_models.SDXL) or isinstance(model.model.model_config, comfy.supported_models.SD15):
+        elif isinstance(model.model.model_config, (comfy.supported_models.SDXL, comfy.supported_models.SD15, comfy.supported_models.Stable_Cascade_C)):
             AttnMask = SplitAttentionMask(mask_type, edge_width_list=edge_width_list, use_self_attn_mask_list=use_self_attn_mask_list)
         else:
             AttnMask = FullAttentionMask       (mask_type, edge_width_list=edge_width_list, use_self_attn_mask_list=use_self_attn_mask_list)
@@ -1781,10 +1795,12 @@ class ClownRegionalConditionings:
             else:
                 AttnMask.add_region(cond[0][0],   mask)
             
-            RegContext.add_region(cond[0][0])
+            RegContext.add_region(cond[0][0], cond[0][1].get('pooled_output'))
             
             if 'clip_vision_output' in cond[0][1]: # For WAN... dicey results
                 RegContext.add_region_clip_fea(cond[0][1]['clip_vision_output'].penultimate_hidden_states)
+            if 'unclip_conditioning' in cond[0][1]:
+                RegContext.add_region_clip_fea(cond[0][1]['unclip_conditioning'][0]['clip_vision_output'].image_embeds) #['penultimate_hidden_states'])
             
         conditioning[0][1]['AttnMask']   = AttnMask
         conditioning[0][1]['RegContext'] = RegContext

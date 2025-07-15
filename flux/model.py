@@ -321,7 +321,28 @@ class ReFlux(Flux):
         StyleMMDiT = transformer_options.get('StyleMMDiT', StyleMMDiT_Model())        
         StyleMMDiT.set_len(h_len, w_len, img_slice, txt_slice, HEADS=HEADS)
         StyleMMDiT.Retrojector = self.Retrojector if hasattr(self, "Retrojector") else None
+        StyleMMDiT.Retrojector2 = self.Retrojector2 if hasattr(self, "Retrojector2") else None
         transformer_options['StyleMMDiT'] = None
+        
+        StyleMMDiT.FV = FluxVec(self, y, t, guidance)
+        
+        #StyleMMDiT.time_in     = self.time_in
+        #StyleMMDiT.guidance_in = self.guidance_in
+        #StyleMMDiT.vector_in   = self.vector_in
+        #StyleMMDiT.params.vec_in_dim = self.params.vec_in_dim
+        #StyleMMDiT.guidance = guidance
+        #StyleMMDiT.y = y
+        #StyleMMDiT.t_min = torch.full_like(t, 0.0002284857787020292)
+        #StyleMMDiT.img_mod = self.double_blocks[0].img_mod
+        
+        StyleMMDiT.energy_band0 = EO("energy_band0", 0.4)
+        StyleMMDiT.energy_band1 = EO("energy_band1", 0.6)
+        for block in StyleMMDiT.double_blocks:
+            block.img.energy_band0 = EO("energy_band0", 0.4)
+            block.img.energy_band1 = EO("energy_band1", 0.6)
+        for block in StyleMMDiT.single_blocks:
+            block.img.energy_band0 = EO("energy_band0", 0.4)
+            block.img.energy_band1 = EO("energy_band1", 0.6)
         
         x_tmp = transformer_options.get("x_tmp")
         if x_tmp is not None:
@@ -332,7 +353,7 @@ class ReFlux(Flux):
         
         y0_style, img_y0_style = None, None
 
-        img_orig, t_orig, y_orig, context_orig = clone_inputs(img, t, y, context)
+        img_orig, t_orig, y_orig, context_orig, guidance_orig = clone_inputs(img, t, y, context, guidance)
     
         weight    = -1 * transformer_options.get("regional_conditioning_weight", 0.0)
         floor     = -1 * transformer_options.get("regional_conditioning_floor",  0.0)
@@ -368,13 +389,14 @@ class ReFlux(Flux):
             elif StyleMMDiT.noise_mode == "bonanza":
                 x_init = torch.randn_like(x_init)
 
-            if y0_style_active:
-                if y0_style.sum() == 0.0 and y0_style.std() == 0.0:
-                    y0_style = img_orig.clone()
-                else:
-                    SIGMA_ADAIN         = (SIGMA * EO("eps_adain_sigma_factor", 1.0)).to(y0_style)
-                    y0_style_noised     = (1-SIGMA_ADAIN) * y0_style + SIGMA_ADAIN * x_init[0:1].to(y0_style)   #always only use first batch of noise to avoid broadcasting
-                    img_y0_style_orig   = comfy.ldm.common_dit.pad_to_patch_size(y0_style_noised, (self.patch_size, self.patch_size))
+            #if y0_style_active:
+            #    if y0_style.sum() == 0.0 and y0_style.std() == 0.0:
+            #        y0_style_noised = img_orig.clone()
+            #        img_y0_style_orig = y0_style_noised.clone()             ### accomodate cfg-like attention debauchery?
+            #    else:
+            #        SIGMA_ADAIN         = (SIGMA * EO("eps_adain_sigma_factor", 1.0)).to(y0_style)
+            #        y0_style_noised     = (1-SIGMA_ADAIN) * y0_style + SIGMA_ADAIN * x_init.expand_as(x).to(y0_style)   #always only use first batch of noise to avoid broadcasting
+            #        img_y0_style_orig   = comfy.ldm.common_dit.pad_to_patch_size(y0_style_noised, (self.patch_size, self.patch_size))
 
             mask_zero = None
             
@@ -388,7 +410,16 @@ class ReFlux(Flux):
                 bsz_style = y0_style.shape[0] if y0_style_active else 0
                 bsz       = 1 if RECON_MODE else bsz_style + 1
 
-                img, t, y, context = clone_inputs(img_orig, t_orig, y_orig, context_orig, index=cond_iter)
+                img, t, y, context, guidance = clone_inputs(img_orig, t_orig, y_orig, context_orig, guidance_orig, index=cond_iter)
+                
+                if y0_style_active:
+                    if y0_style.sum() == 0.0 and y0_style.std() == 0.0:
+                        y0_style_noised = img.clone()
+                        img_y0_style_orig = y0_style_noised.clone()             ### accomodate cfg-like attention debauchery?
+                    else:
+                        SIGMA_ADAIN         = (SIGMA * EO("eps_adain_sigma_factor", 1.0)).to(y0_style)
+                        y0_style_noised     = (1-SIGMA_ADAIN) * y0_style + SIGMA_ADAIN * x_init.expand_as(img_orig)[cond_iter].unsqueeze(0).to(y0_style)   #always only use first batch of noise to avoid broadcasting
+                        img_y0_style_orig   = comfy.ldm.common_dit.pad_to_patch_size(y0_style_noised, (self.patch_size, self.patch_size))
                 
                 mask = None
                 if not UNCOND and 'AttnMask' in transformer_options: # and weight != 0:
@@ -445,7 +476,7 @@ class ReFlux(Flux):
                     else:
                         context = context.repeat(bsz_style + 1, 1, 1)
                         y = y.repeat(bsz_style + 1, 1)                   if y      is not None else None
-                    img_y0_style = img_y0_style_orig.clone()
+                    img_y0_style = img_y0_style_orig[cond_iter:cond_iter+1].clone()
 
                 if mask is not None and not type(mask[0][0].item()) == bool:
                     mask = mask.to(x.dtype)
@@ -460,7 +491,7 @@ class ReFlux(Flux):
                         clip = clip + self.guidance_in(timestep_embedding(guidance, 256).to(x.dtype))
                 clip = clip + self.vector_in(y[:,:self.params.vec_in_dim])  #y.shape=1,768  y==all 0s
                 clip = clip.to(x)
-        
+
                 img_in_dtype = self.img_in.weight.data.dtype
                 if img_in_dtype not in {torch.bfloat16, torch.float16, torch.float32, torch.float64}:
                     img_in_dtype = x.dtype
@@ -476,7 +507,6 @@ class ReFlux(Flux):
                             h_offset = h
 
                         kontext, kontext_ids = self.process_img(ref, index=1, h_offset=h_offset, w_offset=w_offset)
-                        #kontext = self.img_in(kontext.to(img_in_dtype))
                         img, img_ids = self.process_img(x)
                         img = torch.cat([img, kontext], dim=1)
                         img_ids = torch.cat([img_ids, kontext_ids], dim=1)
@@ -494,7 +524,7 @@ class ReFlux(Flux):
                     StyleMMDiT.datashock_ref = ref_latents[0]
                 else:
                     
-                    img = rearrange(x, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=self.patch_size, pw=self.patch_size)
+                    img = rearrange(img, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=self.patch_size, pw=self.patch_size)  # was rearrange(x) for some reason...
                     img = self.img_in(img.to(img_in_dtype))
                     img_ids = self._get_img_ids(img, bsz, h_len, w_len, 0, h_len, 0, w_len)
 
@@ -503,11 +533,7 @@ class ReFlux(Flux):
                     img_y0_style = self.img_in(img_y0_style.to(img_in_dtype))  # hidden_states 1,4032,2560         for 1024x1024: -> 1,4096,2560      ,64 -> ,2560 (x40)
                     if ref_latents is not None:
                         img_kontext  = self.img_in(kontext.to(img_in_dtype))
-                        #img_base = rearrange(x, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=self.patch_size, pw=self.patch_size)
-                        #img_base = self.img_in(img_base.to(img_in_dtype))
-                        #img_ids = self._get_img_ids(img, bsz, h_len, w_len, 0, h_len, 0, w_len)
                         img_ids      = img_ids     .repeat(bsz,1,1)
-                        #img_y0_style = img_y0_style.repeat(1,bsz,1) # torch.cat([img, img_y0_style], dim=0)
                         img_y0_style = torch.cat([img_y0_style, img_kontext.repeat(bsz-1,1,1)], dim=1)
                         
                         StyleMMDiT.KONTEXT = 2
@@ -967,3 +993,80 @@ def clone_inputs(*args, index: int=None):
 
 
 
+
+class FluxVec:
+    def __init__(self, model, y, t, guidance):
+        self.time_in               = model.time_in
+        self.guidance_in           = model.guidance_in
+        self.vector_in             = model.vector_in
+        self.vec_in_dim            = model.params.vec_in_dim
+        self.guidance              = guidance
+        self.guidance_embed        = model.params.guidance_embed
+        self.y                     = y
+        self.t_min                 = torch.full_like(t, 0.0002284857787020292)
+        self.img_mod               = model.double_blocks[0].img_mod
+        self.img_norm1             = model.double_blocks[0].img_norm1
+        
+        x_dtype = torch.bfloat16
+        clip = self.time_in(FluxVec.timestep_embedding(self.t_min, 256).to(x_dtype))
+        if self.guidance_embed:
+            if guidance is None:
+                print("Guidance strength is none, not using distilled guidance.")
+            else:
+                clip = clip + self.guidance_in(timestep_embedding(guidance, 256).to(x_dtype))
+        clip = clip + self.vector_in(y[:,:self.vec_in_dim])  #y.shape=1,768  y==all 0s
+        self.vec = clip.to(x_dtype)
+        
+        self.img_mod1, _  = self.img_mod(self.vec)
+        
+        
+    
+    @staticmethod
+    def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 1000.0):
+        """
+        Create sinusoidal timestep embeddings.
+        :param t: a 1-D Tensor of N indices, one per batch element. 
+                        These may be fractional.
+        :param dim: the dimension of the output.
+        :param max_period: controls the minimum frequency of the embeddings.
+        :return: an (N, D) Tensor of positional embeddings.
+        """
+        t = time_factor * t
+        half = dim // 2
+        freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32, device=t.device) / half)
+
+        args = t[:, None].float() * freqs[None]
+        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        if dim % 2:
+            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+        if torch.is_floating_point(t):
+            embedding = embedding.to(t)
+        return embedding
+
+    def __call__(self):
+        pass
+    
+    def get_vec(self):
+        return self.vec
+
+    def mod(self, img):
+        return img * (1+self.img_mod1.scale.to(img)) + self.img_mod1.shift.to(img)
+    
+    def unmod(self, img):
+        return (img - self.img_mod1.shift.to(img)) / (1+self.img_mod1.scale.to(img) + 1e-6)
+    
+    @staticmethod
+    def norm(img):
+        return (img - img.mean(dim=-1, keepdim=True)) / (img.std(dim=-1, keepdim=True, unbiased=False) + 1e-06)
+        #return self.img_norm1(img)
+    
+    @staticmethod
+    def unnorm(img, img_ref):
+        #img_norm = self.norm(img)
+        #img = (img - img.mean(dim=-1, keepdim=True)) / (img.std(dim=-1, keepdim=True, unbiased=False) + 1e-06)
+        img = FluxVec.norm(img)
+        return img * img_ref.std(dim=-1, keepdim=True, unbiased=False) + img_ref.mean(dim=-1, keepdim=True)
+    
+    
+    
+    

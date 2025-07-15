@@ -10,7 +10,8 @@ from einops import rearrange
 import copy
 import comfy
 
-
+from torch_dct import dct, idct
+from torch_dct import dct_2d, idct_2d  # requires torch_dct >= 0.1.5
 from .latents import gaussian_blur_2d, median_blur_2d
 
 # WIP... not yet in use...
@@ -246,22 +247,29 @@ class StyleWCT:
         cov = (f_s_centered.T.double() @ f_s_centered.double()) / (f_s_centered.size(0) - 1)
 
         if self.use_svd:
-            U_svd, S_svd, Vh_svd = torch.linalg.svd(cov + 1e-5 * torch.eye(cov.size(0), dtype=cov.dtype, device=cov.device))
-            S_eig = S_svd
-            U_eig = U_svd
+            cov = cov.to(torch.float32)
+            U_svd, S_svd, Vh_svd = torch.linalg.svd(cov)
+            #U_svd, S_svd, Vh_svd = torch.linalg.svd(cov + 1e-5 * torch.eye(cov.size(0), dtype=cov.dtype, device=cov.device))
+            S_eig = S_svd.to(torch.float64)
+            U_eig = U_svd.to(torch.float64)
         else:
-            S_eig, U_eig = torch.linalg.eigh(cov + 1e-5 * torch.eye(cov.size(0), dtype=cov.dtype, device=cov.device))
+            cov = cov + 1e-5 * torch.eye(cov.size(0), dtype=cov.dtype, device=cov.device)
+            #cov = cov.to(torch.float32)
+            #S_eig, U_eig = torch.linalg.eigh(cov + 1e-4 * torch.eye(cov.size(0), dtype=cov.dtype, device=cov.device))
+            S_eig, U_eig = torch.linalg.eigh(cov)
+            S_eig = S_eig.to(torch.float64)
+            U_eig = U_eig.to(torch.float64)
         
         if set:
             S_eig_root = S_eig.clamp(min=0).sqrt() # eigenvalues -> singular values
         else:
             S_eig_root = S_eig.clamp(min=0).rsqrt() # inverse square root
         
-        whiten = U_eig @ torch.diag(S_eig_root) @ U_eig.T
+        whiten = U_eig @ torch.diag(S_eig_root) @ U_eig.T    # eigenvector @ diagonal eigenvalues @ eigenvectors.T
         return whiten.to(f_s_centered)
 
     def set(self, y0_adain_embed: torch.Tensor, spatial_shape=None):
-        if self.y0_adain_embed is None or self.y0_adain_embed.shape != y0_adain_embed.shape or torch.norm(self.y0_adain_embed - y0_adain_embed) > 0:
+        if self.y0_color is None or (self.y0_adain_embed is None or self.y0_adain_embed.shape != y0_adain_embed.shape or torch.norm(self.y0_adain_embed - y0_adain_embed) > 0):
             self.y0_adain_embed = y0_adain_embed.clone()
             if spatial_shape is not None:
                 self.spatial_shape = spatial_shape
@@ -287,6 +295,405 @@ class StyleWCT:
             
         return denoised_embed
 
+
+class StyleWCT_barfalotz:
+    def __init__(self, dtype=torch.float32):
+        self.dtype = dtype
+        self.mu_s = None
+        self.color_transform = None
+
+    def _compute_whitening(self, f_s_centered: torch.Tensor, set=False):
+        eps = 1e-5
+        cov = (f_s_centered.T @ f_s_centered) / (f_s_centered.size(0) - 1)
+
+        # Diagonal regularization
+        cov += eps * torch.eye(cov.size(0), dtype=cov.dtype, device=cov.device)
+
+        # Cholesky decomposition
+        try:
+            L = torch.linalg.cholesky(cov)
+        except RuntimeError as e:
+            raise RuntimeError("Cholesky failed, consider increasing eps or using SVD") from e
+
+        if set:
+            # Coloring transform (square root of cov):  A @ L
+            transform = L
+        else:
+            # Whitening transform: A @ L⁻¹.T
+            L_inv = torch.cholesky_inverse(L)
+            transform = L_inv.T  # (L⁻¹).T
+
+        return transform.to(f_s_centered)
+
+    def _compute_coloring(self, f: torch.Tensor, eps=1e-5):
+        """
+        f: [B, N, C] — features already mean-centered
+        returns: [B, C, C] coloring matrices
+        """
+        B, N, C = f.shape
+        cov = torch.matmul(f.transpose(1, 2), f) / (N - 1)      # [B, C, C]
+        cov += eps * torch.eye(C, device=f.device, dtype=f.dtype).unsqueeze(0)
+
+        L = torch.linalg.cholesky(cov)                          # [B, C, C]
+        return L  # acts as "coloring" since white → color = L @ white
+
+    def set(self, y0_adain_embed: torch.Tensor):
+        """
+        y0_adain_embed: [B=1, N, C] — reference style features
+        """
+        y0 = y0_adain_embed.to(self.dtype)
+        self.mu_s = y0.mean(dim=1, keepdim=True)               # [1, 1, C]
+        f_s_centered = y0 - self.mu_s                          # [1, N, C]
+        self.color_transform = self._compute_coloring(f_s_centered)
+
+    def get(self, denoised_embed: torch.Tensor):
+        """
+        denoised_embed: [B, N, C] — content features to transform
+        returns: styled features
+        """
+        x = denoised_embed.to(self.dtype)
+        mu_c = x.mean(dim=1, keepdim=True)                     # [B, 1, C]
+        x_centered = x - mu_c                                  # [B, N, C]
+
+        whiten = self._compute_whitening(x_centered)           # [B, C, C]
+        x_white = torch.matmul(x_centered, whiten.transpose(1, 2))  # [B, N, C]
+
+        B = x.shape[0]
+        color = self.color_transform.expand(B, -1, -1)         # [B, C, C]
+        x_colored = torch.matmul(x_white, color.transpose(1, 2))  # [B, N, C]
+        x_final = x_colored + self.mu_s                        # [B, N, C]
+
+        return x_final
+
+
+
+def matrix_inv_sqrt_newton(A, n_iter=6, eps=1e-5):
+    """
+    Approximate A^{-1/2} via Newton-Schulz on GPU in FP32.
+    A: [B,C,C] or [C,C], must be SPD.
+    returns: A_inv_sqrt of same shape & dtype.
+    """
+    # make sure it's float32
+    orig_dtype = A.dtype
+    A = A.to(torch.float32)
+    if A.dim() == 2:
+        A = A.unsqueeze(0)   # batch of 1
+
+    B, C, _ = A.shape
+    # normalize so ||A|| < 1
+    trace = A.diagonal(0, -2, -1).sum(-1).view(B,1,1)
+    Y = A / trace
+    I = torch.eye(C, device=A.device).unsqueeze(0).expand_as(A)
+    Z = torch.eye(C, device=A.device).unsqueeze(0).expand_as(A)
+
+    for _ in range(n_iter):
+        T  = 0.5 * (3.*I - Z @ Y)
+        Y  = Y @ T
+        Z  = T @ Z
+
+    # Z ≈ A^{-1/2} * sqrt(trace)
+    A_inv_sqrt = Z / torch.sqrt(trace)
+    if orig_dtype != torch.float32:
+        A_inv_sqrt = A_inv_sqrt.to(orig_dtype)
+    return A_inv_sqrt.squeeze(0) if orig_dtype!=torch.float32 and A.dim()==2 else A_inv_sqrt
+
+def matrix_sqrt_newton(A, n_iter=6, eps=1e-5):
+    """Similarly approximate A^{+1/2}."""
+    # same normalization trick, but return Y * sqrt(trace)
+    orig_dtype = A.dtype
+    A = A.to(torch.float32)
+    if A.dim() == 2:
+        A = A.unsqueeze(0)
+    B,C,_ = A.shape
+    trace = A.diagonal(0,-2,-1).sum(-1).view(B,1,1)
+    Y = A / trace
+    I = torch.eye(C, device=A.device).unsqueeze(0).expand_as(A)
+    Z = torch.eye(C, device=A.device).unsqueeze(0).expand_as(A)
+
+    for _ in range(n_iter):
+        T  = 0.5*(3.*I - Z @ Y)
+        Y  = T @ Y
+        Z  = Z @ T
+
+    A_sqrt = Y * torch.sqrt(trace)
+    if orig_dtype!=torch.float32:
+        A_sqrt = A_sqrt.to(orig_dtype)
+    return A_sqrt.squeeze(0) if orig_dtype!=torch.float32 and A.dim()==2 else A_sqrt
+
+
+
+
+
+
+
+
+class StyleWCT_Fast:
+    def __init__(self, dtype=torch.float32, use_svd=False, eps=1e-5):
+        """
+        dtype: do all the linear algebra in this torch dtype (FP64 by default)
+        use_svd: if True, use torch.linalg.svd instead of eigh
+        """
+        self.dtype    = dtype
+        self.use_svd  = use_svd
+        self.eps      = eps
+
+        # will be set in .set():
+        self.mu_s         = None   # [1,1,C]
+        self.color_tf     = None   # [C, C]
+
+    def set(self, y0_adain_embed: torch.Tensor, spatial_shape=None):
+        """
+        y0_adain_embed: [1, N, C]  (reference style features)
+        """
+        # --- (1) cast & mean-center style features ---
+        y0 = y0_adain_embed.to(self.dtype)            # [1,N,C]
+        mu_s = y0.mean(dim=1, keepdim=True)           # [1,1,C]
+        Xs = y0 - mu_s                                # [1,N,C]
+        N, C = Xs.shape[1], Xs.shape[2]
+
+        # --- (2) compute style covariance [C,C] ---
+        cov_s = (Xs.transpose(1,2) @ Xs)[0] / (N - 1) # [C,C]
+        cov_s = cov_s + self.eps * torch.eye(C, device=cov_s.device, dtype=cov_s.dtype)
+
+        # --- (3) eigendecompose or SVD ---
+        #if self.use_svd:
+        #    U, S, _ = torch.linalg.svd(cov_s)
+        #else:
+        #    S, U = torch.linalg.eigh(cov_s)
+
+        ## --- (4) build coloring transform = U · diag(√S) · Uᵀ ---
+        #S_sqrt = S.clamp(min=0).sqrt()
+        #self.color_tf = (U     @ torch.diag(S_sqrt) @ U.T)  # [C,C]
+        self.color_tf = matrix_sqrt_newton(cov_s.to(torch.float32), n_iter=6).to(cov_s.dtype)
+        self.mu_s     = mu_s                               # [1,1,C]
+
+
+    def get(self, denoised_embed: torch.Tensor):
+        """
+        denoised_embed: [B, N, C] (content features)
+        returns:         [B, N, C] style-transferred.
+        """
+        orig_dtype = denoised_embed.dtype
+        x = denoised_embed.to(self.dtype)       # [B,N,C]
+        B, N, C = x.shape
+
+        # --- (1) mean-center content ---
+        mu_c = x.mean(dim=1, keepdim=True)      # [B,1,C]
+        Xc   = x - mu_c                         # [B,N,C]
+
+        # --- (2) content covariance per batch [B,C,C] ---
+        cov_c = (Xc.transpose(1,2) @ Xc) / (N - 1)  # [B,C,C]
+        cov_c = cov_c + self.eps * torch.eye(C, device=cov_c.device, dtype=cov_c.dtype).unsqueeze(0)
+
+        # --- (3) batch-eigendecompose or SVD ---
+        """if self.use_svd:
+            # torch.linalg.svd currently doesn’t batch on GPU for all releases,
+            # but you could loop if needed. Here we fallback to eigh.
+            S_c, U_c = torch.linalg.eigh(cov_c)
+        else:
+            S_c, U_c = torch.linalg.eigh(cov_c)      # S_c:[B,C], U_c:[B,C,C]
+
+        # --- (4) build whitening transforms: U_c · diag(1/√S_c) · U_cᵀ ---
+        inv_sqrt = S_c.clamp(min=1e-12).rsqrt()      # [B,C]
+        # diag_embed will broadcast: result [B,C,C]
+        W_c = U_c @ torch.diag_embed(inv_sqrt) @ U_c.transpose(-2,-1)  # [B,C,C]"""
+        
+        W_c = matrix_inv_sqrt_newton(cov_c.to(torch.float32), n_iter=6)
+        W_c = W_c.to(cov_c.dtype)
+
+        # --- (5) whiten content ---
+        X_white = Xc @ W_c.transpose(-2,-1)         # [B,N,C]
+
+        # --- (6) color with style transform (broadcast style->batch) ---
+        C_tf = self.color_tf.to(X_white.dtype).expand(B,-1,-1)  # [B,C,C]
+        X_cs = X_white @ C_tf.transpose(-2,-1)       # [B,N,C]
+
+        # --- (7) add style mean back & cast to original dtype ---
+        out = X_cs + self.mu_s.to(X_cs.dtype)        # [B,N,C]
+        return out.to(orig_dtype)
+
+class StyleWCT_highnoise:
+    def __init__(self, dtype=torch.float32, base_eps=1e-5, max_tries=5):
+        self.dtype     = dtype
+        self.base_eps  = base_eps
+        self.max_tries = max_tries
+        self.mu_s            = None   # [1,1,C]
+        self.color_transform = None   # [C,C]
+
+    def set(self, y0_adain_embed: torch.Tensor, spatial_shape=None):
+        """
+        y0_adain_embed: [1, N, C]
+        """
+        style = y0_adain_embed.to(self.dtype)
+        # 1) style mean + center
+        self.mu_s = style.mean(dim=1, keepdim=True)           # [1,1,C]
+        f_s_centered = style - self.mu_s                      # [1,N,C]
+
+        # 2) style covariance [1,C,C]
+        N = f_s_centered.size(1)
+        cov_s = f_s_centered.transpose(1,2) @ f_s_centered / (N-1)
+        cov_s = cov_s + self.base_eps * torch.eye(cov_s.size(-1),
+                                                  device=cov_s.device,
+                                                  dtype=cov_s.dtype).unsqueeze(0)
+
+        # 3) Cholesky to get L so that cov_s = L @ Lᵀ
+        L = self._batch_cholesky(cov_s)                       # [1,C,C]
+        self.color_transform = L[0]                           # store [C,C]
+
+    def get(self, denoised_embed: torch.Tensor):
+        """
+        denoised_embed: [B, N, C]
+        returns: [B,N,C]
+        """
+        x = denoised_embed.to(self.dtype)
+        B,N,C = x.shape
+
+        # 1) content mean + center
+        mu_c = x.mean(dim=1, keepdim=True)                    # [B,1,C]
+        x_centered = x - mu_c                                 # [B,N,C]
+
+        # 2) content covariance [B,C,C]
+        cov_c = x_centered.transpose(1,2) @ x_centered / (N-1)
+        cov_c = cov_c + self.base_eps * torch.eye(C,
+                                                  device=cov_c.device,
+                                                  dtype=cov_c.dtype).unsqueeze(0)
+
+        # 3) get batched inverse‐Cholesky → whitening transform
+        L_c_inv = self._batch_cholesky_inverse(cov_c)         # [B,C,C]
+        whiten_tf = L_c_inv.transpose(1,2)                    # [B,C,C]
+
+        # 4) whiten
+        x_white = x_centered @ whiten_tf                      # [B,N,C]
+
+        # 5) color  (broadcasted)
+        color_tf = self.color_transform.unsqueeze(0).expand(B,-1,-1)  # [B,C,C]
+        x_colored = x_white @ color_tf.transpose(1,2)                # [B,N,C]
+
+        # 6) add style mean back
+        return x_colored + self.mu_s.to(x_colored.dtype)
+
+    def _batch_cholesky(self, A):
+        """
+        A: [B, C, C], assumed symmetric.
+        returns L: [B, C, C] so that A_b ≈ L_b @ L_bᵀ
+        """
+        B,C,_ = A.shape
+        L = torch.zeros_like(A)
+        I   = torch.eye(C, device=A.device, dtype=A.dtype)
+        for b in range(B):
+            eps = self.base_eps
+            for _ in range(self.max_tries):
+                try:
+                    L[b] = torch.linalg.cholesky(A[b] + eps*I)
+                    break
+                except RuntimeError:
+                    eps *= 10
+            else:
+                # fallback to eigh+sqrt if chol never succeeded
+                vals, vecs = torch.linalg.eigh(A[b] + eps*I)
+                vals = vals.clamp(min=0).sqrt()
+                L[b] = vecs @ torch.diag(vals) @ vecs.T
+        return L
+
+    def _batch_cholesky_inverse(self, A):
+        """
+        A: [B, C, C]
+        returns invL: [B, C, C]  where invL[b] = (L_b)⁻¹ from cholesky on A[b].
+        """
+        B,C,_ = A.shape
+        invL = torch.zeros_like(A)
+        I    = torch.eye(C, device=A.device, dtype=A.dtype)
+        for b in range(B):
+            eps = self.base_eps
+            for _ in range(self.max_tries):
+                try:
+                    Lb = torch.linalg.cholesky(A[b] + eps*I)
+                    invL[b] = torch.cholesky_inverse(Lb)
+                    break
+                except RuntimeError:
+                    eps *= 10
+            else:
+                # fallback via eigh if necessary
+                vals, vecs = torch.linalg.eigh(A[b] + eps*I)
+                inv_vals = vals.clamp(min=1e-12).rsqrt()
+                invL[b] = vecs @ torch.diag(inv_vals) @ vecs.T
+        return invL
+
+
+class StyleWCT_purenoise:
+    def __init__(self, dtype=torch.float32):
+        self.dtype = dtype
+        self.mu_s = None
+        self.color_transform = None
+
+    def _compute_whitening(self, x_centered: torch.Tensor):
+        """
+        Compute whitening matrix for centered content features.
+        x_centered: [B, N, C]
+        returns: [B, C, C] whitening matrix
+        """
+        B, N, C = x_centered.shape
+        eps = 1e-5
+        cov = torch.matmul(x_centered.transpose(1, 2), x_centered) / (N - 1)  # [B, C, C]
+        cov = cov + eps * torch.eye(C, dtype=self.dtype, device=x_centered.device).unsqueeze(0)
+
+        try:
+            L = torch.linalg.cholesky(cov)                     # [B, C, C]
+            L_inv = torch.cholesky_inverse(L)                  # [B, C, C]
+            whitening = L_inv.transpose(1, 2)                  # (L⁻¹).T
+        except RuntimeError:
+            # fallback to SVD
+            U, S, _ = torch.linalg.svd(cov)
+            whitening = U @ torch.diag_embed(S.rsqrt()) @ U.transpose(1, 2)
+
+        return whitening
+
+    def _compute_coloring(self, f_centered: torch.Tensor):
+        """
+        Compute coloring matrix from centered style features.
+        f_centered: [1, N, C]
+        returns: [1, C, C] coloring matrix
+        """
+        N, C = f_centered.shape[1:]
+        eps = 1e-5
+        cov = torch.matmul(f_centered.transpose(1, 2), f_centered) / (N - 1)  # [1, C, C]
+        cov = cov + eps * torch.eye(C, dtype=self.dtype, device=f_centered.device).unsqueeze(0)
+
+        try:
+            L = torch.linalg.cholesky(cov)  # [1, C, C]
+            return L
+        except RuntimeError:
+            # fallback to SVD
+            U, S, _ = torch.linalg.svd(cov)
+            return U @ torch.diag_embed(S.sqrt()) @ U.transpose(1, 2)
+
+    def set(self, y0_adain_embed: torch.Tensor):
+        """
+        y0_adain_embed: [1, N, C] — reference style features
+        """
+        y0 = y0_adain_embed.to(self.dtype)
+        self.mu_s = y0.mean(dim=1, keepdim=True)                    # [1, 1, C]
+        f_s_centered = y0 - self.mu_s                               # [1, N, C]
+        self.color_transform = self._compute_coloring(f_s_centered)  # [1, C, C]
+
+    def get(self, denoised_embed: torch.Tensor):
+        """
+        denoised_embed: [B, N, C] — content features to transform
+        returns: styled features matching style covariance and mean
+        """
+        x = denoised_embed.to(self.dtype)
+        mu_c = x.mean(dim=1, keepdim=True)                          # [B, 1, C]
+        x_centered = x - mu_c                                       # [B, N, C]
+
+        whitening = self._compute_whitening(x_centered)             # [B, C, C]
+        x_white = torch.matmul(x_centered, whitening.transpose(1, 2))  # [B, N, C]
+
+        B = x_white.shape[0]
+        color = self.color_transform.expand(B, -1, -1)              # [B, C, C]
+        x_colored = torch.matmul(x_white, color.transpose(1, 2))    # [B, N, C]
+
+        x_final = x_colored + self.mu_s                             # [B, N, C]
+        return x_final
 
 
 
@@ -325,7 +732,11 @@ class WaveletStyleWCT(StyleWCT):
                 styled = super(WaveletStyleWCT, self).get(flat)
                 return styled.contiguous().view(Bc, Cc, Hc, Wc)
 
-            LL_styled = process_band(LL)
+            #LL_styled = process_band(LL)
+            LL_styled = LL
+            #LH_styled = LH
+            #HL_styled = HL
+            #HH_styled = HH
 
             if stylize_highfreq:
                 LH_styled = process_band(LH)
@@ -415,7 +826,7 @@ class StyleFeatures:
 
 
 class Retrojector:  
-    def __init__(self, proj=None, patch_size=2, pinv_dtype=torch.float64, dtype=torch.float64, ENDO=False):
+    def __init__(self, proj=None, W_inv=None, patch_size=2, pinv_dtype=torch.float64, dtype=torch.float64, ENDO=False):
         self.proj       = proj
         self.patch_size = patch_size
         self.pinv_dtype = pinv_dtype
@@ -425,28 +836,34 @@ class Retrojector:
         self.CONV2D     = isinstance(proj, nn.Conv2d)
         self.CONV3D     = isinstance(proj, nn.Conv3d)
         self.ENDO       = ENDO
-        self.W          = proj.weight.data.to(dtype=pinv_dtype).cuda()
+        self.W          = proj.weight.data.to(dtype=dtype).cuda()
         
-        if self.LINEAR:
-            self.W_inv = torch.linalg.pinv(self.W.cuda())
-        elif self.CONV2D:
-            C_out, _, kH, kW = proj.weight.shape
-            W_flat = proj.weight.view(C_out, -1).to(dtype=pinv_dtype)
-            self.W_inv = torch.linalg.pinv(W_flat.cuda())
+        if W_inv is not None:
+            self.W_inv = W_inv.to(dtype=pinv_dtype).cuda()
+        else:
+            if self.LINEAR:
+                self.W_inv = torch.linalg.pinv(proj.weight.data.to(dtype=pinv_dtype).cuda()).to(dtype=dtype)
+            elif self.CONV2D:
+                C_out, _, kH, kW = proj.weight.shape
+                W_flat = proj.weight.data.view(C_out, -1).cuda().to(dtype=pinv_dtype)
+                self.W_inv = torch.linalg.pinv(W_flat)
+        
+        self.W_inv = self.W_inv.cuda().to(dtype)
         
         if proj.bias is None:
             if self.LINEAR:
                 bias_size = proj.out_features
             else:
                 bias_size = proj.out_channels
-            self.b = torch.zeros(bias_size, dtype=pinv_dtype, device=self.W_inv.device)
+            self.b = torch.zeros(bias_size, dtype=dtype, device=self.W_inv.device)
         else:
-            self.b = proj.bias.data.to(dtype=pinv_dtype).to(self.W_inv.device)
+            self.b = proj.bias.data.to(dtype=dtype).to(self.W_inv.device)
         
     def embed(self, img: torch.Tensor):
         self.h = img.shape[-2] // self.patch_size
         self.w = img.shape[-1] // self.patch_size
-        
+        if img.ndim == 3:
+            self.h, self.w = -1,-1
         img = comfy.ldm.common_dit.pad_to_patch_size(img, (self.patch_size, self.patch_size))
         
         if   self.CONV2D:
@@ -482,7 +899,7 @@ class Retrojector:
                 img = F.linear(img_embed.to(self.W), self.W, self.b)
             else:
                 img = F.linear(img_embed.to(self.b) - self.b, self.W_inv)
-            if img.ndim == 3:
+            if img.ndim == 3 and self.h > 0 and self.w > 0:
                 img = rearrange(img, "b (h w) (c ph pw) -> b c (h ph) (w pw)", h=self.h, w=self.w, ph=self.patch_size, pw=self.patch_size)
         
         return img.to(img_embed)
@@ -1080,6 +1497,7 @@ DEFAULT_BLOCK_WEIGHTS_MMDIT = {
 }
 
 DEFAULT_ATTN_WEIGHTS_MMDIT = {
+    "qkv": 0.0,
     "q_proj": 0.0,
     "k_proj": 0.0,
     "v_proj": 1.0,
@@ -1103,8 +1521,9 @@ class Stylizer:
     buffer = {}
     
     CLS_WCT = StyleWCT()
-    
     CLS_WCT2 = WaveletStyleWCT()
+    CLS_WCT_fast = StyleWCT_Fast()
+
     
     def __init__(self, dtype=torch.float64, device=torch.device("cuda")):
         self.dtype = dtype
@@ -1118,6 +1537,9 @@ class Stylizer:
         self.w_len   = 0
         self.h_len   = 0
         self.img_len = 0
+        
+        self.energy_band0 = 0.5
+        self.energy_band1 = 0.5
         
         self.IMG_1ST = True
         self.HEADS = 0
@@ -1213,7 +1635,7 @@ class Stylizer:
         if weight >= 0.0:
             return x
         length = x.shape[-2]
-        wr = int((length * (1 - (-weight))) // 2)
+        wr = int((length * (1 - (-weight))) // 2) 
         
         return torch.cat([x[...,:wr,:], x[...,-wr:,:]], dim=-2)
 
@@ -1222,7 +1644,7 @@ class Stylizer:
         if weight >= 0.0:
             return x
         length = x.shape[-2]
-        wr = int((length * (1 - (-weight))) // 2)
+        wr = int((length * (1 - (-weight))) // 2) 
         
         x[...,:wr,:]  = x_outer[...,:wr,:]
         x[...,-wr:,:] = x_outer[...,-wr:,:]
@@ -1237,6 +1659,9 @@ class Stylizer:
         if weights_all_zero:
             return x
         
+        #if attr in {"q_norm", "k_norm", "q_proj", "k_proj"}:
+        #    x = x[[1, 0]]
+        
         #self.HEADS=24
         #x_ndim = x.ndim
         #if x_ndim == 3:
@@ -1248,7 +1673,7 @@ class Stylizer:
         if HEAD_DIM == self.HEADS:
             B, HEAD_DIM, HW, C = x.shape
             x = x.reshape(B, HW, C*HEAD_DIM)
-            
+        
         if hasattr(self, "KONTEXT") and self.KONTEXT == 1:
             x = x.reshape(2, x.shape[1] // 2, x.shape[2])
         
@@ -1259,6 +1684,7 @@ class Stylizer:
             txt_slice = slice(None, 2 * self.txt_slice.stop)
         
         weights_all_one         = all(weight == 1.0           for weight in weight_list)
+        weights_all_same = all(weight == weight_list[0] for weight in weight_list)
         methods_all_scattersort = all(name   == "scattersort" for name   in self.method)
         masks_all_none = all(mask is None for mask in self.mask)
         
@@ -1268,15 +1694,19 @@ class Stylizer:
             buf['ref_sorted'], buf['ref_idx'] = x[1:].reshape(1, -1, x.shape[-1]).sort(dim=-2)
             buf['src'] = buf['ref_sorted'][:,::len(weight_list)].expand_as(buf['src_idx'])    #            interleave_stride = len(weight_list)
             
-            x[0:1] = x[0:1].scatter_(dim=-2, index=buf['src_idx'], src=buf['src'],)
-        
+            #x[0:1] = x[0:1].scatter_(dim=-2, index=buf['src_idx'], src=buf['src'],)
+            slc = Stylizer.middle_slice(buf['src'].shape[-2], weight_list[0]) 
+            
+            x[0:1] = x[0:1].scatter_(dim=-2, index=buf['src_idx'][...,slc,:], src=buf['src'][...,slc,:],)
         else:
             for i, (weight, mask) in enumerate(zip(weight_list, self.mask)):
                 if mask is not None:
                     x01 = x[0:1].clone()
-                slc = Stylizer.middle_slice(x.shape[-2], weight)
-                #slc = slice(None)
-                    
+                slc = Stylizer.middle_slice(x.shape[-2], abs(weight))
+                if weight < 0:
+                    #x_base = x.clone()
+                    x = x[[1, 0]]
+                
                 txt_method_name = self.method[i].removeprefix("tiled_")
                 txt_method = getattr(self, txt_method_name)
                 
@@ -1301,7 +1731,7 @@ class Stylizer:
                             #x[:,self.img_len:,:] = method(x[:,self.img_len:,:], idx=i+1)
                         if not "img" in apply_to and not "txt" in apply_to:
                             pass
-                    else:
+                    elif not "img" in apply_to:
                         x = method(x, idx=i+1, slc=slc)
                     if weight > 0 and weight < 1 and txt_method_name != "scattersort":
                         x = torch.lerp(x_clone, x, weight)
@@ -1313,6 +1743,15 @@ class Stylizer:
                     if ktx_slice is not None:
                         x[0:1,...,ktx_slice,:] = torch.lerp(x01[...,ktx_slice,:], x[0:1,...,ktx_slice,:], mask.view(1, -1, 1))  
                     #x[0:1,:self.img_len] = torch.lerp(x01[:,:self.img_len], x[0:1,:self.img_len], mask.view(1, -1, 1))
+                if weight < 0:
+                    x = x[[1, 0]]
+                #    if self.method[i] == "scattersort":
+                #        x = 2 * x_base - x
+                #    else:
+                #        x = x_base + abs(weight) * (x_base - x)
+
+        #if attr in {"q_norm", "k_norm", "q_proj", "k_proj"}:
+        #    x = x[[1, 0]]
         
         #if x_ndim == 3:
         #    return x.view(B,HW,C)
@@ -1324,16 +1763,286 @@ class Stylizer:
         else:
             return x
 
+    def WCT_fast(self, x, idx=1, *args, **kwargs):
+        Stylizer.CLS_WCT_fast.set(x[idx:idx+1])
+        x[0:1] = Stylizer.CLS_WCT_fast.get(x[0:1])
+        return x
+
+    def WCT_batch(self, x, idx=1, *args, **kwargs):
+        x_dtype = x.dtype
+        
+        x = x.to(torch.float64)
+        x_norm = x - x.mean(dim=-2, keepdim=True)
+        
+        cov = (x_norm.transpose(-2,-1) @ x_norm) / (x_norm.size(-2) - 1)
+        
+        cov = cov.to(torch.float32)
+        U, S, Vh = torch.linalg.svd(cov)
+        U, S, Vh = U.to(torch.float64), S.to(torch.float64), Vh
+        
+        S_root_content = torch.diag(S[0]  .clamp(min=0).rsqrt()).unsqueeze(0)
+        S_root_style   = torch.diag(S[idx].clamp(min=0). sqrt()).unsqueeze(0)
+        
+        S_root = torch.cat([S_root_content, S_root_style], dim=0)
+        
+        whiten = U @ S_root @ U.transpose(-2,-1)
+        
+        f_c_whitened = x_norm[0:1] @ whiten[0:1].transpose(-2,-1)
+        f_cs         = f_c_whitened @ whiten[idx:idx+1].transpose(-2,-1) + x.mean(dim=-2, keepdim=True)[idx:idx+1]
+        
+        x[0:1] = f_cs.to(x_dtype)
+        
+        return x.to(x_dtype)
+    
+    def WCT_batch_eigh(self, x, idx=1, *args, **kwargs):
+        x_dtype = x.dtype
+        
+        x = x.to(torch.float64)
+        x_norm = x  - x.mean(dim=-2, keepdim=True)
+        
+        cov = (x_norm.transpose(-2,-1) @ x_norm) / (x_norm.size(-2) - 1)
+        cov = cov + 1e-4 * torch.eye(cov.size(-1), dtype=cov.dtype, device=cov.device)
+        
+        cov = cov.to(torch.float32)
+        S, U = torch.linalg.eigh(cov)
+        S, U = S.to(torch.float64), U.to(torch.float64)
+        
+        S_root_content = torch.diag(S[0]  .clamp(min=0).rsqrt()).unsqueeze(0)
+        S_root_style   = torch.diag(S[idx].clamp(min=0). sqrt()).unsqueeze(0)
+        
+        S_root = torch.cat([S_root_content, S_root_style], dim=0)
+        
+        whiten = U @ S_root @ U.transpose(-2,-1)
+        
+        f_c_whitened = x_norm[0:1] @ whiten[0:1].transpose(-2,-1)
+        f_cs         = f_c_whitened @ whiten[idx:idx+1].transpose(-2,-1) + x.mean(dim=-2, keepdim=True)[idx:idx+1]
+        
+        x[0:1] = f_cs.to(x_dtype)
+        
+        return x.to(x_dtype)
+
+    def WCT_batch_cholesky(self, x, idx=1, eps=1e-4, *args, **kwargs):
+        x_dtype = x.dtype
+        x = x.to(torch.float64)
+        B, N, C = x.shape
+
+        x_centered = x - x.mean(dim=-2, keepdim=True)
+        cov = (x_centered.transpose(-2, -1) @ x_centered) / (N - 1)
+        cov = cov + eps * torch.eye(C, device=x.device, dtype=x.dtype)
+
+        # Compute Cholesky factor
+        try:
+            L, info = torch.linalg.cholesky_ex(cov.float()) # [B, C, C]
+            L = L.to(cov)
+        except RuntimeError:
+            print("Cholesky failed — covariance not positive definite")
+            return x
+
+        # Whitening for content
+        L_content = L[0]
+        #with torch.autocast(device_type='cuda', dtype=torch.float32):
+        #    x0_white = torch.linalg.solve_triangular(L_content, x_centered[0].transpose(-2,-1), upper=False).transpose(-2,-1)
+
+        x0_white = torch.linalg.solve_triangular(L_content.float(), x_centered[0].transpose(-2,-1).float(), upper=False).transpose(-2,-1).to(L_content)
+        # Coloring for style
+        L_style = L[idx]
+        x_colored = (x0_white @ L_style.transpose(-2,-1))
+
+        # Add mean back
+        x_mean = x.mean(dim=-2, keepdim=True)[idx]
+        x_result = x_colored + x_mean
+
+        x[0] = x_result.to(x_dtype)
+        return x.to(x_dtype)
+
+    def WCT_batch_svd_direct_aoeu(self, x: torch.Tensor, idx=1, *args, **kwargs):
+        """
+        WCT using SVD applied directly to raw feature matrices (no covariance matrix).
+        x: Tensor of shape [B, N, C] where N = spatial tokens, C = feature dim.
+        """
+        x_dtype = x.dtype
+        x = x.to(torch.float32)
+
+        # Center features per sample
+        x_mean = x.mean(dim=-2, keepdim=True)  # [B, 1, C]
+        x_centered = x - x_mean                # [B, N, C]
+
+        # Get content and style samples
+        f_c = x_centered[0]      # [N, C]
+        f_s = x_centered[idx]    # [N, C]
+
+        # SVD of content and style
+        Uc, Sc, Vhc = torch.linalg.svd(f_c, full_matrices=False)
+        Us, Ss, Vhs = torch.linalg.svd(f_s, full_matrices=False)
+
+        # Clamp singular values to avoid explosion/division by zero
+        eps = 1e-5
+        Sc_inv = Sc.clamp(min=eps).reciprocal()
+        Ss_sqrt = Ss.clamp(min=eps).sqrt()
+
+        # Whitening
+        f_c_white = (f_c @ Vhc.T) * Sc_inv.unsqueeze(0)  # [N, C]
+
+        # Coloring
+        f_c_recolored = f_c_white * Ss_sqrt.unsqueeze(0) @ Vhs  # [N, C]
+
+        # Recenter to style mean
+        f_final = f_c_recolored + x_mean[idx]
+
+        # Write result back into x[0]
+        x[0] = f_final.to(x_dtype)
+
+        return x.to(x_dtype)
+
+    def WCT_batch_svd_direct(self, x: torch.Tensor, idx=1, *args, **kwargs):
+        x_dtype = x.dtype
+        x = x.to(torch.float32)
+        eps = 1e-5
+        rank = 64  # try smaller if still unstable
+
+        # Center
+        x_mean = x.mean(dim=-2, keepdim=True)
+        x_centered = x - x_mean
+
+        f_c = x_centered[0]
+        f_s = x_centered[idx]
+
+        # SVD
+        Uc, Sc, Vhc = torch.linalg.svd(f_c, full_matrices=False)
+        Us, Ss, Vhs = torch.linalg.svd(f_s, full_matrices=False)
+
+        # Truncate
+        Vhc = Vhc[:rank]
+        Sc = Sc[:rank]
+        Vhs = Vhs[:rank]
+        Ss = Ss[:rank]
+
+        # Whitening: safe division
+        f_c_proj = f_c @ Vhc.T
+        f_c_white = f_c_proj / Sc.clamp(min=eps).unsqueeze(0)
+
+        # Recoloring
+        f_c_recolored = (f_c_white * Ss.sqrt().clamp(min=eps).unsqueeze(0)) @ Vhs
+
+        # Add style mean
+        f_final = f_c_recolored + x_mean[idx]
+
+        x[0] = f_final.to(x_dtype)
+        return x.to(x_dtype)
 
 
-    def WCT(self, x, idx=1):
+    def WCT_batch_lowrank(self, x, idx=1, rank=32, niter=1, *args, **kwargs):
+        x_dtype = x.dtype
+        x = x.to(torch.float64)
+        
+        # Center the batch
+        x_mean = x.mean(dim=-2, keepdim=True)
+        x_norm = x - x_mean
+
+        # Compute covariance matrix: [B, C, C]
+        cov = x_norm.transpose(-2, -1) @ x_norm / (x_norm.size(-2) - 1)
+        cov = cov.to(torch.float32)
+
+        # Apply low-rank SVD
+        U, S, Vh = torch.svd_lowrank(cov, q=rank, niter=niter)  # q = rank
+        U = U.to(torch.float64)
+        S = S.to(torch.float64)
+
+        # Whitening/coloring diagonal matrices
+        S_root_content = torch.diag(S[0].clamp(min=0).rsqrt()).unsqueeze(0)
+        S_root_style   = torch.diag(S[idx].clamp(min=0).sqrt()).unsqueeze(0)
+        S_root = torch.cat([S_root_content, S_root_style], dim=0)
+
+        # Whitening matrix (symmetric approx): [B, C, C]
+        whiten = U @ S_root @ U.transpose(-2, -1)
+
+        # Apply whitening and recoloring
+        f_c_whitened = x_norm[0:1] @ whiten[0:1].transpose(-2, -1)
+        f_cs = f_c_whitened @ whiten[idx:idx+1].transpose(-2, -1) + x_mean[idx:idx+1]
+
+        x[0:1] = f_cs.to(x_dtype)
+        return x.to(x_dtype)
+
+    def WCT_batch_ldl(self, x: torch.Tensor, idx=1, *args, **kwargs):
+        """
+        Approximate WCT using an LDLᵀ decomposition.
+        Expects x.shape == [2, N, C]: 0 = content, idx = style.
+        Returns x with x[0] replaced by whitened-&-recolored features.
+        """
+        # keep original dtype
+        orig_dtype = x.dtype
+
+        # do the linear algebra in higher precision
+        x64 = x.to(torch.float64)           # [B=2, N, C]
+        B, N, C = x64.shape
+        assert B >= 2, "need at least content + style"
+
+        # 1) center
+        mu    = x64.mean(dim=1, keepdim=True)     # [B,1,C]
+        Xc    = x64 - mu                          # [B,N,C]
+
+        # 2) covariance per sample
+        cov   = (Xc.transpose(1,2) @ Xc) / (N - 1)  # [B,C,C]
+        eps   = 1e-4
+        eye   = torch.eye(C, dtype=cov.dtype, device=cov.device)
+        cov  += eps * eye.unsqueeze(0)              # regularize
+
+        # 3) LDLᵀ factorization
+        #    LD: packed lower + D diagonal, pivots ignored for SPD
+        LD, pivots = torch.linalg.ldl_factor(cov)   # LD: [B,C,C]
+
+        # 4) unpack L and D
+        #    L = unit‐lower‐triangular part of LD
+        L = torch.tril(LD, diagonal=-1)             # strictly lower
+        L = L + eye.unsqueeze(0)                    # add ones on diag
+
+        #    D = diag(LD) → shape [B,C]
+        D = torch.diagonal(LD, dim1=-2, dim2=-1)    # [B,C]
+
+        # 5) build D^{-1/2} and D^{+1/2} as [B,C,C]
+        D_inv_sqrt = torch.diag_embed(D.clamp(min=1e-8).rsqrt())  # [B,C,C]
+        D_sqrt     = torch.diag_embed(D.clamp(min=0).sqrt())     # [B,C,C]
+
+        # 6) whitening and coloring transforms
+        #    W_c = L · D^{-1/2} · Lᵀ     for content
+        W_c = L @ D_inv_sqrt @ L.transpose(-2, -1)               # [B,C,C]
+        #    C_s = L · D^{+1/2} · Lᵀ     for style
+        C_s = L @ D_sqrt     @ L.transpose(-2, -1)               # [B,C,C]
+
+        # 7) apply to content slice (batch[0]) and style slice (batch[idx])
+        #    whiten content:
+        X_white = Xc[0:1] @ W_c[0:1].transpose(-2, -1)           # [1,N,C]
+        #    then recolor with style transform
+        X_cs    = X_white @    C_s[idx:idx+1].transpose(-2, -1)  # [1,N,C]
+
+        # 8) readd style mean and cast back
+        out = X_cs + mu[idx:idx+1]                              # [1,N,C]
+        x[0:1] = out.to(orig_dtype)
+
+        return x
+
+    def WCT(self, x, idx=1, *args, **kwargs):
+        Stylizer.CLS_WCT.use_svd = False
         Stylizer.CLS_WCT.set(x[idx:idx+1])
         x[0:1] = Stylizer.CLS_WCT.get(x[0:1])
         return x
     
-    def WCT2(self, x, idx=1):
+    def WCT_SVD(self, x, idx=1, *args, **kwargs):
+        Stylizer.CLS_WCT.use_svd = True
+        Stylizer.CLS_WCT.set(x[idx:idx+1])
+        x[0:1] = Stylizer.CLS_WCT.get(x[0:1])
+        return x
+    
+    def WCT2(self, x, idx=1, *args, **kwargs):
+        Stylizer.CLS_WCT2.use_svd = False
         Stylizer.CLS_WCT2.set(x[idx:idx+1], self.h_len, self.w_len)
-        x[0:1] = Stylizer.CLS_WCT2.get(x[0:1], self.h_len, self.w_len)
+        x[0:1] = Stylizer.CLS_WCT2.get(x[0:1].clone(), self.h_len, self.w_len)
+        return x
+    
+    def WCT2_SVD(self, x, idx=1, *args, **kwargs):
+        Stylizer.CLS_WCT2.use_svd = True
+        Stylizer.CLS_WCT2.set(x[idx:idx+1], self.h_len, self.w_len)
+        x[0:1] = Stylizer.CLS_WCT2.get(x[0:1].clone(), self.h_len, self.w_len)
         return x
 
     @staticmethod
@@ -1345,15 +2054,537 @@ class Stylizer:
         x.sub_(mean_c).div_(std_c).mul_(std_s).add_(mean_s)  # in-place chain
         return x
 
-    def AdaIN(self, x, idx=1, eps: float = 1e-7) -> torch.Tensor:
+    def AdaIN(self, x, idx=1, eps: float = 1e-7, *args, **kwargs) -> torch.Tensor:
         mean_c = x[0:1].mean(-2, keepdim=True)
         std_c  = x[0:1].std (-2, keepdim=True).add_(eps)  # in-place add
         mean_s = x[idx:idx+1].mean  (-2, keepdim=True)
         std_s  = x[idx:idx+1].std   (-2, keepdim=True).add_(eps)
         x[0:1].sub_(mean_c).div_(std_c).mul_(std_s).add_(mean_s)  # in-place chain
         return x
+    
+    #@staticmethod
+    def adain_bandwise_dct_all(self, x: torch.Tensor, idx=1, band='all', eps=1e-7, *args, **kwargs):
+        x = self.adain_bandwise_dct(x, idx, band=band, eps=eps)
+        #x = self.adain_bandwise_dct(x.transpose(-2,-1), idx, 'high', eps).transpose(-2,-1)
+        #x = self.adain_bandwise_dct(x.transpose(-2,-1), idx, band, eps).transpose(-2,-1)
+        return x
+        
+    #@staticmethod
+    def adain_bandwise_dct_low(self, x: torch.Tensor, idx=1, band='low', eps=1e-7, *args, **kwargs):
 
-    def injection(self, x:torch.Tensor, idx=1) -> torch.Tensor:
+        x = self.adain_bandwise_dct(x, idx, band=band, eps=eps)
+        #x = self.adain_bandwise_dct(x.transpose(-2,-1), idx, 'high', eps).transpose(-2,-1)
+
+        #x = self.adain_bandwise_dct(x.transpose(-2,-1), idx, band, eps).transpose(-2,-1)
+
+        return x
+            
+    #@staticmethod
+    def adain_bandwise_dct_mid(self, x: torch.Tensor, idx=1, band='mid', eps=1e-7, *args, **kwargs):
+
+        x = self.adain_bandwise_dct(x, idx, band=band, eps=eps)
+        #x = self.adain_bandwise_dct(x.transpose(-2,-1), idx, 'high', eps).transpose(-2,-1)
+        #x = self.adain_bandwise_dct(x.transpose(-2,-1), idx, band, eps).transpose(-2,-1)
+
+        return x
+        
+    #@staticmethod
+    def adain_bandwise_dct_high(self, x: torch.Tensor, idx=1, band='high', eps=1e-7, *args, **kwargs):
+        x = self.adain_bandwise_dct(x, idx, band=band, eps=eps)
+        #x = self.adain_bandwise_dct(x.transpose(-2,-1), idx, 'high', eps).transpose(-2,-1)
+
+        return x
+        
+        x_clone = x.clone()
+        x = self.adain_bandwise_dct(x, idx, band, eps)
+        
+        x[idx:idx+1] = x_clone[0:1]
+        x = self.adain_bandwise_dct2d(x, idx, band, eps)
+        
+        return x
+    
+    #@staticmethod  # decomp spatial then features
+    def adain_bandwise_dct(self, x: torch.Tensor, idx=1, band='low', eps=1e-7, *args, **kwargs):
+        """
+        x: [B, HW, C]  → we do 1D DCT over C (last dim) without specifying dim
+        Applies AdaIN only on the selected 'low'/'mid'/'high' frequency band.
+        """
+        # keep original dtype
+        orig_dtype = x.dtype
+        #x = self.adain_bandwise_dct2d(x, idx, 'all', eps)
+
+        # work in float
+        x = x.float().clone()
+        x_c = x[0:1]       # [1, HW, C]
+        x_s = x[idx:idx+1] # [1, HW, C]
+
+        C = x.shape[-1]
+        third = C // 3
+        #if   band == 'low':  slice_range = slice(0,      third) 
+        #elif band == 'mid':  slice_range = slice(third,  2*third)
+        #elif band == 'high': slice_range = slice(2*third, C)
+        if   band == 'low':  slice_range = slice(0,      int(C*self.energy_band0))
+        elif band == 'mid':  slice_range = slice(int(C*self.energy_band0),  int(C*self.energy_band1))
+        elif band == 'high': slice_range = slice(int(C*self.energy_band1), C)
+        elif band == 'all': slice_range = slice(None)
+        else: raise ValueError("band must be 'low', 'mid' or 'high'")
+
+        x_c = x_c.transpose(1, 2)   # B,HW,C -> B,C,HW
+        x_s = x_s.transpose(1, 2)
+        x_c_dct = dct(x_c, norm='ortho') 
+        x_s_dct = dct(x_s, norm='ortho')
+        
+        
+        
+        C = x_c_dct.shape[-1]
+        if   band == 'low':  slice_range = slice(0,      int(C*self.energy_band0))
+        elif band == 'mid':  slice_range = slice(int(C*self.energy_band0),  int(C*self.energy_band1))
+        elif band == 'high': slice_range = slice(int(C*self.energy_band1), C)
+        elif band == 'all': slice_range = slice(None)
+        else: raise ValueError("band must be 'low', 'mid' or 'high'")
+        
+        xc_band = x_c_dct[:, :, slice_range]  # [1, HW, band_width]
+        xs_band = x_s_dct[:, :, slice_range]
+        
+        #mean_c = xc_band .mean(-1, keepdim=True)
+        #std_c  = xc_band .std (-1, keepdim=True, unbiased=False).add_(eps)
+        #mean_s = xs_band .mean(-1, keepdim=True)
+        #std_s  = xs_band .std (-1, keepdim=True, unbiased=False).add_(eps)
+        #xc_band = (xc_band - mean_c) / std_c * std_s + mean_s   # B,C,HW   spatial adain
+        
+        
+        xc_band = Stylizer.scattersort_(xc_band.transpose(-2,-1), xs_band.transpose(-2,-1)).transpose(-2,-1)
+        
+        x_c_dct[:, :, slice_range] = xc_band
+        
+        x_c_dct = x_c_dct.transpose(1, 2)   # B,C,HW -> B,HW,C
+        x_s_dct = x_s_dct.transpose(1, 2)
+        x_c_dct = dct(x_c_dct, norm='ortho')
+        x_s_dct = dct(x_s_dct, norm='ortho')
+
+        # --- slice out the frequency band ---
+        
+        
+        C = x_c_dct.shape[-1]
+        if   band == 'low':  slice_range = slice(0,      int(C*self.energy_band0))
+        elif band == 'mid':  slice_range = slice(int(C*self.energy_band0),  int(C*self.energy_band1))
+        elif band == 'high': slice_range = slice(int(C*self.energy_band1), C)
+        elif band == 'all': slice_range = slice(None)
+        else: raise ValueError("band must be 'low', 'mid' or 'high'")
+        
+        xc_band = x_c_dct[:, :, slice_range]  # [1, HW, band_width]
+        xs_band = x_s_dct[:, :, slice_range]
+
+
+
+        #mean_c = xc_band .mean(-1, keepdim=True)
+        #std_c  = xc_band .std (-1, keepdim=True, unbiased=False).add_(eps)
+        #mean_s = xs_band .mean(-1, keepdim=True)
+        #std_s  = xs_band .std (-1, keepdim=True, unbiased=False).add_(eps)
+        #xc_band = (xc_band - mean_c) / std_c * std_s + mean_s
+
+
+
+        #mean_c = xc_band .mean(-2, keepdim=True)
+        #std_c  = xc_band .std (-2, keepdim=True, unbiased=False).add_(eps)
+        #mean_s = xs_band .mean(-2, keepdim=True)
+        #std_s  = xs_band .std (-2, keepdim=True, unbiased=False).add_(eps)
+        #xc_band = (xc_band - mean_c) / std_c * std_s + mean_s    # B,HW,C   channelwise adain
+        
+        xc_band = Stylizer.scattersort_(xc_band, xs_band)
+        
+
+        #mean_c = xc_band .mean(dim=(-2,-1), keepdim=True)
+        #std_c  = xc_band .std (dim=(-2,-1), keepdim=True, unbiased=False).add_(eps)
+        #mean_s = xs_band .mean(dim=(-2,-1), keepdim=True)
+        #std_s  = xs_band .std (dim=(-2,-1), keepdim=True, unbiased=False).add_(eps)
+
+        # --- normalize & apply style ---
+        #xc_band = (xc_band - mean_c) / std_c * std_s + mean_s
+
+        # --- write back and inverse DCT ---
+        x_c_dct[:, :, slice_range] = xc_band
+        
+        #x_c_dct = x_c_dct.transpose(1, 2)
+        x_out = idct(x_c_dct, norm='ortho')  # again, default on last dim
+        x_out = x_out.transpose(1, 2)
+
+        x_out = idct(x_out, norm='ortho')  # again, default on last dim
+        x_out = x_out.transpose(1, 2)
+
+        x[0:1] = x_out
+        x = x.to(orig_dtype)
+        return x
+    
+    
+    
+    
+    
+    
+    #@staticmethod  # decomp spatial then features
+    def adain_bandwise_dct_wct(self, x: torch.Tensor, idx=1, band='low', eps=1e-7, *args, **kwargs):
+        """
+        x: [B, HW, C]  → we do 1D DCT over C (last dim) without specifying dim
+        Applies AdaIN only on the selected 'low'/'mid'/'high' frequency band.
+        """
+        # keep original dtype
+        orig_dtype = x.dtype
+        #x = self.adain_bandwise_dct2d(x, idx, 'all', eps)
+
+        # work in float
+        x = x.float().clone()
+        x_c = x[0:1]       # [1, HW, C]
+        x_s = x[idx:idx+1] # [1, HW, C]
+
+        C = x.shape[-1]
+        third = C // 3
+        #if   band == 'low':  slice_range = slice(0,      third) 
+        #elif band == 'mid':  slice_range = slice(third,  2*third)
+        #elif band == 'high': slice_range = slice(2*third, C)
+        if   band == 'low':  slice_range = slice(0,      int(C*self.energy_band0))
+        elif band == 'mid':  slice_range = slice(int(C*self.energy_band0),  int(C*self.energy_band1))
+        elif band == 'high': slice_range = slice(int(C*self.energy_band1), C)
+        elif band == 'all': slice_range = slice(None)
+        else: raise ValueError("band must be 'low', 'mid' or 'high'")
+
+        x_c = x_c.transpose(1, 2)   # B,HW,C -> B,C,HW
+        x_s = x_s.transpose(1, 2)
+        x_c_dct = dct(x_c, norm='ortho') 
+        x_s_dct = dct(x_s, norm='ortho')
+        
+        #mean_c = x_c_dct .mean(-1, keepdim=True)
+        #std_c  = x_c_dct .std (-1, keepdim=True, unbiased=False).add_(eps)
+        #mean_s = x_s_dct .mean(-1, keepdim=True)
+        #std_s  = x_s_dct .std (-1, keepdim=True, unbiased=False).add_(eps)
+        #x_c_dct = (x_c_dct - mean_c) / std_c * std_s + mean_s   # B,C,HW   spatial adain
+        
+        
+        #x_c_dct = Stylizer.scattersort_(x_c_dct.transpose(-2,-1), x_s_dct.transpose(-2,-1)).transpose(-2,-1)
+        
+        
+        
+        x_c_dct = x_c_dct.transpose(1, 2)   # B,C,HW -> B,HW,C
+        x_s_dct = x_s_dct.transpose(1, 2)
+        x_c_dct = dct(x_c_dct, norm='ortho')
+        x_s_dct = dct(x_s_dct, norm='ortho')
+
+        # --- slice out the frequency band ---
+        xc_band = x_c_dct[:, :, slice_range]  # [1, HW, band_width]
+        xs_band = x_s_dct[:, :, slice_range]
+
+
+
+        #mean_c = xc_band .mean(-1, keepdim=True)
+        #std_c  = xc_band .std (-1, keepdim=True, unbiased=False).add_(eps)
+        #mean_s = xs_band .mean(-1, keepdim=True)
+        #std_s  = xs_band .std (-1, keepdim=True, unbiased=False).add_(eps)
+        #xc_band = (xc_band - mean_c) / std_c * std_s + mean_s
+
+
+
+        #mean_c = xc_band .mean(-2, keepdim=True)
+        #std_c  = xc_band .std (-2, keepdim=True, unbiased=False).add_(eps)
+        #mean_s = xs_band .mean(-2, keepdim=True)
+        #std_s  = xs_band .std (-2, keepdim=True, unbiased=False).add_(eps)
+        #xc_band = (xc_band - mean_c) / std_c * std_s + mean_s    # B,HW,C   channelwise adain
+        
+        #xc_band = Stylizer.scattersort_(xc_band, xs_band)
+        Stylizer.CLS_WCT.set(xc_band)
+        xc_band = Stylizer.CLS_WCT.get(xc_band)
+        
+        
+
+        #mean_c = xc_band .mean(dim=(-2,-1), keepdim=True)
+        #std_c  = xc_band .std (dim=(-2,-1), keepdim=True, unbiased=False).add_(eps)
+        #mean_s = xs_band .mean(dim=(-2,-1), keepdim=True)
+        #std_s  = xs_band .std (dim=(-2,-1), keepdim=True, unbiased=False).add_(eps)
+
+        # --- normalize & apply style ---
+        #xc_band = (xc_band - mean_c) / std_c * std_s + mean_s
+        
+        
+        
+
+
+
+        # --- write back and inverse DCT ---
+        x_c_dct[:, :, slice_range] = xc_band
+        
+        #x_c_dct = x_c_dct.transpose(1, 2)
+        x_out = idct(x_c_dct, norm='ortho')  # again, default on last dim
+        x_out = x_out.transpose(1, 2)
+
+        x_out = idct(x_out, norm='ortho')  # again, default on last dim
+        x_out = x_out.transpose(1, 2)
+
+        x[0:1] = x_out
+        x = x.to(orig_dtype)
+        return x
+    
+    
+    
+    
+    
+    
+    
+    
+    #@staticmethod
+    def adain_bandwise_dct_regular(self, x: torch.Tensor, idx=1, band='low', eps=1e-7, *args, **kwargs):
+        """
+        x: [B, HW, C]  → we do 1D DCT over C (last dim) without specifying dim
+        Applies AdaIN only on the selected 'low'/'mid'/'high' frequency band.
+        """
+        # keep original dtype
+        orig_dtype = x.dtype
+        #x = self.adain_bandwise_dct2d(x, idx, 'all', eps)
+
+        # work in float
+        x = x.float().clone()
+        x_c = x[0:1]       # [1, HW, C]
+        x_s = x[idx:idx+1] # [1, HW, C]
+
+        C = x.shape[-1]
+        third = C // 3
+        #if   band == 'low':  slice_range = slice(0,      third) 
+        #elif band == 'mid':  slice_range = slice(third,  2*third)
+        #elif band == 'high': slice_range = slice(2*third, C)
+        if   band == 'low':  slice_range = slice(0,      int(C*self.energy_band0))
+        elif band == 'mid':  slice_range = slice(int(C*self.energy_band0),  int(C*self.energy_band1))
+        elif band == 'high': slice_range = slice(int(C*self.energy_band1), C)
+        elif band == 'all': slice_range = slice(None)
+        else: raise ValueError("band must be 'low', 'mid' or 'high'")
+
+        # --- DCT over channels (last dim) ---
+        #x_c = x_c.transpose(1, 2)
+        #x_s = x_s.transpose(1, 2)
+        x_c_dct = dct(x_c, norm='ortho')  # default runs on last dim
+        x_s_dct = dct(x_s, norm='ortho')
+        #x_c_dct = x_c_dct.transpose(1, 2)
+        #x_s_dct = x_s_dct.transpose(1, 2)
+
+        # --- slice out the frequency band ---
+        xc_band = x_c_dct[:, :, slice_range]  # [1, HW, band_width]
+        xs_band = x_s_dct[:, :, slice_range]
+
+        # --- AdaIN stats over spatial dim (HW) ---
+        mean_c = xc_band .mean(-2, keepdim=True)
+        std_c  = xc_band .std (-2, keepdim=True, unbiased=False).add_(eps)
+        mean_s = xs_band .mean(-2, keepdim=True)
+        std_s  = xs_band .std (-2, keepdim=True, unbiased=False).add_(eps)
+
+        # --- normalize & apply style ---
+        xc_band = (xc_band - mean_c) / std_c * std_s + mean_s
+
+        # --- write back and inverse DCT ---
+        x_c_dct[:, :, slice_range] = xc_band
+        
+        #x_c_dct = x_c_dct.transpose(1, 2)
+        x_out = idct(x_c_dct, norm='ortho')  # again, default on last dim
+        #x_out = x_out.transpose(1, 2)
+
+        x[0:1] = x_out
+        x = x.to(orig_dtype)
+        return x
+
+    def adain_bandwise_dct2d_all(self, x: torch.Tensor, idx=1, band='all', eps=1e-7, *args, **kwargs):
+        return self.adain_bandwise_dct2d(x, idx, band, eps)
+
+    def adain_bandwise_dct2d_low(self, x: torch.Tensor, idx=1, band='low', eps=1e-7, *args, **kwargs):
+        return self.adain_bandwise_dct2d(x, idx, band, eps)
+        
+    def adain_bandwise_dct2d_mid(self, x: torch.Tensor, idx=1, band='mid', eps=1e-7, *args, **kwargs):
+        return self.adain_bandwise_dct2d(x, idx, band, eps)
+    
+    def adain_bandwise_dct2d_high(self, x: torch.Tensor, idx=1, band='high', eps=1e-7, *args, **kwargs):
+        return self.adain_bandwise_dct2d(x, idx, band, eps)
+
+    def adain_bandwise_dct2d(self, x: torch.Tensor, idx=1, band='low', eps=1e-7, *args, **kwargs):
+        """
+        Applies AdaIN in DCT space, using 2D DCT over spatial dimensions [H, W].
+        x: [B, H*W, C]
+        Returns: [B, H*W, C]
+        """
+        orig_dtype = x.dtype
+        x = x.float()
+
+        B, HW, C = x.shape
+        #H = W = int(HW ** 0.5)
+        H = self.h_len
+        W = self.w_len
+        assert H * W == HW, "Input must be square for now"
+
+        # Reshape to [B, C, H, W]
+        x = x.transpose(1, 2).reshape(B, C, H, W)
+
+        x_c = x[0:1]       # [1, C, H, W]
+        x_s = x[idx:idx+1] # [1, C, H, W]
+
+        # 2D DCT over H and W
+        #x_c_dct = dct(dct(x_c, norm='ortho', dim=-1), norm='ortho', dim=-2)  # W then H
+        #x_s_dct = dct(dct(x_s, norm='ortho', dim=-1), norm='ortho', dim=-2)
+        
+        x_c_dct = dct_2d_torch_dct(x_c)
+        x_s_dct = dct_2d_torch_dct(x_s)
+
+        # Frequency bands are per-spatial-frequency, so we'll do a circular mask over (u,v)
+        H_freq = x_c_dct.shape[-2]
+        W_freq = x_c_dct.shape[-1]
+        yy, xx = torch.meshgrid(torch.arange(H_freq), torch.arange(W_freq), indexing="ij")
+        radius = (yy**2 + xx**2).sqrt().to(x.device)
+
+        max_radius = radius.max()
+        third = max_radius / 3
+
+        if band == 'low':
+            mask = (radius < third).float()
+        elif band == 'mid':
+            mask = ((radius >= third) & (radius < 2 * third)).float()
+        elif band == 'high':
+            mask = (radius >= 2 * third).float()
+        elif band == 'all':
+            mask = torch.ones((H, W), dtype=torch.float32, device=x.device)
+        else:
+            raise ValueError("band must be 'low', 'mid' or 'high'")
+        #mask = torch.ones((H, W), dtype=torch.float32, device=x.device)
+        # Expand mask to match shape: [1, C, H, W]
+        xc_low_mask, xc_mid_mask, xc_high_mask = channelwise_energy_masks_fast(x_c_dct, self.energy_band0, self.energy_band1)
+        xs_low_mask, xs_mid_mask, xs_high_mask = channelwise_energy_masks_fast(x_s_dct, self.energy_band0, self.energy_band1)
+        
+        if band == 'low':
+            xc_mask = xc_low_mask.float()
+            xs_mask = xs_low_mask.float()
+        elif band == 'mid':
+            xc_mask = xc_mid_mask.float()
+            xs_mask = xs_mid_mask.float()
+        elif band == 'high':
+            xc_mask = xc_high_mask.float()
+            xs_mask = xs_high_mask.float()
+        
+        mask = mask[None, None, :, :]
+        if band == 'all':
+            xc_mask = mask
+            xs_mask = mask
+
+        # Compute AdaIN on masked area only
+        #xc_band = x_c_dct * mask
+        #xs_band = x_s_dct * mask
+        
+        xc_band = x_c_dct * xc_mask
+        xs_band = x_s_dct * xs_mask
+
+        mean_c = xc_band.mean(dim=(2, 3), keepdim=True)
+        std_c  = xc_band.std (dim=(2, 3), keepdim=True, unbiased=False).add_(eps)
+        mean_s = xs_band.mean(dim=(2, 3), keepdim=True)
+        std_s  = xs_band.std (dim=(2, 3), keepdim=True, unbiased=False).add_(eps)
+
+        xc_band = (xc_band - mean_c) / std_c * std_s + mean_s
+
+        # Combine with unmodified frequencies
+        #x_c_dct = x_c_dct * (1 - mask) + xc_band * mask
+        x_c_dct = x_c_dct * (1 - xc_mask) + xc_band * xc_mask
+
+        # Inverse DCT
+        #x_out = idct(idct(x_c_dct, norm='ortho', dim=-1), norm='ortho', dim=-2)  # inverse over W then H
+        
+        x_out = idct_2d_torch_dct(x_c_dct)
+
+        # Put back
+        x[0:1] = x_out
+
+        # Return as [B, HW, C] again
+        return x.reshape(B, C, H*W).transpose(1, 2).to(orig_dtype)
+
+
+
+
+    #@staticmethod
+    def fft_adain_bandwise_low(self, x: torch.Tensor, idx=1, band='low', eps=1e-7, *args, **kwargs):
+        return self.fft_adain_bandwise(x, idx, band, eps)
+        
+    #@staticmethod
+    def fft_adain_bandwise_mid(self, x: torch.Tensor, idx=1, band='mid', eps=1e-7, *args, **kwargs):
+        return self.fft_adain_bandwise(x, idx, band, eps)
+    
+    #@staticmethod
+    def fft_adain_bandwise_high(self, x: torch.Tensor, idx=1, band='high', eps=1e-7, *args, **kwargs):
+        return self.fft_adain_bandwise(x, idx, band, eps)
+
+    def fft_adain_bandwise(self, x: torch.Tensor, idx=1, band='mid', eps=1e-7):
+        """
+        Applies AdaIN to x[0:1] using x[idx:idx+1] as style,
+        only over a spatial frequency band, using FFT.
+
+        x: [B, HW, C]  ← flattened input
+        Returns: same shape as input
+        """
+        dtype = x.dtype
+        B, HW, C = x.shape
+        H, W = self.h_len, self.w_len
+
+        assert HW == H * W, f"Expected HW = {H}×{W}, got {HW}"
+
+        # Reshape to image grid
+        x = x.float().reshape(B, C, H, W)
+
+        x_c = x[0:1]       # [1, C, H, W]
+        x_s = x[idx:idx+1] # [1, C, H, W]
+
+        # FFT2 over spatial dimensions
+        x_c_fft = torch.fft.fft2(x_c, norm='ortho')
+        x_s_fft = torch.fft.fft2(x_s, norm='ortho')
+
+        # Shift FFT so DC is centered
+        x_c_fft = torch.fft.fftshift(x_c_fft, dim=(-2, -1))
+        x_s_fft = torch.fft.fftshift(x_s_fft, dim=(-2, -1))
+
+        # Frequency radius mask
+        yy, xx = torch.meshgrid(
+            torch.linspace(-1, 1, H, device=x.device),
+            torch.linspace(-1, 1, W, device=x.device),
+            indexing='ij'
+        )
+        radius = torch.sqrt(xx ** 2 + yy ** 2)
+
+        if band == 'low':
+            mask = radius <= 0.3
+        elif band == 'mid':
+            mask = (radius > 0.3) & (radius <= 0.6)
+        elif band == 'high':
+            mask = radius > 0.6
+        else:
+            raise ValueError("band must be 'low', 'mid', or 'high'")
+
+        mask = mask[None, None, :, :]  # [1, 1, H, W]
+
+        # Separate magnitude and phase
+        c_mag, c_phase = x_c_fft.abs(), x_c_fft.angle()
+        s_mag = x_s_fft.abs()
+
+        # AdaIN only on magnitude in band
+        c_band = c_mag * mask
+        s_band = s_mag * mask
+
+        mean_c = c_band.mean(dim=(2, 3), keepdim=True)
+        std_c  = c_band.std (dim=(2, 3), keepdim=True).add_(eps)
+        mean_s = s_band.mean(dim=(2, 3), keepdim=True)
+        std_s  = s_band.std (dim=(2, 3), keepdim=True).add_(eps)
+
+        c_mag = (c_mag - mean_c) / std_c * std_s + mean_s
+
+        # Reconstruct complex FFT with modified magnitude
+        x_c_fft_mod = c_mag * torch.exp(1j * c_phase)
+
+        # Shift back and iFFT
+        x_c_fft_mod = torch.fft.ifftshift(x_c_fft_mod, dim=(-2, -1))
+        x_out = torch.fft.ifft2(x_c_fft_mod, norm='ortho').real  # discard imaginary part
+
+        # Insert back into batch
+        x[0:1] = x_out
+
+        return x.to(dtype).reshape(B, HW, C)
+
+
+    def injection(self, x:torch.Tensor, idx=1, *args, **kwargs) -> torch.Tensor:
         x[0:1] = x[idx:idx+1]
         return x
     
@@ -1362,7 +2593,7 @@ class Stylizer:
         return y
     
     @staticmethod
-    def passthrough(x:torch.Tensor, idx=1) -> torch.Tensor:
+    def passthrough(x:torch.Tensor, idx=1, *args, **kwargs) -> torch.Tensor:
         return x
     
     @staticmethod
@@ -1426,20 +2657,64 @@ class Stylizer:
         
         x.scatter_(dim=dim, index=buf['src_idx'], src=buf['ref_sorted'].expand_as(buf['src_idx']))
 
-
         return x
 
 
     @staticmethod
-    def scattersort_dir(x, idx=1):
+    def scattersort_dir(x, idx=1, slc=slice(None), *args, **kwargs):
         x[0:1] = Stylizer.scattersort_dir_(x[0:1], x[idx:idx+1])
         return x
     
 
     @staticmethod
-    def scattersort_dir2(x, idx=1):
+    def scattersort_dir2(x, idx=1, slc=slice(None), *args, **kwargs):
         x[0:1] = Stylizer.scattersort_dir2_(x[0:1], x[idx:idx+1])
         return x
+
+
+
+    @staticmethod
+    def scattersort2(x, idx=1, slc=slice(None), *args, **kwargs):
+        x[0:1] = Stylizer.scattersort2_(x[0:1], x[idx:idx+1])
+        return x
+    
+    @staticmethod
+    def scattersort2_(x, y, dim=-2):
+        #buf = Stylizer.buffer
+        #buf['src_sorted'], buf['src_idx'] = x.sort(dim=-2)
+        #buf['ref_sorted'], buf['ref_idx'] = y.sort(dim=-2)
+        #mag, _ = Stylizer.decompose_magnitude_direction(buf['src_sorted'], dim)
+        #_, dir = Stylizer.decompose_magnitude_direction(buf['ref_sorted'], dim)
+        
+        
+        buf = Stylizer.buffer
+        buf['src_sorted'], buf['src_idx'] = x.sort(dim=dim)
+        buf['ref_sorted'], buf['ref_idx'] = y.sort(dim=dim)
+        
+
+
+
+        buf['x_sub'], buf['x_sub_idx'] = buf['src_sorted'].sort(dim=-1)
+        buf['y_sub'], buf['y_sub_idx'] = buf['ref_sorted'].sort(dim=-1)
+        
+        #mag, _ = Stylizer.decompose_magnitude_direction(buf['x_sub'].to(torch.float64), -1)
+        #_, dir = Stylizer.decompose_magnitude_direction(buf['y_sub'].to(torch.float64), -1)
+        #
+        #buf['y_sub'] = (mag * dir).to(x)
+        
+        buf['ref_sorted'].scatter_(dim=-1, index=buf['y_sub_idx'], src=buf['y_sub'].expand_as(buf['y_sub_idx']))
+
+
+
+        #mag, _ = Stylizer.decompose_magnitude_direction(buf['src_sorted'].to(torch.float64), dim)
+        #_, dir = Stylizer.decompose_magnitude_direction(buf['ref_sorted'].to(torch.float64), dim)
+        #
+        #buf['ref_sorted'] = (mag * dir).to(x)
+        
+        x.scatter_(dim=dim, index=buf['src_idx'], src=buf['ref_sorted'].expand_as(buf['src_idx']))
+
+        return x
+
 
     @staticmethod
     def scattersort_(x, y, slc=slice(None)):
@@ -1451,7 +2726,7 @@ class Stylizer:
     
 
     @staticmethod
-    def scattersort_double(x, y):
+    def scattersort_double(x, y, *args, **kwargs):
         buf = Stylizer.buffer
         buf['src_sorted'], buf['src_idx'] = x.sort(dim=-2)
         buf['ref_sorted'], buf['ref_idx'] = y.sort(dim=-2)
@@ -1468,7 +2743,189 @@ class Stylizer:
         x[0:1] = Stylizer.scattersort_(x[0:1], x[idx:idx+1], slc)
         return x
     
-    def scattersort(self, x, idx=1, slc=slice(None)):
+    def gram222_scattersort(self, x, idx=1, slc=slice(None), *args, **kwargs):
+        if x.shape[0] != 2:
+            x[0:1] = Stylizer.scattersort_(x[0:1], x[idx:idx+1], slc)
+            return x
+        
+        buf = Stylizer.buffer
+        buf['sorted'], buf['idx'] = x.sort(dim=-2)
+
+
+        srt0 = buf['sorted'][0:1]
+        srt1 = buf['sorted'][1:2]
+
+        # 1. Center
+        mean0 = srt0.mean(dim=-1, keepdim=True)
+        mean1 = srt1.mean(dim=-1, keepdim=True)
+        Xc = srt0 - mean0
+        Yc = srt1 - mean1
+
+        # 2. Compute covariances
+        C0 = Xc @ Xc.transpose(-2, -1) / (srt0.shape[-1] - 1)
+        C1 = Yc @ Yc.transpose(-2, -1) / (srt1.shape[-1] - 1)
+
+        # 3. Eigen-decompose
+        eigvals0, eigvecs0 = torch.linalg.eigh(C0)
+        eigvals1, eigvecs1 = torch.linalg.eigh(C1)
+
+        # 4. Whitening (remove style)
+        eps = 1e-5
+        diag0_inv_sqrt = torch.diag_embed((eigvals0 + eps).rsqrt())
+        whiten = eigvecs0 @ diag0_inv_sqrt @ eigvecs0.transpose(-2, -1)
+        X_white = whiten @ Xc
+
+        # 5. Coloring (apply new style)
+        diag1_sqrt = torch.diag_embed((eigvals1 + eps).sqrt())
+        color = eigvecs1 @ diag1_sqrt @ eigvecs1.transpose(-2, -1)
+        X_colored = color @ X_white + mean1
+
+        buf['sorted'][1:2], _ = X_colored.sort(dim=-2)
+
+
+        return x.scatter_(dim=-2, index=buf['idx'][0:1][...,slc,:], src=buf['sorted'][1:2][...,slc,:].expand_as(buf['idx'][0:1][...,slc,:]))
+    
+    def gram_scattersort(self, x, idx=1, slc=slice(None), *args, **kwargs):
+        if x.shape[0] != 2:
+            x[0:1] = Stylizer.scattersort_(x[0:1], x[idx:idx+1], slc)
+            return x
+
+        buf = Stylizer.buffer
+        buf['sorted'], buf['idx'] = x.sort(dim=-2)
+
+        srt0 = buf['sorted'][0:1]  # [1, H*W, C]
+        srt1 = buf['sorted'][1:2]
+
+        # Transpose to [1, C, H*W] for channel-wise whitening
+        srt0_t = srt0.transpose(1, 2)
+        srt1_t = srt1.transpose(1, 2)
+
+        # 1. Center
+        mean0 = srt0_t.mean(dim=-1, keepdim=True)
+        mean1 = srt1_t.mean(dim=-1, keepdim=True)
+        Xc = srt0_t - mean0  # [1, C, H*W]
+        Yc = srt1_t - mean1
+
+        # 2. Covariance: [C, C]
+        C0 = Xc @ Xc.transpose(-2, -1) / (Xc.shape[-1] - 1)
+        C1 = Yc @ Yc.transpose(-2, -1) / (Yc.shape[-1] - 1)
+
+        # 3. Cholesky whitening/coloring
+        eps = 1e-4
+        eye = torch.eye(C0.shape[-1], device=x.device, dtype=x.dtype).expand(C0.shape[0], -1, -1)
+        L0 = torch.linalg.cholesky(C0 + eps * eye)
+        L1 = torch.linalg.cholesky(C1 + eps * eye)
+
+        X_white = torch.cholesky_solve(Xc, L0)  # [1, C, H*W]
+        X_colored = L1 @ X_white + mean1       # [1, C, H*W]
+
+        # Transpose back to [1, H*W, C]
+        X_colored = X_colored.transpose(1, 2)
+
+        buf['sorted'][1:2], _ = X_colored.sort(dim=-2)
+        
+        #buf['sorted'][1:2] = X_colored
+
+        return x.scatter_(
+            dim=-2,
+            index=buf['idx'][0:1][..., slc, :],
+            src=buf['sorted'][1:2][..., slc, :].expand_as(buf['idx'][0:1][..., slc, :])
+        )
+
+    @staticmethod
+    def orthogonal_procrustes_polar(Fc, Fr):
+        """
+        Fc, Fr: [B, N, C] content & reference feature batches
+        returns: Fc warped by the optimal orthonormal T so that Fc·T ≈ Fr
+        """
+        # 1) center
+        Fc0 = Fc - Fc.mean(dim=1, keepdim=True)
+        Fr0 = Fr - Fr.mean(dim=1, keepdim=True)
+
+        # 2) form M = Frᵀ @ Fc
+        #    (we’ll do transpose on the last two dims)
+        M = Fr0.transpose(-2, -1) @ Fc0  # → [B, C, C]
+
+        # 3) polar decomposition M = Q·H  ⇒  Q is the orthonormal factor we want
+        Q, _ = torch.linalg.polar(M)     # [B, C, C]
+
+        # 4) apply the rotation back to the *right* of Fc
+        return Fc @ Q.transpose(-2, -1)   # [B, N, C]
+
+    @staticmethod
+    def orthogonal_procrustes_eigh(Fc, Fr, eps=1e-6):
+        # 1) center
+        Fc0 = Fc - Fc.mean(dim=1, keepdim=True)
+        Fr0 = Fr - Fr.mean(dim=1, keepdim=True)
+
+        # 2) M = Frᵀ @ Fc
+        M = Fr0.transpose(-2, -1) @ Fc0  # [B, C, C]
+
+        # 3) form symmetric P = Mᵀ M
+        P = M.transpose(-2, -1) @ M      # [B, C, C]
+
+        # 4) eigen-decompose P = V·D·Vᵀ
+        D, V = torch.linalg.eigh(P)      # D:[B,C], V:[B,C,C]
+
+        # 5) compute P^{-1/2} = V · diag(1/√D) · Vᵀ
+        inv_sqrt = torch.diag_embed(D.clamp(min=eps).rsqrt())  # [B,C,C]
+        P_inv_sqrt = V @ inv_sqrt @ V.transpose(-2, -1)
+
+        # 6) build the rotation T = M · P^{-1/2}
+        T = M @ P_inv_sqrt               # [B, C, C]
+
+        # 7) apply it
+        return Fc @ T.transpose(-2, -1)  # [B, N, C]
+
+    @staticmethod
+    def orthogonal_procrustes(Fc, Fr):
+        Fc = Fc - Fc.mean(dim=-2, keepdim=True)
+        Fr = Fr - Fr.mean(dim=-2, keepdim=True)
+
+        # [B, N, C] → transpose last two dims to match
+        Fc_t = Fc.transpose(-2, -1)  # [B, C, N]
+        Fr_t = Fr.transpose(-2, -1)  # [B, C, N]
+
+        # Solve per batch element
+        U, _, Vt = torch.linalg.svd(Fr_t @ Fc_t.transpose(-2, -1), full_matrices=False)
+        T = U @ Vt
+
+        # Apply transform
+        Fc_styled = Fc @ T.transpose(-2, -1)
+        Fc_styled = Fc_styled + Fr.mean(dim=-2, keepdim=True)
+
+        return Fc_styled
+
+
+    
+    def scattercrust(self, x, idx=1, slc=slice(None), *args, **kwargs):
+        if x.shape[0] != 2:
+            x[0:1] = Stylizer.scattersort_(x[0:1], x[idx:idx+1], slc)
+            return x
+        
+        x[0:1] = Stylizer.orthogonal_procrustes(x[0:1].to(torch.float32), x[1:2].to(torch.float32)).to(x)
+
+        return x
+    
+    def scattercrust_polar(self, x, idx=1, slc=slice(None), *args, **kwargs):
+        if x.shape[0] != 2:
+            x[0:1] = Stylizer.scattersort_(x[0:1], x[idx:idx+1], slc)
+            return x
+        
+        x[0:1] = Stylizer.orthogonal_procrustes_polar(x[0:1].to(torch.float32), x[1:2].to(torch.float32)).to(x)
+
+        return x
+    
+    def scattercrust_eigh(self, x, idx=1, slc=slice(None), *args, **kwargs):
+        if x.shape[0] != 2:
+            x[0:1] = Stylizer.scattersort_(x[0:1], x[idx:idx+1], slc)
+            return x
+        
+        x[0:1] = Stylizer.orthogonal_procrustes_eigh(x[0:1].to(torch.float32), x[1:2].to(torch.float32)).to(x)
+
+        return x
+    
+    def scattersort(self, x, idx=1, slc=slice(None), *args, **kwargs):
         if x.shape[0] != 2:
             x[0:1] = Stylizer.scattersort_(x[0:1], x[idx:idx+1], slc)
             return x
@@ -1478,10 +2935,121 @@ class Stylizer:
 
         return x.scatter_(dim=-2, index=buf['idx'][0:1][...,slc,:], src=buf['sorted'][1:2][...,slc,:].expand_as(buf['idx'][0:1][...,slc,:]))
     
+    def swappersort(self, x, idx=1, slc=slice(None), *args, **kwargs):
+        if x.shape[0] != 2:
+            x[0:1] = Stylizer.scattersort_(x[0:1], x[idx:idx+1], slc)
+            return x
+        
+        buf = Stylizer.buffer
+        buf['sorted'], buf['idx'] = x.sort(dim=-2)
+
+        x[0:1] = x[0:1].scatter_(dim=-2, index=buf['idx'][0:1][...,slc,:], src=buf['sorted'][1:2][...,slc,:].expand_as(buf['idx'][0:1][...,slc,:]))
+        #x[1:2] = x[1:2].scatter_(dim=-2, index=buf['idx'][1:2][...,slc,:], src=buf['sorted'][0:1][...,slc,:].expand_as(buf['idx'][1:2][...,slc,:]))
+        return x
+    
+
+        #def haar_scattersort(self, denoised_embed: torch.Tensor, h_len, w_len, stylize_highfreq=False):
+    def haar_scattersort(self, x, idx=1, slc=slice(None), stylize_highfreq=False, *args, **kwargs):
+
+        B, HW, C = x.shape
+        
+        x_spatial = x.contiguous().view(B, C, self.h_len, self.w_len)
+    
+        LL, LH, HL, HH = haar_wavelet_decompose(x_spatial)
+
+        def process_band(band, idx=1):
+            Bc, Cc, Hc, Wc = band.shape
+            flat = band.contiguous().view(Bc, Hc * Wc, Cc)
+            
+            styled = self.scattersort(band, idx=idx)
+            return styled.contiguous().view(Bc, Cc, Hc, Wc)
+
+        LL_styled = process_band(LL)
+
+        if stylize_highfreq:
+            LH_styled = process_band(LH)
+            HL_styled = process_band(HL)
+            HH_styled = process_band(HH)
+        else:
+            LH_styled, HL_styled, HH_styled = LH, HL, HH
+
+        x_spatial = haar_wavelet_reconstruct(LL_styled, LH_styled, HL_styled, HH_styled)
+        #x_spatial[0] = recon.squeeze(0)
+
+        return x_spatial.view(B, HW, C).to(x)
 
     
+    #def channelwise_nn_lookup(self, content: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
+    @staticmethod
+    def channelwise_nn_lookup(x: torch.Tensor, idx=1, slc=slice(None), *args, **kwargs) -> torch.Tensor:
+
+        """
+        For each element in `content` (shape [B, N, C]), find the closest value
+        in `reference` (shape [B, M, C]) along dim=1, *allowing reuse*, channel-wise.
+
+        Returns: Tensor of shape [B, N, C] of nearest-neighbor values.
+        """
+        content = x[0:1]
+        reference = x[1:]      #reference = x[1:2]
+        B, N, C = content.shape
+        M = reference.shape[1]
+
+        # 1) Bring channels to leading dim: [B, C, *] → flatten to [B*C, *]
+        #    we want content_flat[i] to correspond to channel c of batch b.
+        content_flat = content.permute(0, 2, 1).reshape(-1, N)    # [B*C, N]
+        ref_flat     = reference.permute(0, 2, 1).reshape(-1, M)  # [B*C, M]
+
+        # 2) Sort each reference row:
+        sorted_ref, _ = torch.sort(ref_flat, dim=1)  # [B*C, M]
+
+        # 3) For each content value, find where it would be inserted in sorted_ref:
+        #    `idx` has shape [B*C, N], values in [0..M]
+        idx = torch.searchsorted(sorted_ref, content_flat)
+
+        # 4) For each insertion idx, the two nearest candidates are at idx-1 and idx:
+        idx_lo = torch.clamp(idx - 1, min=0)      # no lower than 0
+        idx_hi = torch.clamp(idx, max=M - 1)      # no higher than M-1
+
+        # 5) Gather those two candidates:
+        val_lo = sorted_ref.gather(1, idx_lo)     # [B*C, N]
+        val_hi = sorted_ref.gather(1, idx_hi)     # [B*C, N]
+
+        # 6) Pick the closer one:
+        dist_lo = (content_flat - val_lo).abs()
+        dist_hi = (val_hi - content_flat).abs()
+        use_hi  = dist_hi < dist_lo
+
+        matched_flat = torch.where(use_hi, val_hi, val_lo)  # [B*C, N]
+
+        # 7) Reshape back to [B, N, C]
+        x[0:1] = matched_flat.reshape(B, C, N).permute(0, 2, 1)
+        return x
+
+    def lookup_flipped_adain(self, x, idx=1, slc=slice(None), *args, **kwargs):
+        #if x.shape[0] != 2:
+        #    x[0:1] = Stylizer.scattersort_(x[0:1], x[idx:idx+1], slc)
+        #    return x
+        x_orig = x.clone()
+        x = self.AdaIN(x, idx)
+        
+        x[1:2] = x_orig[0:1]
+        
+        x = Stylizer.channelwise_nn_lookup(x, idx)
+        
+        x[1:2] = x_orig[1:2]
+        
+        return x
+        
+    def lookup(self, x, idx=1, slc=slice(None), *args, **kwargs):
+        #if x.shape[0] != 2:
+        #    x[0:1] = Stylizer.scattersort_(x[0:1], x[idx:idx+1], slc)
+        #    return x        
+        x = Stylizer.channelwise_nn_lookup(x, idx)
+        
+        return x
+        
     
-    def tiled_scattersort(self, x, idx=1): #, h_tile=None, w_tile=None):
+    def tiled_scattersort(self, x, idx=1, *args, **kwargs): #, h_tile=None, w_tile=None):
         #if HDModel.RECON_MODE:
         #    return denoised_embed
         #den   = x[0:1]      [:,:self.img_len,:].view(-1, 2560, self.h_len, self.w_len)
@@ -1513,7 +3081,7 @@ class Stylizer:
         return x
     
     
-    def tiled_AdaIN(self, x, idx=1):
+    def tiled_AdaIN(self, x, idx=1, *args, **kwargs):
         #if HDModel.RECON_MODE:
         #    return denoised_embed
         #den   = x[0:1]      [:,:self.img_len,:].view(-1, 2560, self.h_len, self.w_len)
@@ -1578,6 +3146,8 @@ class Stylizer:
 class StyleMMDiT_Attn(Stylizer):
     def __init__(self, mode):
         super().__init__()
+        
+        self.qkv    = [0.0]
         
         self.q_proj = [0.0]
         self.k_proj = [0.0]
@@ -1916,6 +3486,9 @@ class Style_Model(Stylizer):
         self.recon_lure = "none"
         self.data_shock = "none"
         
+        self.recon_lure_weight = 0.0
+        self.data_shock_weight = 0.0
+        
         self.data_shock_start_step = 0
         self.data_shock_end_step   = 0
         
@@ -1946,29 +3519,35 @@ class Style_Model(Stylizer):
         HEAD_DIM = x.shape[1]
         if HEAD_DIM == self.HEADS:
             B, HEAD_DIM, HW, C = x.shape
-            x = x.reshape(B, HW, C*HEAD_DIM)
+            x = x.reshape(B, HW, C*HEAD_DIM)  # TODO: FIX WITH PERMUTE SHIT
             
         if self.KONTEXT == 1:
             x = x.reshape(2, x.shape[1] // 2, x.shape[2])
             
         weights_all_one         = all(weight == 1.0           for weight in weight_list)
+        weights_all_same = all(weight == weight_list[0] for weight in weight_list)
         methods_all_scattersort = all(name   == "scattersort" for name   in self.method)
         masks_all_none = all(mask is None for mask in self.mask)
         
-        if weights_all_one and methods_all_scattersort and len(weight_list) > 1 and masks_all_none:
+        if weights_all_same and methods_all_scattersort and len(weight_list) > 1 and masks_all_none:
             buf = Stylizer.buffer
             buf['src_idx']   = x[0:1].argsort(dim=-2)
             buf['ref_sorted'], buf['ref_idx'] = x[1:].reshape(1, -1, x.shape[-1]).sort(dim=-2)
             buf['src'] = buf['ref_sorted'][:,::len(weight_list)].expand_as(buf['src_idx'])    #            interleave_stride = len(weight_list)
             
-            x[0:1] = x[0:1].scatter_(dim=-2, index=buf['src_idx'], src=buf['src'],)
+            #x[0:1] = x[0:1].scatter_(dim=-2, index=buf['src_idx'], src=buf['src'],)
+            slc = Stylizer.middle_slice(buf['src'].shape[-2], weight_list[0]) 
+            
+            x[0:1] = x[0:1].scatter_(dim=-2, index=buf['src_idx'][...,slc,:], src=buf['src'][...,slc,:],)
         else:
             for i, (weight, mask) in enumerate(zip(weight_list, self.mask)):
                 if weight > 0 and weight < 1:
                     x_clone = x.clone()
                 if mask is not None:
                     x01 = x[0:1].clone()
-                slc = Stylizer.middle_slice(x.shape[-2], weight)
+                slc = Stylizer.middle_slice(x.shape[-2], abs(weight))
+                if weight < 0:
+                    x_base = x.clone()   
                 
                 method = getattr(self, self.method[i])
                 if   weight == 0.0:
@@ -1986,6 +3565,12 @@ class Style_Model(Stylizer):
                 if mask is not None:
                     x[0:1] = torch.lerp(x01, x[0:1], mask.view(1, -1, 1))
         
+                if weight < 0:
+                    if self.method[i] == "scattersort":
+                        x = 2 * x_base - x
+                    else:
+                        x = x_base + abs(weight) * (x_base - x)
+                                
         #if x_ndim == 3:
         #    return x.view(B,HW,C)
         if self.KONTEXT == 1:
@@ -2124,6 +3709,63 @@ class Style_Model(Stylizer):
             embed  = method(embed)
         return self.Retrojector.unembed(embed[0:1])
 
+    def apply_to_data2_basic(self, denoised, y0_style=None, mode="none"):
+        if mode == "none":
+            return denoised
+        y0_style = self.guides if y0_style is None else y0_style
+        
+        y0_style_embed = self.Retrojector.embed(y0_style)
+        denoised_embed = self.Retrojector.embed(denoised)
+        y0_style_embed = self.Retrojector2.embed(y0_style_embed)
+        denoised_embed = self.Retrojector2.embed(denoised_embed)
+        B,HW,C = y0_style_embed.shape
+        embed  = torch.cat([denoised_embed, y0_style_embed.view(1,B*HW,C)[:,::B,:]], dim=0)
+        method = getattr(self, mode)
+        if mode == "scattersort":
+            slc = Stylizer.middle_slice(embed.shape[-2], self.data_shock_weight)
+            embed = method(embed, slc=slc)
+        else:
+            embed  = method(embed)
+        unembed = self.Retrojector2.unembed(embed[0:1])
+        return self.Retrojector.unembed(unembed)
+
+
+    def apply_to_data2(self, denoised, y0_style=None, mode="none"):
+        if mode == "none":
+            return denoised
+        y0_style = self.guides if y0_style is None else y0_style
+        
+        y0_style_embed = self.Retrojector.embed(y0_style)
+        denoised_embed = self.Retrojector.embed(denoised)
+        
+        #y0_style_embed = self.FV.norm(y0_style_embed)
+        #y0_style_embed_norm_cache = y0_style_embed.clone()
+        #denoised_embed = self.FV.norm(denoised_embed)
+        
+        #y0_style_embed = self.FV.mod(y0_style_embed)
+        #denoised_embed = self.FV.mod(denoised_embed)
+        
+        y0_style_embed = self.Retrojector2.embed(y0_style_embed)
+        denoised_embed = self.Retrojector2.embed(denoised_embed)
+        B,HW,C = y0_style_embed.shape
+        embed  = torch.cat([denoised_embed, y0_style_embed.view(1,B*HW,C)[:,::B,:]], dim=0)
+        method = getattr(self, mode)
+        if mode == "scattersort":
+            slc = Stylizer.middle_slice(embed.shape[-2], self.data_shock_weight)
+            embed = method(embed, slc=slc)
+        else:
+            embed  = method(embed)
+        unembed = self.Retrojector2.unembed(embed[0:1])
+        
+        #unembed = self.FV.unmod(unembed)
+        #unembed = self.FV.unnorm(unembed, y0_style_embed_norm_cache)
+        
+        return self.Retrojector.unembed(unembed)
+
+
+
+
+
     def apply_recon_lure(self, denoised, y0_style):
         if self.recon_lure == "none":
             return denoised
@@ -2179,4 +3821,156 @@ class StyleUNet_Model(Style_Model):
         B, C, H, W = x.shape
         x = super().__call__(x.reshape(B, H*W, C), attr)
         return x.reshape(B,C,H,W)
-        
+
+
+import torch_dct
+
+
+def dct_2d_torch_dct(x):
+    # x: [B, C, H, W]
+    # Apply DCT along W (last dim)
+    x = torch_dct.dct(x, norm='ortho')
+
+    # Apply DCT along H (second to last dim) — need to permute
+    x = x.transpose(-1, -2)
+    x = torch_dct.dct(x, norm='ortho')
+    x = x.transpose(-1, -2)
+
+    return x
+
+def idct_2d_torch_dct(x):
+    # Inverse of the above
+    x = x.transpose(-1, -2)
+    x = torch_dct.idct(x, norm='ortho')
+    x = x.transpose(-1, -2)
+    x = torch_dct.idct(x, norm='ortho')
+    return x
+
+
+def channelwise_energy_masks_fast(x_dct, p1=0.3, p2=0.7, eps=1e-8):
+    """
+    x_dct: [1, C, H, W]  — batched DCT coefficients
+    p1, p2: low/mid and mid/high energy percentiles
+    returns low, mid, high masks of shape [1, C, H, W] (float32)
+    """
+    _, C, H, W = x_dct.shape
+    device = x_dct.device
+
+    # 1) radius map (H*W)
+    yy, xx = torch.meshgrid(
+        torch.arange(H, device=device),
+        torch.arange(W, device=device),
+        indexing='ij'
+    )
+    radius = torch.sqrt(xx.float()**2 + yy.float()**2)        # [H, W]
+    radius_flat = radius.flatten()                            # [N]
+    sort_idx = torch.argsort(radius_flat)                     # [N]
+    r_sorted = radius_flat[sort_idx]                          # [N]
+
+    # 2) flatten DCT‐energy per channel
+    E = (x_dct[0]**2).reshape(C, -1)       # [C, N]
+    E_sorted = E[:, sort_idx]              # [C, N]
+    cumE     = torch.cumsum(E_sorted, dim=1)  # [C, N]
+    totE     = cumE[:, -1]                    # [C]
+
+    # 3) compute threshold indices vectorized
+    #    find first idx where cumE >= p1*totE and p2*totE
+    thresh1 = totE.unsqueeze(1) * p1       # [C, 1]
+    thresh2 = totE.unsqueeze(1) * p2       # [C, 1]
+
+    mask1 = cumE >= thresh1                # [C, N]
+    mask2 = cumE >= thresh2                # [C, N]
+
+    # argmax gives first True (if none, returns 0)
+    r1_idx = mask1.float().argmax(dim=1)   # [C]
+    r2_idx = mask2.float().argmax(dim=1)
+
+    # 4) detect collapsed or zero‐energy channels
+    N = radius_flat.numel()
+    fb1, fb2 = int(p1*N), int(p2*N)
+    collapsed = (totE < eps) | (r2_idx <= r1_idx)
+    r1_idx[collapsed] = fb1
+    r2_idx[collapsed] = fb2
+
+    # 5) map back to actual radii
+    r1 = r_sorted[r1_idx]  # [C]
+    r2 = r_sorted[r2_idx]
+
+    # 6) build per‐channel masks
+    rm   = radius.view(1,1,H,W)          # [1,1,H,W]
+    r1b  = r1.view(1,C,1,1)              # [1,C,1,1]
+    r2b  = r2.view(1,C,1,1)
+
+    low  = (rm <= r1b).float()
+    mid  = ((rm > r1b) & (rm <= r2b)).float()
+    high = (rm > r2b).float()
+
+    # 7) normalize so low+mid+high == 1.0
+    S = low + mid + high
+    low  /= (S + eps)
+    mid  /= (S + eps)
+    high/= (S + eps)
+
+    return low, mid, high
+
+
+def channelwise_energy_masks_lastdim(x_dct, p1=0.3, p2=0.7, eps=1e-8):
+    """
+    x_dct: [B, HW, C] — batch of DCT-transformed data across channels
+    p1, p2: energy percentiles (low/mid and mid/high)
+    Returns: low, mid, high masks of shape [B, HW, C]
+    """
+    B, N, C = x_dct.shape
+    device = x_dct.device
+
+    # 1) Create "channel radius" (0..C-1)
+    radius = torch.arange(C, device=device).float()  # [C]
+    sort_idx = torch.argsort(radius)                 # [C]
+    r_sorted = radius[sort_idx]                      # [C]
+
+    # 2) Compute energy: square the values
+    E = (x_dct ** 2)                                 # [B, N, C]
+    E_sorted = E[:, :, sort_idx]                     # [B, N, C]
+    cumE = torch.cumsum(E_sorted, dim=-1)            # [B, N, C]
+    totE = cumE[:, :, -1]                            # [B, N]
+
+    # 3) thresholds
+    thresh1 = totE.unsqueeze(-1) * p1                # [B, N, 1]
+    thresh2 = totE.unsqueeze(-1) * p2
+
+    mask1 = cumE >= thresh1                          # [B, N, C]
+    mask2 = cumE >= thresh2
+
+    r1_idx = mask1.float().argmax(dim=-1)            # [B, N]
+    r2_idx = mask2.float().argmax(dim=-1)
+
+    # fallback indices
+    fb1 = int(p1 * C)
+    fb2 = int(p2 * C)
+
+    collapsed = (totE < eps) | (r2_idx <= r1_idx)
+    r1_idx[collapsed] = fb1
+    r2_idx[collapsed] = fb2
+
+    # 4) Map back to real "frequency positions"
+    r1 = r_sorted[r1_idx]                            # [B, N]
+    r2 = r_sorted[r2_idx]                            # [B, N]
+
+    # 5) Build broadcast masks
+    freq = radius.view(1, 1, C)                      # [1, 1, C]
+    r1b  = r1.unsqueeze(-1)                          # [B, N, 1]
+    r2b  = r2.unsqueeze(-1)
+
+    low  = (freq <= r1b).float()
+    mid  = ((freq > r1b) & (freq <= r2b)).float()
+    high = (freq > r2b).float()
+
+    # 6) Normalize
+    S = low + mid + high
+    low  /= (S + eps)
+    mid  /= (S + eps)
+    high /= (S + eps)
+
+    return low, mid, high
+
+

@@ -139,6 +139,8 @@ RK_SAMPLER_NAMES_BETA_FOLDERS = ["none",
                     "linear/rk4_4s", 
                     "linear/rk5_7s",
                     "linear/rk6_7s",
+                    
+                    "linear/fehlberg_6s",
 
                     "linear/bogacki-shampine_4s",
                     "linear/bogacki-shampine_7s",
@@ -1167,6 +1169,20 @@ rk_coeff = {
             [5179/57600, 0, 7571/16695, 393/640, -92097/339200, 187/2100, 1/40],
         ],
         [0, 1/5, 3/10, 4/5, 8/9, 1, 1],
+    ),
+    "fehlberg_6s": ( # 5th order; split from embedded fehlberg45 https://users.soe.ucsc.edu/~hongwang/AM213B/Notes/Lecture03.pdf
+        [ 
+            [],
+            [1/4],
+            [3/32, 9/32],
+            [1932/2197, -7200/2197, 7296/2197],
+            [439/216, -8, 3680/513, -845/4104],
+            [-8/27, 2, -3544/2565, 1859/4104, -11/40],
+        ],
+        [
+            [16/135, 0, 6656/12825, 28561/56430, -9/50, 2/55], # order 4 row B: [25/216, 0, 1408/2565, 2197/4104, -1/5],
+        ],
+        [0, 1/4, 3/8, 12/13, 1, 1/2],
     ),
     "ssprk4_4s": ( #non-monotonic #https://link.springer.com/article/10.1007/s41980-022-00731-x
         [ 

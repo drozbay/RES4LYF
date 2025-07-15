@@ -3255,14 +3255,45 @@ from ..style_transfer import StyleMMDiT_Model, StyleUNet_Model, DEFAULT_BLOCK_WE
 STYLE_MODES = [
     "none", 
     #"sinkhornsort",
+    "gram_scattersort",
+    "scattercrust",
+    "scattercrust_polar",
+    "scattercrust_eigh",
+    "swappersort",
+    "haar_scattersort",
+    "lookup",
+    "lookup_flipped_adain",
     "scattersort_dir", 
     "scattersort_dir2",
     "scattersort", 
+    "scattersort2", 
     "tiled_scattersort",
     "AdaIN", 
+    "adain_bandwise_dct_wct",
+    "adain_bandwise_dct_all",
+    "adain_bandwise_dct_low",
+    "adain_bandwise_dct_mid",
+    "adain_bandwise_dct_high",
+    "adain_bandwise_dct2d_all",
+    "adain_bandwise_dct2d_low",
+    "adain_bandwise_dct2d_mid",
+    "adain_bandwise_dct2d_high",
+    "fft_adain_bandwise_low",
+    "fft_adain_bandwise_mid",
+    "fft_adain_bandwise_high",
+    "adain_bandwise_dct",
     "tiled_AdaIN", 
+    "WCT_fast",
+    "WCT_batch",
+    "WCT_batch_eigh",
+    "WCT_batch_cholesky",
+    "WCT_batch_ldl",
+    "WCT_batch_lowrank",
+    "WCT_batch_svd_direct",
     "WCT",
     "WCT2",
+    "WCT_SVD",
+    "WCT2_SVD",
     "injection",
 ]
 
@@ -3274,6 +3305,7 @@ class ClownStyle_Boost:
                     {
                     "noise_mode":           (["direct", "update", "smart", "recon", "bonanza"], {"default": "update"},),
                     "recon_lure":           (STYLE_MODES,    {"default": "WCT", "tooltip": "Only used if noise_mode = recon. Can increase the strength of the style."},),
+                    "recon_lure_weight":    ("FLOAT",        {"default": 1.0, "min":  -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Set the strength of the guide by multiplying all other weights by this value."}),
                     "datashock":            (STYLE_MODES,    {"default": "scattersort", "tooltip": "Will drastically increase the strength at low denoise levels. Use with img2img workflows."},),
                     "datashock_weight":     ("FLOAT",        {"default": 1.0, "min":  -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Set the strength of the guide by multiplying all other weights by this value."}),
                     "datashock_start_step": ("INT",          {"default": 0, "min": 0, "max": 10000, "step": 1, "tooltip": "Start step for data shock."}),
@@ -3297,6 +3329,7 @@ class ClownStyle_Boost:
     def main(self,
             noise_mode  = "update",
             recon_lure  = "default",
+            recon_lure_weight = 1.0,
             datashock  = None,
             datashock_weight = 1.0,
             datashock_start_step  = None,
@@ -3320,6 +3353,8 @@ class ClownStyle_Boost:
         
         StyleMMDiT.noise_mode = noise_mode
         StyleMMDiT.recon_lure = recon_lure
+        StyleMMDiT.recon_lure_weight = recon_lure_weight
+
         StyleMMDiT.data_shock = datashock
         StyleMMDiT.data_shock_weight = datashock_weight
         StyleMMDiT.data_shock_start_step = datashock_start_step
@@ -3614,6 +3649,7 @@ class ClownStyle_Attn_MMDiT:
                     "block_list":    ("STRING", {"default": "all", "multiline": True}),
                     "block_weights": ("STRING", {"default": "1.0", "multiline": True}),
                     
+                    "qkv":    ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Strength of effect on layer; skips extra calculation if set to 0.0. Skips interpolation if set to 1.0."}),
                     "q_proj": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Strength of effect on layer; skips extra calculation if set to 0.0. Skips interpolation if set to 1.0."}),
                     "k_proj": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Strength of effect on layer; skips extra calculation if set to 0.0. Skips interpolation if set to 1.0."}),
                     "v_proj": ("FLOAT", {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Strength of effect on layer; skips extra calculation if set to 0.0. Skips interpolation if set to 1.0."}),
@@ -3646,6 +3682,7 @@ class ClownStyle_Attn_MMDiT:
             block_list    = "all",
             block_weights = "1.0",
             
+            qkv = 0.0,
             q_proj = 0.0,
             k_proj = 0.0,
             v_proj = 0.0,
@@ -3702,6 +3739,7 @@ class ClownStyle_Attn_MMDiT:
             StyleMMDiT = StyleMMDiT_Model()
         
         weights = {
+            "qkv":    qkv,
             "q_proj": q_proj,
             "k_proj": k_proj,
             "v_proj": v_proj,
