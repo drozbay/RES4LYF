@@ -283,7 +283,8 @@ class SharkSampler:
                 sampler.extra_options.pop("cfg_cw", None) 
 
             
-            if not EO("disable_dummy_sampler_init"):
+            # if not EO("disable_dummy_sampler_init"):
+            if EO("enable_dummy_sampler_init"):
                 sampler_null = comfy.samplers.ksampler("rk_beta", 
                     {
                         "sampler_mode": "NULL",
