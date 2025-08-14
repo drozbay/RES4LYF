@@ -342,24 +342,49 @@ class latent_replace_state_info:
         return {
             "required": {
                     "latent": ("LATENT", ),
-                    "clear_raw_x": ("BOOLEAN", {"default": False}),
-                    "replace_end_step": ("INT", {"default": 0, "min": -10000, "max": 10000}),
+                    "replace_start_step": ("BOOLEAN", {"default": False}),
+                    "replace_end_step": ("BOOLEAN", {"default": False}),
+                    "replace_raw_x": ("BOOLEAN", {"default": False}),
+                    "replace_sigmas": ("BOOLEAN", {"default": False}),
                      },
+            "optional": {
+                    "start_step": ("INT", {"default": 0, "min": -10000, "max": 10000}),
+                    "end_step": ("INT", {"default": 0, "min": -10000, "max": 10000}),
+                    "raw_x": ("LATENT", {"default": None}),
+                    "sigmas": ("SIGMAS", {"default": None}),
                 }
+        }
 
     RETURN_TYPES = ("LATENT",)
     RETURN_NAMES = ("latent",)
     FUNCTION     = "main"
     CATEGORY     = "RES4LYF/latents"
 
-    def main(self, latent, clear_raw_x, replace_end_step):
-        latent_out = copy.deepcopy(latent)
+    def main(self, latent, replace_start_step, replace_end_step, replace_raw_x, replace_sigmas,
+              start_step=None, end_step=None, raw_x=None, sigmas=None):
+        latent_out = latent.copy()
         if 'state_info' not in latent_out:
             latent_out['state_info'] = {}
-        if clear_raw_x:
-            latent_out['state_info']['raw_x'] = None
-        if replace_end_step != 0:
-            latent_out['state_info']['end_step'] = replace_end_step
+        if replace_start_step:
+            if start_step is None and 'start_step' in latent_out['state_info']:
+                latent_out['state_info'].pop('start_step', None)
+            else:
+                latent_out['state_info']['start_step'] = start_step
+        if replace_end_step:
+            if end_step is None and 'end_step' in latent_out['state_info']:
+                latent_out['state_info'].pop('end_step', None)
+            else:
+                latent_out['state_info']['end_step'] = end_step
+        if replace_raw_x:
+            if raw_x is None and 'raw_x' in latent_out['state_info']:
+                latent_out['state_info'].pop('raw_x', None)
+            else:
+                latent_out['state_info']['raw_x'] = raw_x
+        if replace_sigmas:
+            if sigmas is None and 'sigmas' in latent_out['state_info']:
+                latent_out['state_info'].pop('sigmas', None)
+            else:
+                latent_out['state_info']['sigmas'] = sigmas
         return (latent_out,)
 
 
