@@ -1335,11 +1335,11 @@ def get_rk_methods_beta(rk_type       : str,
     v                = None
     
     EO                            = ExtraOptions(extra_options)
-    use_analytic_solution         = not EO("disable_analytic_solution")
+    use_analytic_solution         = not EO("disable_analytic_solution", debugMode=1)
     multistep_initial_sampler     = EO("multistep_initial_sampler", "", debugMode=1)
-    multistep_fallback_sampler    = EO("multistep_fallback_sampler", "")
-    multistep_extra_initial_steps = EO("multistep_extra_initial_steps", 1)
-    
+    multistep_fallback_sampler    = EO("multistep_fallback_sampler", "", debugMode=1)
+    multistep_extra_initial_steps = EO("multistep_extra_initial_steps", 1, debugMode=1)
+
     #if RK_Method_Beta.is_exponential(rk_type): 
     if rk_type.startswith(("res", "dpmpp", "ddim", "pec", "etdrk", "lawson")): 
         h_no_eta = -torch.log(sigma_next/sigma)
