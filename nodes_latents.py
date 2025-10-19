@@ -300,6 +300,7 @@ class LatentUpscaleBy_state_info:
 
     CATEGORY = "latent"
 
+    @staticmethod
     def _upscale_tensor(tensor, upscale_method, scale_by):
         width = round(tensor.shape[-1] * scale_by)
         height = round(tensor.shape[-2] * scale_by)

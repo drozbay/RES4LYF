@@ -145,6 +145,7 @@ NODE_CLASS_MAPPINGS = {
     "Latent Display State Info"           : nodes_latents.latent_display_state_info,
     "Latent Transfer State Info"          : nodes_latents.latent_transfer_state_info,
     "Latent TrimVideo State Info"         : nodes_latents.TrimVideoLatent_state_info,
+    "Latent Upscale State Info"           : nodes_latents.LatentUpscaleBy_state_info,
     "Latent to Cuda"                      : nodes_latents.latent_to_cuda,
     "Latent Batcher"                      : nodes_latents.latent_batch,
     "Latent Normalize Channels"           : nodes_latents.latent_normalize_channels,
