@@ -80,9 +80,16 @@ class ExtraOptions():
                         RESplain("Set extra_option: ", option, "=", value)
             else:
                 value = default
+
+        # if "mute_EO" is in extra_options, set mute to True
+        if "mute_EO" in self.extra_options:
+            self.set_mute(True)
         
         return value
-
+    
+    def set_mute(self, mute=True):
+        self.mute = mute
+        return self
 
 
 
