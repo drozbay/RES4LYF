@@ -530,20 +530,60 @@ class latent_to_cuda:
                     "latent": ("LATENT", ),      
                     "to_cuda": ("BOOLEAN", {"default": True}),
                      },
+            "optional": {
+                    "full_latent": ("BOOLEAN", {"default": True}),
+                    },
                 }
 
     RETURN_TYPES = ("LATENT",)
-    RETURN_NAMES = ("passthrough",)
+    RETURN_NAMES = ("LATENT",)
     FUNCTION     = "main"
     CATEGORY     = "RES4LYF/latents"
 
-    def main(self, latent, to_cuda):
-        match to_cuda:
-            case "True":
-                latent = latent.to('cuda')
-            case "False":
-                latent = latent.to('cpu')
-        return (latent,)
+    def main(self, latent, to_cuda, full_latent=True):
+        device = self._resolve_device(to_cuda)
+
+        if full_latent:
+            if not isinstance(latent, dict):
+                raise TypeError("full_latent=True requires a latent dictionary.")
+            latent_out = self._move_structure(latent, device)
+        else:
+            latent_out = self._move_samples_only(latent, device)
+
+        return (latent_out,)
+
+    def _resolve_device(self, to_cuda):
+        if isinstance(to_cuda, bool):
+            return "cuda" if to_cuda else "cpu"
+        if isinstance(to_cuda, str):
+            normalized = to_cuda.strip().lower()
+            if normalized in {"true", "cuda", "gpu"}:
+                return "cuda"
+            if normalized in {"false", "cpu"}:
+                return "cpu"
+        raise ValueError("to_cuda must be a boolean or one of ['cuda', 'cpu']")
+
+    def _move_structure(self, value, device):
+        if torch.is_tensor(value):
+            return value.to(device)
+        if isinstance(value, dict):
+            return {k: self._move_structure(v, device) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._move_structure(v, device) for v in value]
+        if isinstance(value, tuple):
+            return tuple(self._move_structure(v, device) for v in value)
+        return copy.deepcopy(value)
+
+    def _move_samples_only(self, latent, device):
+        if isinstance(latent, dict):
+            if "samples" not in latent:
+                raise KeyError("Latent dictionary missing 'samples' key.")
+            latent_out = latent.copy()
+            latent_out["samples"] = latent["samples"].to(device)
+            return latent_out
+        if torch.is_tensor(latent):
+            return latent.to(device)
+        raise TypeError("Latent must be a dict with 'samples' or a tensor when full_latent=False.")
 
 
 
