@@ -14,6 +14,7 @@ import comfy.latent_formats
 import comfy.sd
 import comfy.supported_models
 import comfy.utils
+import comfy.nested_tensor
 from comfy.samplers import CFGGuider, sampling_function
 
 import latent_preview
@@ -333,9 +334,11 @@ class SharkSampler:
             latent_x = {}
             # INIT STATE INFO FOR CONTINUING GENERATION ACROSS MULTIPLE SAMPLER NODES
             if latent_image is not None:
-                latent_x['samples'] = latent_image['samples'].clone()
+                samples = latent_image['samples']
+                latent_x['samples'] = samples._copy() if isinstance(samples, comfy.nested_tensor.NestedTensor) else samples.clone()
                 if 'noise_mask' in latent_image:
-                    latent_x['noise_mask'] = latent_image['noise_mask'].clone()
+                    noise_mask = latent_image['noise_mask']
+                    latent_x['noise_mask'] = noise_mask._copy() if isinstance(noise_mask, comfy.nested_tensor.NestedTensor) else noise_mask.clone()
                 state_info = copy.deepcopy(latent_image['state_info']) if 'state_info' in latent_image else {}
             else:
                 state_info = {}
