@@ -7,6 +7,7 @@ import shutil
 import inspect
 import aiohttp
 import math
+import logging
 import comfy.model_sampling
 import comfy.samplers
 from aiohttp import web
@@ -17,6 +18,7 @@ from tqdm import tqdm
 CONFIG_FILE_NAME = "res4lyf.config.json"
 DEFAULT_CONFIG_FILE_NAME = "web/js/res4lyf.default.json"
 config = None
+logger = logging.getLogger(__name__)
 
 using_RES4LYF_time_snr_shift = False
 original_time_snr_shift = comfy.model_sampling.time_snr_shift
@@ -148,24 +150,33 @@ def is_debug_logging_enabled():
 
 def RESplain(*args, debug='info'):
     if isinstance(debug, bool):
-        type = 'debug' if debug else 'info'
+        log_type = 'debug' if debug else 'info'
     else:
-        type = debug
+        log_type = str(debug).lower()
 
-    if type == 'debug' and not is_debug_logging_enabled():
+    if log_type == 'debug' and not is_debug_logging_enabled():
         return
-    
+
     if not args:
         return
 
     name = get_extension_config()["name"]
-
     message = " ".join(map(str, args))
 
-    if type != 'debug' and type != 'warning':
-        print(f"({name}) {message}")
+    if log_type in ('debug', 'warning'):
+        formatted_message = f"({name} {log_type}) {message}"
     else:
-        print(f"({name} {type}) {message}")
+        formatted_message = f"({name}) {message}"
+
+    log_method = {
+        'debug': logger.debug,
+        'warning': logger.warning,
+        'error': logger.error,
+        'critical': logger.critical,
+        'info': logger.info,
+    }.get(log_type, logger.info)
+
+    log_method(formatted_message)
 
 def get_ext_dir(subpath=None, mkdir=False):
     dir = os.path.dirname(__file__)
