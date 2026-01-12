@@ -6,6 +6,7 @@ import json
 import shutil
 import inspect
 import aiohttp
+import torch
 import math
 import logging
 import comfy.model_sampling
@@ -89,6 +90,35 @@ def calculate_sigmas_RES4LYF(model_sampling, scheduler_name, steps):
         return original_calculate_sigmas(model_sampling, scheduler_name, steps)
     return sigmas
 
+
+# Patched set_step for IndexListContextHandler to handle substep sampling.
+def _patched_context_window_set_step(self, timestep: torch.Tensor, model_options: dict):
+    sample_sigmas = model_options["transformer_options"]["sample_sigmas"]
+    current_timestep = timestep[0]
+
+    # try exact match
+    mask = torch.isclose(sample_sigmas, current_timestep, rtol=0.0001)
+    matches = torch.nonzero(mask)
+    if torch.numel(matches) > 0:
+        self._step = int(matches[0].item())
+        return
+    is_descending = sample_sigmas[0] > sample_sigmas[-1]
+
+    if is_descending:
+        higher_mask = sample_sigmas > current_timestep
+        if torch.any(higher_mask):
+            higher_indices = torch.nonzero(higher_mask)
+            self._step = int(higher_indices[-1].item())
+        else:
+            self._step = 0
+    else:
+        lower_mask = sample_sigmas < current_timestep
+        if torch.any(lower_mask):
+            lower_indices = torch.nonzero(lower_mask)
+            self._step = int(lower_indices[-1].item())
+        else:
+            self._step = 0
+
 def init(check_imports=None):
     RESplain("Init")
 
@@ -111,6 +141,14 @@ def init(check_imports=None):
         comfy.samplers.SCHEDULER_NAMES = comfy.samplers.SCHEDULER_NAMES + ["beta57"]
     if "beta57" not in comfy.samplers.KSampler.SCHEDULERS:
         comfy.samplers.KSampler.SCHEDULERS = comfy.samplers.KSampler.SCHEDULERS + ["beta57"]
+
+    # monkey patch IndexListContextHandler.set_step to handle substep sampling
+    try:
+        from comfy.context_windows import IndexListContextHandler
+        IndexListContextHandler.set_step = _patched_context_window_set_step
+        RESplain("Patched IndexListContextHandler.set_step for substep sampling")
+    except ImportError:
+        RESplain("context_windows module not available, skipping set_step patch", debug=True)
 
     return True
 
