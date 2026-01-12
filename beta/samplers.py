@@ -500,12 +500,111 @@ class SharkSampler:
                 extra_options += sampler.extra_options['extra_options']
                 sampler.extra_options['extra_options'] = extra_options
 
-            latent_image_batch = {"samples": latent_x['samples'].clone()}
+            samples = latent_x['samples']
+            latent_image_batch = {"samples": samples._copy() if isinstance(samples, comfy.nested_tensor.NestedTensor) else samples.clone()}
             if 'noise_mask' in latent_x and latent_x['noise_mask'] is not None:
-                latent_image_batch['noise_mask'] = latent_x['noise_mask'].clone()
-            
-            # UNROLL BATCHES
-            
+                noise_mask = latent_x['noise_mask']
+                latent_image_batch['noise_mask'] = noise_mask._copy() if isinstance(noise_mask, comfy.nested_tensor.NestedTensor) else noise_mask.clone()
+
+            # NESTED TENSOR PATH - bypass batch loop for LTX AV combined latents
+            if hasattr(latent_image_batch['samples'], 'is_nested') and latent_image_batch['samples'].is_nested:
+
+                latent_tensors = latent_image_batch['samples'].unbind()
+                noise_tensors = []
+                for tensor_idx, t in enumerate(latent_tensors):
+                    t_for_noise = t.clone().to(default_dtype)
+                    if noise_type_init == "none" or noise_stdev == 0.0:
+                        n = torch.zeros_like(t_for_noise)
+                    else:
+                        noise_sampler_init = NOISE_GENERATOR_CLASSES_SIMPLE.get(noise_type_init)(
+                            x=t_for_noise, seed=noise_seed + tensor_idx,
+                            sigma_max=sigma_max, sigma_min=sigma_min
+                        )
+                        if noise_type_init == "fractal":
+                            noise_sampler_init.alpha = alpha_init
+                            noise_sampler_init.k = k_init
+                            noise_sampler_init.scale = 0.1
+                        n = noise_sampler_init(sigma=sigma_max * noise_stdev, sigma_next=sigma_min)
+
+                        if noise_normalize and n.std() > 0:
+                            channelwise = EO("init_noise_normalize_channelwise", "true") == "true"
+                            n = normalize_zscore(n, channelwise=channelwise, inplace=True)
+                        n *= noise_stdev
+                        n = (n - n.mean()) + noise_mean
+                    noise_tensors.append(n)
+
+                nested_noise = comfy.nested_tensor.NestedTensor(noise_tensors)
+                nested_latent = latent_image_batch['samples'].to(default_dtype)
+
+                if guider is None:
+                    guider = SharkGuider(work_model)
+                    flow_cond = options_mgr.get('flow_cond', {})
+                    if flow_cond and 'yt_positive' in flow_cond:
+                        if 'yt_inv_positive' not in flow_cond:
+                            guider.set_conds(yt_positive=flow_cond.get('yt_positive'),
+                                             yt_negative=flow_cond.get('yt_negative'))
+                            guider.set_cfgs(yt=flow_cond.get('yt_cfg'), xt=cfg)
+                        else:
+                            guider.set_conds(yt_positive=flow_cond.get('yt_positive'),
+                                             yt_negative=flow_cond.get('yt_negative'),
+                                             yt_inv_positive=flow_cond.get('yt_inv_positive'),
+                                             yt_inv_negative=flow_cond.get('yt_inv_negative'))
+                            guider.set_cfgs(yt=flow_cond.get('yt_cfg'),
+                                           yt_inv=flow_cond.get('yt_inv_cfg'), xt=cfg)
+                    else:
+                        guider.set_cfgs(xt=cfg)
+                    guider.set_conds(xt_positive=pos_cond, xt_negative=neg_cond)
+                elif type(guider) == SharkGuider:
+                    guider.set_cfgs(xt=cfg)
+                    guider.set_conds(xt_positive=pos_cond, xt_negative=neg_cond)
+                else:
+                    try:
+                        guider.set_cfg(cfg)
+                        guider.set_conds(pos_cond, neg_cond)
+                    except:
+                        pass  # Assume already set
+
+                noise_mask = latent_image_batch.get("noise_mask", None)
+
+                if 'BONGMATH' in sampler.extra_options:
+                    sampler.extra_options['state_info'] = state_info
+                    state_info_out = {}
+                    sampler.extra_options['state_info_out'] = state_info_out
+                else:
+                    state_info_out = {}
+
+                x0_output = {}
+                callback = latent_preview.prepare_callback(work_model, sigmas.shape[-1] - 1, x0_output)
+
+                samples = guider.sample(
+                    nested_noise, nested_latent, sampler, sigmas,
+                    denoise_mask=noise_mask, callback=callback,
+                    disable_pbar=disable_pbar, seed=noise_seed
+                )
+
+                out = latent_x.copy()
+                out["samples"] = samples
+
+                if "x0" in x0_output:
+                    x0_out = work_model.model.process_latent_out(x0_output["x0"].cpu())
+                    if hasattr(samples, 'is_nested') and samples.is_nested:
+                        latent_shapes = [t.shape for t in samples.unbind()]
+                        x0_out = comfy.nested_tensor.NestedTensor(
+                            comfy.utils.unpack_latents(x0_out, latent_shapes)
+                        )
+                    out_denoised = latent_x.copy()
+                    out_denoised["samples"] = x0_out
+                else:
+                    out_denoised = out
+
+                out['positive'] = positive
+                out['negative'] = negative
+                out['model'] = work_model
+                out['sampler'] = sampler
+                out['state_info'] = state_info_out
+
+                return (out, out_denoised, None)
+
             out_samples          = []
             out_denoised_samples = []
             out_state_info       = []
