@@ -58,6 +58,32 @@ def copy_cond(conditioning):
     return new_conditioning
 
 
+def generate_init_noise(x, seed, noise_type_init, noise_stdev, noise_mean, noise_normalize,
+                        sigma_max, sigma_min, alpha_init=None, k_init=None, EO=None):
+    if noise_type_init == "none" or noise_stdev == 0.0:
+        return torch.zeros_like(x)
+
+    noise_sampler_init = NOISE_GENERATOR_CLASSES_SIMPLE.get(noise_type_init)(
+        x=x, seed=seed, sigma_max=sigma_max, sigma_min=sigma_min
+    )
+
+    if noise_type_init == "fractal":
+        noise_sampler_init.alpha = alpha_init
+        noise_sampler_init.k = k_init
+        noise_sampler_init.scale = 0.1
+
+    noise = noise_sampler_init(sigma=sigma_max * noise_stdev, sigma_next=sigma_min)
+
+    if noise_normalize and noise.std() > 0:
+        channelwise = EO("init_noise_normalize_channelwise", "true") if EO else "true"
+        channelwise = True if channelwise == "true" else False
+        noise = normalize_zscore(noise, channelwise=channelwise, inplace=True)
+
+    noise *= noise_stdev
+    noise = (noise - noise.mean()) + noise_mean
+    return noise
+
+
 class SharkGuider(CFGGuider):
     def __init__(self, model_patcher):
         super().__init__(model_patcher)
@@ -284,9 +310,11 @@ class SharkSampler:
                 sampler.extra_options.pop("cfg_cw", None) 
 
             
-            # if not EO("disable_dummy_sampler_init"):
+            is_nested_input = latent_image is not None and 'samples' in latent_image and isinstance(latent_image['samples'], comfy.nested_tensor.NestedTensor)
             if EO("enable_dummy_sampler_init"):
-                sampler_null = comfy.samplers.ksampler("rk_beta", 
+                if is_nested_input:
+                    raise NotImplementedError("Extra option 'enable_dummy_sampler_init' with nested tensors is not supported.")
+                sampler_null = comfy.samplers.ksampler("rk_beta",
                     {
                         "sampler_mode": "NULL",
                     })
@@ -506,35 +534,28 @@ class SharkSampler:
                 noise_mask = latent_x['noise_mask']
                 latent_image_batch['noise_mask'] = noise_mask._copy() if isinstance(noise_mask, comfy.nested_tensor.NestedTensor) else noise_mask.clone()
 
-            # NESTED TENSOR PATH - bypass batch loop for LTX AV combined latents
-            if hasattr(latent_image_batch['samples'], 'is_nested') and latent_image_batch['samples'].is_nested:
+            if EO("no_batch_loop"):
+                x = latent_image_batch['samples'].to(default_dtype)
 
-                latent_tensors = latent_image_batch['samples'].unbind()
-                noise_tensors = []
-                for tensor_idx, t in enumerate(latent_tensors):
-                    t_for_noise = t.clone().to(default_dtype)
-                    if noise_type_init == "none" or noise_stdev == 0.0:
-                        n = torch.zeros_like(t_for_noise)
-                    else:
-                        noise_sampler_init = NOISE_GENERATOR_CLASSES_SIMPLE.get(noise_type_init)(
-                            x=t_for_noise, seed=noise_seed + tensor_idx,
-                            sigma_max=sigma_max, sigma_min=sigma_min
+                if isinstance(x, comfy.nested_tensor.NestedTensor):
+                    noise = comfy.nested_tensor.NestedTensor([
+                        generate_init_noise(
+                            x=t.clone(), seed=noise_seed + idx,
+                            noise_type_init=noise_type_init, noise_stdev=noise_stdev,
+                            noise_mean=noise_mean, noise_normalize=noise_normalize,
+                            sigma_max=sigma_max, sigma_min=sigma_min,
+                            alpha_init=alpha_init, k_init=k_init, EO=EO
                         )
-                        if noise_type_init == "fractal":
-                            noise_sampler_init.alpha = alpha_init
-                            noise_sampler_init.k = k_init
-                            noise_sampler_init.scale = 0.1
-                        n = noise_sampler_init(sigma=sigma_max * noise_stdev, sigma_next=sigma_min)
-
-                        if noise_normalize and n.std() > 0:
-                            channelwise = EO("init_noise_normalize_channelwise", "true") == "true"
-                            n = normalize_zscore(n, channelwise=channelwise, inplace=True)
-                        n *= noise_stdev
-                        n = (n - n.mean()) + noise_mean
-                    noise_tensors.append(n)
-
-                nested_noise = comfy.nested_tensor.NestedTensor(noise_tensors)
-                nested_latent = latent_image_batch['samples'].to(default_dtype)
+                        for idx, t in enumerate(x.unbind())
+                    ])
+                else:
+                    noise = generate_init_noise(
+                        x=x.clone(), seed=noise_seed,
+                        noise_type_init=noise_type_init, noise_stdev=noise_stdev,
+                        noise_mean=noise_mean, noise_normalize=noise_normalize,
+                        sigma_max=sigma_max, sigma_min=sigma_min,
+                        alpha_init=alpha_init, k_init=k_init, EO=EO
+                    )
 
                 if guider is None:
                     guider = SharkGuider(work_model)
@@ -562,9 +583,7 @@ class SharkSampler:
                         guider.set_cfg(cfg)
                         guider.set_conds(pos_cond, neg_cond)
                     except:
-                        pass  # Assume already set
-
-                noise_mask = latent_image_batch.get("noise_mask", None)
+                        pass
 
                 if 'BONGMATH' in sampler.extra_options:
                     sampler.extra_options['state_info'] = state_info
@@ -573,14 +592,131 @@ class SharkSampler:
                 else:
                     state_info_out = {}
 
-                x0_output = {}
-                callback = latent_preview.prepare_callback(work_model, sigmas.shape[-1] - 1, x0_output)
+                if latent_image is not None and 'state_info' in latent_image and 'sigmas' in latent_image['state_info']:
+                    steps_len = max(sigmas.shape[-1] - 1, latent_image['state_info']['sigmas'].shape[-1] - 1)
+                else:
+                    steps_len = sigmas.shape[-1] - 1
 
-                samples = guider.sample(
-                    nested_noise, nested_latent, sampler, sigmas,
-                    denoise_mask=noise_mask, callback=callback,
-                    disable_pbar=disable_pbar, seed=noise_seed
-                )
+                x0_output = {}
+                try:
+                    callback = latent_preview.prepare_callback(work_model, steps_len, x0_output,
+                        shape=x.shape if hasattr(x, 'is_nested') and x.is_nested else None)
+                except TypeError:
+                    callback = latent_preview.prepare_callback(work_model, steps_len, x0_output)
+
+                noise_mask = latent_image_batch.get("noise_mask", None)
+
+                if rebounds > 0:
+                    cfgs_cached = guider.cfgs
+                    steps_to_run_cached = sampler.extra_options['steps_to_run']
+                    eta_cached         = sampler.extra_options['eta']
+                    eta_substep_cached = sampler.extra_options['eta_substep']
+
+                    etas_cached         = sampler.extra_options['etas'].clone()
+                    etas_substep_cached = sampler.extra_options['etas_substep'].clone()
+
+                    unsample_etas = torch.full_like(etas_cached, unsample_eta)
+                    rk_type_cached = sampler.extra_options['rk_type']
+
+                    if sampler.extra_options['sampler_mode'] == "unsample":
+                        guider.cfgs = {
+                            'xt': unsample_cfg,
+                            'yt': unsample_cfg,
+                        }
+                        if unsample_eta != -1.0:
+                            sampler.extra_options['eta_substep']  = unsample_eta
+                            sampler.extra_options['eta']          = unsample_eta
+                            sampler.extra_options['etas_substep'] = unsample_etas
+                            sampler.extra_options['etas']         = unsample_etas
+                        if unsampler_name != "none":
+                            sampler.extra_options['rk_type']      = unsampler_name
+                        if unsample_steps_to_run > -1:
+                            sampler.extra_options['steps_to_run'] = unsample_steps_to_run
+                    else:
+                        guider.cfgs = cfgs_cached
+
+                    guider.cfgs = cfgs_cached
+                    sampler.extra_options['steps_to_run'] = steps_to_run_cached
+
+                    eta_decay           = eta_cached
+                    eta_substep_decay   = eta_substep_cached
+                    unsample_eta_decay  = unsample_eta
+
+                    etas_decay          = etas_cached
+                    etas_substep_decay  = etas_substep_cached
+                    unsample_etas_decay = unsample_etas
+
+                if isinstance(x, comfy.nested_tensor.NestedTensor):
+                    samples = guider.sample(noise, x._copy(), sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
+                else:
+                    samples = guider.sample(noise, x.clone(), sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
+
+                if rebounds > 0:
+                    noise_seed_cached   = sampler.extra_options['noise_seed']
+                    cfgs_cached         = guider.cfgs
+                    sampler_mode_cached = sampler.extra_options['sampler_mode']
+
+                    for restarts_iter in range(rebounds):
+                        sampler.extra_options['state_info'] = sampler.extra_options['state_info_out']
+
+                        sigmas = sampler.extra_options['state_info_out']['sigmas'] if sigmas is None else sigmas
+
+                        if   sampler.extra_options['sampler_mode'] == "standard":
+                            sampler.extra_options['sampler_mode'] = "unsample"
+                        elif sampler.extra_options['sampler_mode'] == "unsample":
+                            sampler.extra_options['sampler_mode'] = "resample"
+                        elif sampler.extra_options['sampler_mode'] == "resample":
+                            sampler.extra_options['sampler_mode'] = "unsample"
+
+                        sampler.extra_options['noise_seed'] = -1
+
+                        if sampler.extra_options['sampler_mode'] == "unsample":
+                            guider.cfgs = {
+                                'xt': unsample_cfg,
+                                'yt': unsample_cfg,
+                            }
+                            if unsample_eta != -1.0:
+                                sampler.extra_options['eta_substep']  = unsample_eta_decay
+                                sampler.extra_options['eta']          = unsample_eta_decay
+                                sampler.extra_options['etas_substep'] = unsample_etas
+                                sampler.extra_options['etas']         = unsample_etas
+                            else:
+                                sampler.extra_options['eta_substep']  = eta_substep_decay
+                                sampler.extra_options['eta']          = eta_decay
+                                sampler.extra_options['etas_substep'] = etas_substep_decay
+                                sampler.extra_options['etas']         = etas_decay
+                            if unsampler_name != "none":
+                                sampler.extra_options['rk_type']  = unsampler_name
+                            if unsample_steps_to_run > -1:
+                                sampler.extra_options['steps_to_run'] = unsample_steps_to_run
+                        else:
+                            guider.cfgs = cfgs_cached
+                            sampler.extra_options['eta_substep']  = eta_substep_decay
+                            sampler.extra_options['eta']          = eta_decay
+                            sampler.extra_options['etas_substep'] = etas_substep_decay
+                            sampler.extra_options['etas']         = etas_decay
+                            sampler.extra_options['rk_type']      = rk_type_cached
+                            sampler.extra_options['steps_to_run'] = steps_to_run_cached
+
+                        samples = guider.sample(noise, samples.clone(), sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=-1)
+
+                        eta_substep_decay   *= eta_decay_scale
+                        eta_decay           *= eta_decay_scale
+                        unsample_eta_decay  *= eta_decay_scale
+
+                        etas_substep_decay  *= eta_decay_scale
+                        etas_decay          *= eta_decay_scale
+                        unsample_etas_decay *= eta_decay_scale
+
+                    sampler.extra_options['noise_seed'] = noise_seed_cached
+                    guider.cfgs = cfgs_cached
+                    sampler.extra_options['sampler_mode'] = sampler_mode_cached
+                    sampler.extra_options['eta_substep']  = eta_substep_cached
+                    sampler.extra_options['eta']          = eta_cached
+                    sampler.extra_options['etas_substep'] = etas_substep_cached
+                    sampler.extra_options['etas']         = etas_cached
+
+                samples = samples.to(comfy.model_management.intermediate_device())
 
                 out = latent_x.copy()
                 out["samples"] = samples
@@ -611,7 +747,10 @@ class SharkSampler:
             
             for batch_num in range(latent_image_batch['samples'].shape[0]):
                 latent_unbatch            = copy.deepcopy(latent_x)
-                latent_unbatch['samples'] = latent_image_batch['samples'][batch_num].clone().unsqueeze(0)
+                if isinstance(latent_image_batch['samples'][batch_num], comfy.nested_tensor.NestedTensor):
+                    latent_unbatch['samples'] = latent_image_batch['samples'][batch_num]._copy()
+                else:
+                    latent_unbatch['samples'] = latent_image_batch['samples'][batch_num].clone().unsqueeze(0)
                 
                 if 'BONGMATH' in sampler.extra_options:
                     sampler.extra_options['batch_num'] = batch_num
@@ -630,8 +769,10 @@ class SharkSampler:
                     torch     .manual_seed(seed)
                     torch.cuda.manual_seed(seed)
 
-
-                x = latent_unbatch["samples"].clone().to(default_dtype) # does this type carry into clown after passing through comfy?
+                if hasattr(latent_unbatch["samples"], 'is_nested') and latent_unbatch["samples"].is_nested:
+                    x = latent_unbatch["samples"]._copy().to(default_dtype)
+                else:
+                    x = latent_unbatch["samples"].clone().to(default_dtype) # does this type carry into clown after passing through comfy?
 
 
 
@@ -641,35 +782,18 @@ class SharkSampler:
                     sde_noise_steps = 1
 
                 for total_steps_iter in range (sde_noise_steps):
-                        
-                    if noise_type_init == "none" or noise_stdev == 0.0:
-                        noise = torch.zeros_like(x)
-                    else:
-                        RESplain("Initial latent noise seed: ", seed, debug=True)
-                        
-                        noise_sampler_init = NOISE_GENERATOR_CLASSES_SIMPLE.get(noise_type_init)(x=x, seed=seed, sigma_max=sigma_max, sigma_min=sigma_min)
-                    
-                        if noise_type_init == "fractal":
-                            noise_sampler_init.alpha = alpha_init
-                            noise_sampler_init.k     = k_init
-                            noise_sampler_init.scale = 0.1
-                            
-                        """if EO("rare_noise"):
-                            noise, _, _ = sample_most_divergent_noise(noise_sampler_init, sigma_max, sigma_min, EO("rare_noise", 100))
-                        else:
-                            noise = noise_sampler_init(sigma=sigma_max * noise_stdev, sigma_next=sigma_min)"""
-                        noise = noise_sampler_init(sigma=sigma_max * noise_stdev, sigma_next=sigma_min)          # is sigma_max * noise_stdev really a good idea here?
-                        
-                        
 
-                    if noise_normalize and noise.std() > 0:
-                        channelwise = EO("init_noise_normalize_channelwise", "true")
-                        channelwise = True if channelwise == "true" else False
-                        noise = normalize_zscore(noise, channelwise=channelwise, inplace=True)
-                        
-                    noise *= noise_stdev
-                    noise = (noise - noise.mean()) + noise_mean
-                    
+                    if noise_type_init != "none" and noise_stdev != 0.0:
+                        RESplain("Initial latent noise seed: ", seed, debug=True)
+
+                    noise = generate_init_noise(
+                        x=x, seed=seed,
+                        noise_type_init=noise_type_init, noise_stdev=noise_stdev,
+                        noise_mean=noise_mean, noise_normalize=noise_normalize,
+                        sigma_max=sigma_max, sigma_min=sigma_min,
+                        alpha_init=alpha_init, k_init=k_init, EO=EO
+                    )
+
                     noise_mask = latent_unbatch["noise_mask"] if "noise_mask" in latent_unbatch else None
 
                     x_input = x
@@ -880,9 +1004,11 @@ class SharkSampler:
                         etas_decay          = etas_cached
                         etas_substep_decay  = etas_substep_cached
                         unsample_etas_decay = unsample_etas
-
-                    samples = guider.sample(noise, x_input.clone(), sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
-
+                    if isinstance(x_input, comfy.nested_tensor.NestedTensor):
+                        samples = guider.sample(noise, x_input._copy(), sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
+                    else:
+                        samples = guider.sample(noise, x_input.clone(), sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
+                    
                     if rebounds > 0: 
                         noise_seed_cached   = sampler.extra_options['noise_seed']
                         cfgs_cached         = guider.cfgs

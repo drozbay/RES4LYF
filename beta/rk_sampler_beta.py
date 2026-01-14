@@ -2111,7 +2111,7 @@ def sample_rk_beta(
     RK.update_transformer_options({'update_cross_attn':  None})
     if step == len(sigmas)-2 and sigmas[-1] == 0 and sigmas[-2] == NS.sigma_min and not INIT_SAMPLE_LOOP:
         if EO("skip_final_model_call"):
-            sigma_min = NS.sigma_min.view(x.shape[:1] + (1,) * (x.ndim - 1)).to(x)
+            sigma_min = NS.sigma_min.view((1,) * x.ndim).to(x)
             denoised  = model.inner_model.inner_model.model_sampling.calculate_denoised(sigma_min, eps, x)
             x = denoised
         else:
