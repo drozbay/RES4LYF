@@ -585,13 +585,6 @@ class SharkSampler:
                     except:
                         pass
 
-                if 'BONGMATH' in sampler.extra_options:
-                    sampler.extra_options['state_info'] = state_info
-                    state_info_out = {}
-                    sampler.extra_options['state_info_out'] = state_info_out
-                else:
-                    state_info_out = {}
-
                 if latent_image is not None and 'state_info' in latent_image and 'sigmas' in latent_image['state_info']:
                     steps_len = max(sigmas.shape[-1] - 1, latent_image['state_info']['sigmas'].shape[-1] - 1)
                 else:
@@ -605,6 +598,22 @@ class SharkSampler:
                     callback = latent_preview.prepare_callback(work_model, steps_len, x0_output)
 
                 noise_mask = latent_image_batch.get("noise_mask", None)
+
+                if noise_mask is not None:
+                    stored_image = state_info.get('image_initial')
+                    x_initial = stored_image if stored_image is not None else x
+                    stored_noise = state_info.get('noise_initial')
+                    noise_initial = stored_noise if stored_noise is not None else noise
+                else:
+                    x_initial = x
+                    noise_initial = noise
+
+                state_info_out = {}
+                if 'BONGMATH' in sampler.extra_options:
+                    sampler.extra_options['state_info'] = state_info
+                    sampler.extra_options['state_info_out'] = state_info_out
+                    sampler.extra_options['image_initial'] = x_initial
+                    sampler.extra_options['noise_initial'] = noise_initial
 
                 if rebounds > 0:
                     cfgs_cached = guider.cfgs
@@ -716,6 +725,29 @@ class SharkSampler:
                     sampler.extra_options['etas_substep'] = etas_substep_cached
                     sampler.extra_options['etas']         = etas_cached
 
+                if noise_mask is not None:
+                    if hasattr(samples, 'is_nested') and samples.is_nested:
+                        blended = []
+                        x_initial_list = x_initial.unbind() if hasattr(x_initial, 'is_nested') and x_initial.is_nested else [x_initial]
+                        if hasattr(noise_mask, 'is_nested') and noise_mask.is_nested:
+                            mask_list = noise_mask.unbind()
+                        else:
+                            mask_list = [noise_mask]
+                        for idx, s in enumerate(samples.unbind()):
+                            xi = x_initial_list[idx] if idx < len(x_initial_list) else x_initial_list[0]
+                            m = mask_list[idx] if idx < len(mask_list) else mask_list[0]
+                            if s.ndim == m.ndim:
+                                reshaped_mask = comfy.utils.reshape_mask(m, s.shape).to(s.device)
+                                blended.append(s * reshaped_mask + xi.to(s.device) * (1.0 - reshaped_mask))
+                            else:
+                                blended.append(s)
+                        samples = comfy.nested_tensor.NestedTensor(blended)
+                    else:
+                        if hasattr(noise_mask, 'is_nested') and noise_mask.is_nested:
+                            noise_mask = noise_mask.unbind()[0]
+                        reshaped_mask = comfy.utils.reshape_mask(noise_mask, samples.shape).to(samples.device)
+                        samples = samples * reshaped_mask + x_initial.to(samples.device) * (1.0 - reshaped_mask)
+
                 samples = samples.to(comfy.model_management.intermediate_device())
 
                 out = latent_x.copy()
@@ -737,6 +769,11 @@ class SharkSampler:
                 out['negative'] = negative
                 out['model'] = work_model
                 out['sampler'] = sampler
+
+                if noise_mask is not None:
+                    state_info_out['image_initial'] = x_initial
+                    state_info_out['noise_initial'] = noise_initial
+
                 out['state_info'] = state_info_out
 
                 return (out, out_denoised, None)

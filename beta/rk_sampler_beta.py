@@ -476,7 +476,7 @@ def sample_rk_beta(
 
     if noise_initial is not None:
         x_init = noise_initial.to(x)
-        RK.update_transformer_options({'x_init': x_init.clone()})
+        RK.update_transformer_options({'x_init': x_init._copy() if hasattr(x_init, 'is_nested') and x_init.is_nested else x_init.clone()})
 
     #progress_bar = trange(len(sigmas)-1-start_step, disable=disable)
     
