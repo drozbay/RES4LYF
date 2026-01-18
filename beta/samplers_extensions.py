@@ -159,6 +159,39 @@ class ClownOptions_StepSize_Beta:
             )
 
 
+class ClownOptions_LatentNormalize:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required":
+                    {
+                    "latent_idx_0": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01, "round": False, "tooltip": "Normalization factor for tensor index 0 (e.g., video for LTXV AV)."}),
+                    "latent_idx_1": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01, "round": False, "tooltip": "Normalization factor for tensor index 1 (e.g., audio for LTXV AV)."}),
+                    },
+                "optional":
+                    {
+                    "options": ("OPTIONS", ),
+                    }
+                }
+
+    RETURN_TYPES = ("OPTIONS",)
+    RETURN_NAMES = ("options",)
+    FUNCTION     = "main"
+    CATEGORY     = "RES4LYF/sampler_options"
+
+    def main(self,
+            latent_idx_0: float = 1.0,
+            latent_idx_1: float = 1.0,
+            options = None,
+            ):
+
+        options = options if options is not None else {}
+
+        options['latent_normalize_idx_0'] = latent_idx_0
+        options['latent_normalize_idx_1'] = latent_idx_1
+
+        return (options,)
+
+
 @dataclass
 class DetailBoostOptions:
     noise_scaling_weight : float = 0.0

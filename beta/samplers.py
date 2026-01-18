@@ -84,6 +84,25 @@ def generate_init_noise(x, seed, noise_type_init, noise_stdev, noise_mean, noise
     return noise
 
 
+def apply_nested_normalization(x, idx_0_factor, idx_1_factor):
+    """Apply normalization to NestedTensor latent before sampling."""
+    if idx_0_factor == 1.0 and idx_1_factor == 1.0:
+        return x
+
+    if not (hasattr(x, 'is_nested') and x.is_nested):
+        return x
+
+    RESplain(f"Latent normalize (pre-sampling): idx_0={idx_0_factor}, idx_1={idx_1_factor}", debug=True)
+
+    tensors = x.unbind()
+    normalized = []
+    factors = [idx_0_factor, idx_1_factor]
+    for idx, t in enumerate(tensors):
+        factor = factors[idx] if idx < len(factors) else 1.0
+        normalized.append(t * factor)
+    return comfy.nested_tensor.NestedTensor(normalized)
+
+
 class SharkGuider(CFGGuider):
     def __init__(self, model_patcher):
         super().__init__(model_patcher)
@@ -655,6 +674,26 @@ class SharkSampler:
                     etas_substep_decay  = etas_substep_cached
                     unsample_etas_decay = unsample_etas
 
+                # Apply pre-sampling latent normalization for NestedTensors
+                idx_0_factor = options_mgr.get('latent_normalize_idx_0', 1.0)
+                idx_1_factor = options_mgr.get('latent_normalize_idx_1', 1.0)
+                if idx_0_factor != 1.0 or idx_1_factor != 1.0:
+                    # Normalize x for standard sampling
+                    x = apply_nested_normalization(x, idx_0_factor, idx_1_factor)
+                    # Also normalize raw_x for chainsampling (rk_sampler_beta replaces x with raw_x)
+                    # raw_x is a packed tensor, so we need to unpack, normalize, repack
+                    if 'raw_x' in state_info and hasattr(x, 'is_nested') and x.is_nested:
+                        raw_x = state_info['raw_x']
+                        latent_shapes = [t.shape for t in x.unbind()]
+                        tensors = comfy.utils.unpack_latents(raw_x, latent_shapes)
+                        factors = [idx_0_factor, idx_1_factor]
+                        for idx, t in enumerate(tensors):
+                            factor = factors[idx] if idx < len(factors) else 1.0
+                            if factor != 1.0:
+                                tensors[idx] = t * factor
+                        state_info['raw_x'], _ = comfy.utils.pack_latents(tensors)
+                        RESplain(f"Latent normalize: applied to raw_x (packed), idx_0={idx_0_factor}, idx_1={idx_1_factor}", debug=True)
+
                 if isinstance(x, comfy.nested_tensor.NestedTensor):
                     samples = guider.sample(noise, x._copy(), sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
                 else:
@@ -1041,6 +1080,14 @@ class SharkSampler:
                         etas_decay          = etas_cached
                         etas_substep_decay  = etas_substep_cached
                         unsample_etas_decay = unsample_etas
+
+                    # Apply pre-sampling latent normalization for NestedTensors
+                    idx_0_factor = options_mgr.get('latent_normalize_idx_0', 1.0)
+                    idx_1_factor = options_mgr.get('latent_normalize_idx_1', 1.0)
+                    RESplain(f"Latent normalize check: idx_0={idx_0_factor}, idx_1={idx_1_factor}, x_input.is_nested={hasattr(x_input, 'is_nested') and x_input.is_nested}", debug=True)
+                    if idx_0_factor != 1.0 or idx_1_factor != 1.0:
+                        x_input = apply_nested_normalization(x_input, idx_0_factor, idx_1_factor)
+
                     if isinstance(x_input, comfy.nested_tensor.NestedTensor):
                         samples = guider.sample(noise, x_input._copy(), sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
                     else:
