@@ -677,7 +677,19 @@ class SharkSampler:
                 # Apply pre-sampling latent normalization for NestedTensors
                 idx_0_factor = options_mgr.get('latent_normalize_idx_0', 1.0)
                 idx_1_factor = options_mgr.get('latent_normalize_idx_1', 1.0)
-                if idx_0_factor != 1.0 or idx_1_factor != 1.0:
+                factors_0_steps = options_mgr.get('latent_normalize_idx_0_steps', [1.0])
+                factors_1_steps = options_mgr.get('latent_normalize_idx_1_steps', [1.0])
+
+                # Per-step normalization: pass shapes and factors to inner sampler
+                has_per_step_factors = len(factors_0_steps) > 1 or len(factors_1_steps) > 1
+                if isinstance(x, comfy.nested_tensor.NestedTensor):
+                    sampler.extra_options['latent_shapes'] = [t.shape for t in x.unbind()]
+                    sampler.extra_options['latent_normalize_idx_0_steps'] = factors_0_steps
+                    sampler.extra_options['latent_normalize_idx_1_steps'] = factors_1_steps
+
+                # Node-level normalization only for single-value factors (backward compat)
+                # Per-step factors are applied in the inner loop instead
+                if not has_per_step_factors and (idx_0_factor != 1.0 or idx_1_factor != 1.0):
                     # Normalize x for standard sampling
                     x = apply_nested_normalization(x, idx_0_factor, idx_1_factor)
                     # Also normalize raw_x for chainsampling (rk_sampler_beta replaces x with raw_x)
@@ -1084,8 +1096,20 @@ class SharkSampler:
                     # Apply pre-sampling latent normalization for NestedTensors
                     idx_0_factor = options_mgr.get('latent_normalize_idx_0', 1.0)
                     idx_1_factor = options_mgr.get('latent_normalize_idx_1', 1.0)
+                    factors_0_steps = options_mgr.get('latent_normalize_idx_0_steps', [1.0])
+                    factors_1_steps = options_mgr.get('latent_normalize_idx_1_steps', [1.0])
                     RESplain(f"Latent normalize check: idx_0={idx_0_factor}, idx_1={idx_1_factor}, x_input.is_nested={hasattr(x_input, 'is_nested') and x_input.is_nested}", debug=True)
-                    if idx_0_factor != 1.0 or idx_1_factor != 1.0:
+
+                    # Per-step normalization: pass shapes and factors to inner sampler
+                    has_per_step_factors = len(factors_0_steps) > 1 or len(factors_1_steps) > 1
+                    if isinstance(x_input, comfy.nested_tensor.NestedTensor):
+                        sampler.extra_options['latent_shapes'] = [t.shape for t in x_input.unbind()]
+                        sampler.extra_options['latent_normalize_idx_0_steps'] = factors_0_steps
+                        sampler.extra_options['latent_normalize_idx_1_steps'] = factors_1_steps
+
+                    # Node-level normalization only for single-value factors (backward compat)
+                    # Per-step factors are applied in the inner loop instead
+                    if not has_per_step_factors and (idx_0_factor != 1.0 or idx_1_factor != 1.0):
                         x_input = apply_nested_normalization(x_input, idx_0_factor, idx_1_factor)
 
                     if isinstance(x_input, comfy.nested_tensor.NestedTensor):

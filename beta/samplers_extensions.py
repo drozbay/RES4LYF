@@ -164,8 +164,8 @@ class ClownOptions_LatentNormalize:
     def INPUT_TYPES(cls):
         return {"required":
                     {
-                    "latent_idx_0": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01, "round": False, "tooltip": "Normalization factor for tensor index 0 (e.g., video for LTXV AV)."}),
-                    "latent_idx_1": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01, "round": False, "tooltip": "Normalization factor for tensor index 1 (e.g., audio for LTXV AV)."}),
+                    "latent_idx_0": ("STRING", {"default": "1.0", "tooltip": "Normalization factor(s) for tensor index 0. Comma-separated for per-step (e.g., '1.0,1.0,0.8,0.5')."}),
+                    "latent_idx_1": ("STRING", {"default": "1.0", "tooltip": "Normalization factor(s) for tensor index 1. Comma-separated for per-step (e.g., '1.0,1.0,0.8,0.5')."}),
                     },
                 "optional":
                     {
@@ -179,15 +179,24 @@ class ClownOptions_LatentNormalize:
     CATEGORY     = "RES4LYF/sampler_options"
 
     def main(self,
-            latent_idx_0: float = 1.0,
-            latent_idx_1: float = 1.0,
+            latent_idx_0: str = "1.0",
+            latent_idx_1: str = "1.0",
             options = None,
             ):
 
         options = options if options is not None else {}
 
-        options['latent_normalize_idx_0'] = latent_idx_0
-        options['latent_normalize_idx_1'] = latent_idx_1
+        # Parse comma-separated values into lists of floats
+        factors_0 = [float(v.strip()) for v in latent_idx_0.split(',')]
+        factors_1 = [float(v.strip()) for v in latent_idx_1.split(',')]
+
+        # For backward compat / single-value case, use first value
+        options['latent_normalize_idx_0'] = factors_0[0]
+        options['latent_normalize_idx_1'] = factors_1[0]
+
+        # For per-step normalization, store full lists
+        options['latent_normalize_idx_0_steps'] = factors_0
+        options['latent_normalize_idx_1_steps'] = factors_1
 
         return (options,)
 

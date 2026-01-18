@@ -107,6 +107,39 @@ def init_implicit_sampling(
     return x_, eps_, data_
 
 
+def apply_per_step_latent_normalization(x, step, latent_shapes, factors_0_list, factors_1_list):
+    """
+    Unpack packed latent, apply per-tensor normalization, repack.
+
+    The latent x is already packed by CFGGuider. We unpack using the stored
+    shapes, apply the normalization factor for the current step, then repack.
+    """
+    if latent_shapes is None or len(latent_shapes) <= 1:
+        return x
+
+    # Get factor for current step (repeat last if fewer values than steps)
+    factor_0 = factors_0_list[min(step, len(factors_0_list) - 1)]
+    factor_1 = factors_1_list[min(step, len(factors_1_list) - 1)]
+
+    if factor_0 == 1.0 and factor_1 == 1.0:
+        return x
+
+    # Unpack using stored shapes
+    tensors = comfy.utils.unpack_latents(x, latent_shapes)
+
+    # Apply per-tensor normalization
+    factors = [factor_0, factor_1]
+    for idx, t in enumerate(tensors):
+        factor = factors[idx] if idx < len(factors) else 1.0
+        if factor != 1.0:
+            tensors[idx] = t * factor
+
+    # Repack
+    packed, _ = comfy.utils.pack_latents(tensors)
+    RESplain(f"Per-step latent normalize: step={step}, idx_0={factor_0}, idx_1={factor_1}", debug=True)
+    return packed
+
+
 @torch.no_grad()
 def sample_rk_beta(
         model,
@@ -226,13 +259,17 @@ def sample_rk_beta(
         sde_mask                      : Optional[Tensor]   = None,
         
         batch_num                     : int                = 0,
-        
+
         extra_options                 : str                = "",
-        
+
+        latent_shapes                 : Optional[List[tuple]]  = None,
+        latent_normalize_idx_0_steps  : Optional[List[float]]  = None,
+        latent_normalize_idx_1_steps  : Optional[List[float]]  = None,
+
         AttnMask   = None,
         RegContext = None,
         RegParam   = None,
-        
+
         AttnMask_neg   = None,
         RegContext_neg = None,
         RegParam_neg   = None,
@@ -586,6 +623,15 @@ def sample_rk_beta(
     
     while step < num_steps:
         sigma, sigma_next = sigmas[step], sigmas[step+1]
+
+        # Apply per-step latent normalization for NestedTensor latents
+        if latent_shapes is not None and latent_normalize_idx_0_steps is not None:
+            x = apply_per_step_latent_normalization(
+                x, step, latent_shapes,
+                latent_normalize_idx_0_steps or [1.0],
+                latent_normalize_idx_1_steps or [1.0]
+            )
+
         if sigma_next > sigma:
             step_sched = torch.where(torch.flip(sigmas, dims=[0]) == sigma)[0][0].item()
         else:
