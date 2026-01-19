@@ -857,10 +857,7 @@ class SharkSampler:
                     torch     .manual_seed(seed)
                     torch.cuda.manual_seed(seed)
 
-                if hasattr(latent_unbatch["samples"], 'is_nested') and latent_unbatch["samples"].is_nested:
-                    x = latent_unbatch["samples"]._copy().to(default_dtype)
-                else:
-                    x = latent_unbatch["samples"].clone().to(default_dtype) # does this type carry into clown after passing through comfy?
+                x = latent_unbatch["samples"].to(default_dtype)
 
 
 

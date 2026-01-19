@@ -293,10 +293,21 @@ def sample_rk_beta(
     RENOISE = False
     if 'raw_x' in state_info and sampler_mode in {"resample", "unsample"}:
         if x.shape == state_info['raw_x'].shape:
-            x = state_info['raw_x'].to(work_device) #clone()
+            x = state_info['raw_x'].to(work_device)
         else:
-            denoised = comfy.utils.bislerp(state_info['denoised'], x.shape[-1], x.shape[-2])
-            x = denoised.to(x)
+            if latent_shapes is not None and len(latent_shapes) > 1:
+                # Packed nested tensor - unpack, resize each component, repack
+                x_tensors = comfy.utils.unpack_latents(x, latent_shapes)
+                denoised_tensors = comfy.utils.unpack_latents(state_info['denoised'], latent_shapes)
+                resized_tensors = []
+                for x_t, d_t in zip(x_tensors, denoised_tensors):
+                    resized = comfy.utils.bislerp(d_t, x_t.shape[-1], x_t.shape[-2])
+                    resized_tensors.append(resized.to(x_t))
+                x, _ = comfy.utils.pack_latents(resized_tensors)
+            else:
+                # Regular tensor - use spatial dimensions directly
+                denoised = comfy.utils.bislerp(state_info['denoised'], x.shape[-1], x.shape[-2])
+                x = denoised.to(x)
             RENOISE = True
         RESplain("Continuing from raw latent from previous sampler.", debug=False)
     
@@ -326,7 +337,12 @@ def sample_rk_beta(
             
     if sde_mask is not None:
         from .rk_guide_func_beta import prepare_mask
-        sde_mask, _ = prepare_mask(x, sde_mask, LGW_MASK_RESCALE_MIN)
+        if latent_shapes is not None and len(latent_shapes) > 1:
+            # Packed nested tensor - prepare mask for first component (video) only
+            x_tensors = comfy.utils.unpack_latents(x, latent_shapes)
+            sde_mask, _ = prepare_mask(x_tensors[0], sde_mask, LGW_MASK_RESCALE_MIN)
+        else:
+            sde_mask, _ = prepare_mask(x, sde_mask, LGW_MASK_RESCALE_MIN)
         sde_mask = sde_mask.to(x.device).to(x.dtype)
     
 
@@ -513,7 +529,7 @@ def sample_rk_beta(
 
     if noise_initial is not None:
         x_init = noise_initial.to(x)
-        RK.update_transformer_options({'x_init': x_init._copy() if hasattr(x_init, 'is_nested') and x_init.is_nested else x_init.clone()})
+        RK.update_transformer_options({'x_init': x_init})
 
     #progress_bar = trange(len(sigmas)-1-start_step, disable=disable)
     
@@ -790,8 +806,23 @@ def sample_rk_beta(
                     if x.shape == state_info['raw_x'].shape:
                         data_prev_ = state_info['data_prev_'].clone().to(dtype=default_dtype, device=work_device)
                     else:
-                        data_prev_ = torch.stack([comfy.utils.bislerp(data_prev_item, x.shape[-1], x.shape[-2]) for data_prev_item in state_info['data_prev_']])
-                        data_prev_ = data_prev_.to(x)
+                        if latent_shapes is not None and len(latent_shapes) > 1:
+                            # Packed nested tensor - unpack, resize each component, repack for each data_prev_item
+                            x_tensors = comfy.utils.unpack_latents(x, latent_shapes)
+                            resized_items = []
+                            for data_prev_item in state_info['data_prev_']:
+                                prev_tensors = comfy.utils.unpack_latents(data_prev_item, latent_shapes)
+                                resized_tensors = []
+                                for x_t, p_t in zip(x_tensors, prev_tensors):
+                                    resized = comfy.utils.bislerp(p_t, x_t.shape[-1], x_t.shape[-2])
+                                    resized_tensors.append(resized.to(x_t))
+                                repacked, _ = comfy.utils.pack_latents(resized_tensors)
+                                resized_items.append(repacked)
+                            data_prev_ = torch.stack(resized_items).to(x)
+                        else:
+                            # Regular tensor - use spatial dimensions directly
+                            data_prev_ = torch.stack([comfy.utils.bislerp(data_prev_item, x.shape[-1], x.shape[-2]) for data_prev_item in state_info['data_prev_']])
+                            data_prev_ = data_prev_.to(x)
                 else:
                     data_prev_ =  torch.zeros(4, *x.shape, dtype=default_dtype, device=work_device) # multistep max is 4m... so 4 needed
             else:
@@ -1853,7 +1884,7 @@ def sample_rk_beta(
                                 x_init_new = (x_row_tmp - x_[row+RK.row_offset]) / s_tmp + x_init
                                 x_0 += sigma * (x_init_new - x_init)
                                 x_init = x_init_new
-                                RK.update_transformer_options({'x_init' : x_init.clone()})
+                                RK.update_transformer_options({'x_init': x_init})
                             
                             if SYNC_GUIDE_ACTIVE:
                                 noise_bongflow_new = (x_row_tmp - x_[row+RK.row_offset]) / s_tmp + noise_bongflow
@@ -2015,7 +2046,7 @@ def sample_rk_beta(
                     x_init_new = (x - x_next) / sigma_next + x_init
                     x_0 += sigma * (x_init_new - x_init)
                     x_init = x_init_new
-                    RK.update_transformer_options({'x_init' : x_init.clone()})
+                    RK.update_transformer_options({'x_init': x_init})
                 
                 if SYNC_GUIDE_ACTIVE:
                     noise_bongflow_new = (x - x_next) / sigma_next + noise_bongflow
