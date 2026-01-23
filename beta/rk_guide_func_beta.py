@@ -23,6 +23,20 @@ from .constants      import MAX_STEPS
 
 from ..models import PRED
 
+import comfy.utils
+
+# --- Packed/Nested Latent Helpers ---
+
+def is_packed_latent(latent_shapes):
+    """Check if working with packed nested latents."""
+    return latent_shapes is not None and len(latent_shapes) > 1
+
+def get_first_latent(x, latent_shapes):
+    """Get first component (or x if not packed). For shape references."""
+    if not is_packed_latent(latent_shapes):
+        return x
+    return comfy.utils.unpack_latents(x, latent_shapes)[0]
+
 
 #from ..latents import hard_light_blend, normalize_latent
 
@@ -39,11 +53,13 @@ class LatentGuide:
                 device               : str = 'cpu',
                 dtype                : torch.dtype = torch.float64,
                 frame_weights_mgr    : FrameWeightsManager = None,
+                latent_shapes        : list = None,
                 ):
-        
+
         self.dtype                    = dtype
         self.device                   = device
         self.model                    = model
+        self.latent_shapes            = latent_shapes
 
         if hasattr(model, "model"):
             model_sampling = model.model.model_sampling
@@ -953,34 +969,36 @@ class LatentGuide:
 
 
     def get_cossim_adjusted_lgw_masks(self, data:Tensor, step:int) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-        
+        # For packed nested tensors, use first component (video) for similarity
+        data_for_cossim = get_first_latent(data, self.latent_shapes)
+
         if self.HAS_LATENT_GUIDE:
             y0     = self.y0.clone()
         else:
-            y0     = torch.zeros_like(data)
-            
+            y0     = torch.zeros_like(data_for_cossim)
+
         if self.HAS_LATENT_GUIDE_INV:
             y0_inv = self.y0_inv.clone()
         else:
-            y0_inv = torch.zeros_like(data)
+            y0_inv = torch.zeros_like(data_for_cossim)
 
         if y0.shape[0] > 1:                                    # this is for changing the guide on a per-step basis
             y0 = y0[min(step, y0.shape[0]-1)].unsqueeze(0)
-        
+
         lgw_mask, lgw_mask_inv = self.get_masks_for_step(step)
-        
+
         y0_cossim, y0_cossim_inv  = 1.0, 1.0
         if self.HAS_LATENT_GUIDE:
-            y0_cossim     = get_pearson_similarity(data, y0,     mask=lgw_mask)
+            y0_cossim     = get_pearson_similarity(data_for_cossim, y0,     mask=lgw_mask)
         if self.HAS_LATENT_GUIDE_INV:
-            y0_cossim_inv = get_pearson_similarity(data, y0_inv, mask=lgw_mask_inv)
-        
+            y0_cossim_inv = get_pearson_similarity(data_for_cossim, y0_inv, mask=lgw_mask_inv)
+
         #if y0_cossim < self.guide_cossim_cutoff_ or y0_cossim_inv < self.guide_bkg_cossim_cutoff_:
         if y0_cossim     >= self.guide_cossim_cutoff_:
             lgw_mask     *= 0
         if y0_cossim_inv >= self.guide_bkg_cossim_cutoff_:
             lgw_mask_inv *= 0
-        
+
         return y0, y0_inv, lgw_mask, lgw_mask_inv
 
 
@@ -1561,22 +1579,51 @@ class LatentGuide:
         if not self.HAS_LATENT_GUIDE and not self.HAS_LATENT_GUIDE_INV:
             return eps_, x_
 
-        y0, y0_inv, lgw_mask, lgw_mask_inv = self.get_cossim_adjusted_lgw_masks(data_[row], step_sched)
+        # === ENTRY CHOKE POINT: Unpack video components if working with packed nested latents ===
+        is_packed = is_packed_latent(self.latent_shapes)
+        if is_packed:
+            # Unpack to get video components, cache audio for repacking later
+            x_0_components = comfy.utils.unpack_latents(x_0, self.latent_shapes)
+            x_0_v = x_0_components[0]
+
+            eps_row_components = comfy.utils.unpack_latents(eps_[row], self.latent_shapes)
+            eps_row_v = eps_row_components[0]
+            eps_row_audio = eps_row_components[1:]
+
+            data_row_components = comfy.utils.unpack_latents(data_[row], self.latent_shapes)
+            data_row_v = data_row_components[0]
+            data_row_audio = data_row_components[1:]
+
+            x_row_components = comfy.utils.unpack_latents(x_[row], self.latent_shapes)
+            x_row_v = x_row_components[0]
+
+            x_row1_components = comfy.utils.unpack_latents(x_[row+1], self.latent_shapes)
+            x_row1_v = x_row1_components[0]
+            x_row1_audio = x_row1_components[1:]
+        else:
+            # Not packed - use originals directly
+            x_0_v = x_0
+            eps_row_v = eps_[row]
+            data_row_v = data_[row]
+            x_row_v = x_[row]
+            x_row1_v = x_[row+1]
+
+        y0, y0_inv, lgw_mask, lgw_mask_inv = self.get_cossim_adjusted_lgw_masks(data_row_v, step_sched)
         
         if not (lgw_mask.any() != 0 or lgw_mask_inv.any() != 0):  # cossim score too similar! deactivate guide for this step
-            return eps_, x_ 
+            return eps_, x_
 
         if self.EO(["substep_eps_ch_mean_std", "substep_eps_ch_mean", "substep_eps_ch_std", "substep_eps_mean_std", "substep_eps_mean", "substep_eps_std"]):
-            eps_orig = eps_.clone()
-        
+            eps_row_v_orig = eps_row_v.clone()
+
         if self.EO("dynamic_guides_mean_std"):
-            y_shift, y_inv_shift = normalize_latent([y0, y0_inv], [data_, data_])
+            y_shift, y_inv_shift = normalize_latent([y0, y0_inv], [data_row_v, data_row_v])
             y0 = y_shift
             if self.EO("dynamic_guides_inv"):
                 y0_inv = y_inv_shift
 
         if self.EO("dynamic_guides_mean"):
-            y_shift, y_inv_shift = normalize_latent([y0, y0_inv], [data_, data_], std=False)
+            y_shift, y_inv_shift = normalize_latent([y0, y0_inv], [data_row_v, data_row_v], std=False)
             y0 = y_shift
             if self.EO("dynamic_guides_inv"):
                 y0_inv = y_inv_shift
@@ -1586,124 +1633,142 @@ class LatentGuide:
         if "data_old" == self.guide_mode:
             y0_tmp = y0.clone()
             if self.HAS_LATENT_GUIDE:
-                y0_tmp = (1-lgw_mask) * data_[row] + lgw_mask * y0
+                y0_tmp = (1-lgw_mask) * data_row_v + lgw_mask * y0
                 y0_tmp = (1-lgw_mask_inv) * y0_tmp + lgw_mask_inv * y0_inv
-            x_[row+1] = y0_tmp + eps_[row]
-            
+            x_row1_v = y0_tmp + eps_row_v
+
         if self.guide_mode == "data_old_projection":
 
-            d_lerp             = data_[row]   +   lgw_mask * (y0-data_[row])   +   lgw_mask_inv * (y0_inv-data_[row])
-            
-            d_collinear_d_lerp = get_collinear(data_[row], d_lerp)  
-            d_lerp_ortho_d     = get_orthogonal(d_lerp, data_[row])  
-            
-            data_[row]         = d_collinear_d_lerp + d_lerp_ortho_d
-            
-            x_[row+1]          = data_[row] + eps_[row] * sigma
+            d_lerp             = data_row_v   +   lgw_mask * (y0-data_row_v)   +   lgw_mask_inv * (y0_inv-data_row_v)
+
+            d_collinear_d_lerp = get_collinear(data_row_v, d_lerp)
+            d_lerp_ortho_d     = get_orthogonal(d_lerp, data_row_v)
+
+            data_row_v         = d_collinear_d_lerp + d_lerp_ortho_d
+
+            x_row1_v           = data_row_v + eps_row_v * sigma
             
 
 
             #elif (self.UNSAMPLE or self.guide_mode in {"epsilon", "epsilon_cw", "epsilon_projection", "epsilon_projection_cw"}) and (self.lgw[step] > 0 or self.lgw_inv[step] > 0):
         elif self.guide_mode in {"epsilon", "epsilon_cw", "epsilon_projection", "epsilon_projection_cw"} and (self.lgw[step_sched] > 0 or self.lgw_inv[step_sched] > 0):
             if sigma_down < sigma   or   s_[row] < RK.sigma_max:
-                                
-                eps_substep_guide     = torch.zeros_like(x_0)
-                eps_substep_guide_inv = torch.zeros_like(x_0)
-                
+
+                eps_substep_guide     = torch.zeros_like(x_0_v)
+                eps_substep_guide_inv = torch.zeros_like(x_0_v)
+
                 if self.HAS_LATENT_GUIDE:
-                    eps_substep_guide     = RK.get_guide_epsilon(x_0, x_[row], y0,     sigma, s_[row], sigma_down, epsilon_scale)  
-                    
+                    eps_substep_guide     = RK.get_guide_epsilon(x_0_v, x_row_v, y0,     sigma, s_[row], sigma_down, epsilon_scale)
+
                 if self.HAS_LATENT_GUIDE_INV:
-                    eps_substep_guide_inv = RK.get_guide_epsilon(x_0, x_[row], y0_inv, sigma, s_[row], sigma_down, epsilon_scale)  
+                    eps_substep_guide_inv = RK.get_guide_epsilon(x_0_v, x_row_v, y0_inv, sigma, s_[row], sigma_down, epsilon_scale)
 
                 tol_value = self.EO("tol", -1.0)
                 if tol_value >= 0:
-                    for b, c in itertools.product(range(x_0.shape[0]), range(x_0.shape[1])):
-                        current_diff       = torch.norm(data_[row][b][c] - y0    [b][c]) 
-                        current_diff_inv   = torch.norm(data_[row][b][c] - y0_inv[b][c]) 
-                        
+                    for b, c in itertools.product(range(x_0_v.shape[0]), range(x_0_v.shape[1])):
+                        current_diff       = torch.norm(data_row_v[b][c] - y0    [b][c])
+                        current_diff_inv   = torch.norm(data_row_v[b][c] - y0_inv[b][c])
+
                         lgw_scaled         = torch.nan_to_num(1-(tol_value/current_diff),     0)
                         lgw_scaled_inv     = torch.nan_to_num(1-(tol_value/current_diff_inv), 0)
-                        
+
                         lgw_tmp            = min(self.lgw[step_sched]    , lgw_scaled)
                         lgw_tmp_inv        = min(self.lgw_inv[step_sched], lgw_scaled_inv)
 
                         lgw_mask_clamp     = torch.clamp(lgw_mask,     max=lgw_tmp)
                         lgw_mask_clamp_inv = torch.clamp(lgw_mask_inv, max=lgw_tmp_inv)
 
-                        eps_[row][b][c]    = eps_[row][b][c] + lgw_mask_clamp[b][0] * (eps_substep_guide[b][c] - eps_[row][b][c]) + lgw_mask_clamp_inv[b][0] * (eps_substep_guide_inv[b][c] - eps_[row][b][c])
+                        eps_row_v[b][c]    = eps_row_v[b][c] + lgw_mask_clamp[b][0] * (eps_substep_guide[b][c] - eps_row_v[b][c]) + lgw_mask_clamp_inv[b][0] * (eps_substep_guide_inv[b][c] - eps_row_v[b][c])
                 
-                elif self.guide_mode in {"epsilon"}: 
-                    #eps_[row] = slerp(lgw_mask.mean().item(), eps_[row], eps_substep_guide)
+                elif self.guide_mode in {"epsilon"}:
+                    #eps_row_v = slerp(lgw_mask.mean().item(), eps_row_v, eps_substep_guide)
                     if self.EO("slerp_epsilon_guide"):
                         if eps_substep_guide.sum() != 0:
-                            eps_[row] = slerp_tensor(lgw_mask, eps_[row], eps_substep_guide)
+                            eps_row_v = slerp_tensor(lgw_mask, eps_row_v, eps_substep_guide)
                         if eps_substep_guide_inv.sum() != 0:
-                            eps_[row] = slerp_tensor(lgw_mask_inv, eps_[row], eps_substep_guide_inv)
+                            eps_row_v = slerp_tensor(lgw_mask_inv, eps_row_v, eps_substep_guide_inv)
                     else:
-                        eps_[row] = eps_[row] + lgw_mask * (eps_substep_guide - eps_[row]) + lgw_mask_inv * (eps_substep_guide_inv - eps_[row])
-                    
-                    #eps_[row] = slerp_barycentric(eps_[row].norm(), eps_substep_guide.norm(), eps_substep_guide_inv.norm(), 1-lgw_mask-lgw_mask_inv, lgw_mask, lgw_mask_inv)
-                    
+                        eps_row_v = eps_row_v + lgw_mask * (eps_substep_guide - eps_row_v) + lgw_mask_inv * (eps_substep_guide_inv - eps_row_v)
+
+                    #eps_row_v = slerp_barycentric(eps_row_v.norm(), eps_substep_guide.norm(), eps_substep_guide_inv.norm(), 1-lgw_mask-lgw_mask_inv, lgw_mask, lgw_mask_inv)
+
                 elif self.guide_mode in {"epsilon_projection"}:
                     if self.EO("slerp_epsilon_guide"):
                         if eps_substep_guide.sum() != 0:
-                            eps_row_slerp = slerp_tensor(self.mask, eps_[row], eps_substep_guide)
+                            eps_row_slerp = slerp_tensor(self.mask, eps_row_v, eps_substep_guide)
                         if eps_substep_guide_inv.sum() != 0:
                             eps_row_slerp = slerp_tensor((1-self.mask), eps_row_slerp, eps_substep_guide_inv)
 
-                        eps_collinear_eps_slerp = get_collinear(eps_[row], eps_row_slerp)
-                        eps_slerp_ortho_eps     = get_orthogonal(eps_row_slerp, eps_[row])
+                        eps_collinear_eps_slerp = get_collinear(eps_row_v, eps_row_slerp)
+                        eps_slerp_ortho_eps     = get_orthogonal(eps_row_slerp, eps_row_v)
 
                         eps_sum                = eps_collinear_eps_slerp + eps_slerp_ortho_eps
 
-                        eps_[row] = slerp_tensor(lgw_mask, eps_[row] , eps_sum)
-                        eps_[row] = slerp_tensor(lgw_mask_inv, eps_[row], eps_sum)
+                        eps_row_v = slerp_tensor(lgw_mask, eps_row_v, eps_sum)
+                        eps_row_v = slerp_tensor(lgw_mask_inv, eps_row_v, eps_sum)
                     else:
-                        eps_row_lerp           = eps_[row]   +   self.mask * (eps_substep_guide-eps_[row])   +   (1-self.mask) * (eps_substep_guide_inv-eps_[row])
+                        eps_row_lerp           = eps_row_v   +   self.mask * (eps_substep_guide-eps_row_v)   +   (1-self.mask) * (eps_substep_guide_inv-eps_row_v)
 
-                        eps_collinear_eps_lerp = get_collinear(eps_[row], eps_row_lerp)
-                        eps_lerp_ortho_eps     = get_orthogonal(eps_row_lerp, eps_[row])
+                        eps_collinear_eps_lerp = get_collinear(eps_row_v, eps_row_lerp)
+                        eps_lerp_ortho_eps     = get_orthogonal(eps_row_lerp, eps_row_v)
 
                         eps_sum                = eps_collinear_eps_lerp + eps_lerp_ortho_eps
 
-                        eps_[row]              = eps_[row] + lgw_mask * (eps_sum - eps_[row]) + lgw_mask_inv * (eps_sum - eps_[row])
+                        eps_row_v              = eps_row_v + lgw_mask * (eps_sum - eps_row_v) + lgw_mask_inv * (eps_sum - eps_row_v)
                     
                     
                     #eps_row_slerp          = eps_[row]   +   self.mask * (eps_substep_guide-eps_[row])   +   (1-self.mask) * (eps_substep_guide_inv-eps_[row])
 
                     
                 elif self.guide_mode in {"epsilon_cw", "epsilon_projection_cw"}:
-                    eps_ = self.process_channelwise(x_0,
-                                                    eps_,
-                                                    data_,
-                                                    row,
-                                                    eps_substep_guide,
-                                                    eps_substep_guide_inv,
-                                                    y0,
-                                                    y0_inv,
-                                                    lgw_mask,
-                                                    lgw_mask_inv,
-                                                    use_projection = self.guide_mode == "epsilon_projection_cw",
-                                                    channelwise    = True
-                                                    )
+                    # NOTE: Channelwise modes not yet supported with packed latents
+                    if not is_packed:
+                        eps_ = self.process_channelwise(x_0_v,
+                                                        eps_,
+                                                        data_,
+                                                        row,
+                                                        eps_substep_guide,
+                                                        eps_substep_guide_inv,
+                                                        y0,
+                                                        y0_inv,
+                                                        lgw_mask,
+                                                        lgw_mask_inv,
+                                                        use_projection = self.guide_mode == "epsilon_projection_cw",
+                                                        channelwise    = True
+                                                        )
+                        eps_row_v = eps_[row]
 
         temporal_smoothing = self.EO("temporal_smoothing", 0.0)
         if temporal_smoothing > 0:
-            eps_[row] = apply_temporal_smoothing(eps_[row], temporal_smoothing)
-            
+            eps_row_v = apply_temporal_smoothing(eps_row_v, temporal_smoothing)
+
         if self.EO("substep_eps_ch_mean_std"):
-            eps_[row] = normalize_latent(eps_[row], eps_orig[row])
+            eps_row_v = normalize_latent(eps_row_v, eps_row_v_orig)
         if self.EO("substep_eps_ch_mean"):
-            eps_[row] = normalize_latent(eps_[row], eps_orig[row], std=False)
+            eps_row_v = normalize_latent(eps_row_v, eps_row_v_orig, std=False)
         if self.EO("substep_eps_ch_std"):
-            eps_[row] = normalize_latent(eps_[row], eps_orig[row], mean=False)
+            eps_row_v = normalize_latent(eps_row_v, eps_row_v_orig, mean=False)
         if self.EO("substep_eps_mean_std"):
-            eps_[row] = normalize_latent(eps_[row], eps_orig[row], channelwise=False)
+            eps_row_v = normalize_latent(eps_row_v, eps_row_v_orig, channelwise=False)
         if self.EO("substep_eps_mean"):
-            eps_[row] = normalize_latent(eps_[row], eps_orig[row], std=False, channelwise=False)
+            eps_row_v = normalize_latent(eps_row_v, eps_row_v_orig, std=False, channelwise=False)
         if self.EO("substep_eps_std"):
-            eps_[row] = normalize_latent(eps_[row], eps_orig[row], mean=False, channelwise=False)
+            eps_row_v = normalize_latent(eps_row_v, eps_row_v_orig, mean=False, channelwise=False)
+
+        # === EXIT CHOKE POINT: Repack video with cached audio and write back ===
+        if is_packed:
+            eps_[row], _ = comfy.utils.pack_latents([eps_row_v] + list(eps_row_audio))
+            if self.guide_mode in {"data_old", "data_old_projection"}:
+                x_[row+1], _ = comfy.utils.pack_latents([x_row1_v] + list(x_row1_audio))
+            if self.guide_mode == "data_old_projection":
+                data_[row], _ = comfy.utils.pack_latents([data_row_v] + list(data_row_audio))
+        else:
+            eps_[row] = eps_row_v
+            if self.guide_mode in {"data_old", "data_old_projection"}:
+                x_[row+1] = x_row1_v
+            if self.guide_mode == "data_old_projection":
+                data_[row] = data_row_v
+
         return eps_, x_
     
 

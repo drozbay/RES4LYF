@@ -140,6 +140,69 @@ def apply_per_step_latent_normalization(x, step, latent_shapes, factors_0_list, 
     return packed
 
 
+# --- Packed/Nested Latent Helpers ---
+
+def is_packed_latent(latent_shapes):
+    """Check if working with packed nested latents."""
+    return latent_shapes is not None and len(latent_shapes) > 1
+
+def get_first_latent(x, latent_shapes):
+    """Get first component (or x if not packed). For shape references."""
+    if not is_packed_latent(latent_shapes):
+        return x
+    return comfy.utils.unpack_latents(x, latent_shapes)[0]
+
+
+class LatentHandler:
+    """Fluent interface for operations on packed/regular latents."""
+
+    def __init__(self, x, latent_shapes=None):
+        self.x = x
+        self.latent_shapes = latent_shapes
+
+    @property
+    def is_packed(self):
+        return is_packed_latent(self.latent_shapes)
+
+    @property
+    def tensor(self):
+        return self.x
+
+    def map(self, func):
+        """Apply func to each component (or x directly if not packed), repack."""
+        if not self.is_packed:
+            self.x = func(self.x)
+        else:
+            tensors = comfy.utils.unpack_latents(self.x, self.latent_shapes)
+            self.x, _ = comfy.utils.pack_latents([func(t) for t in tensors])
+        return self
+
+    def map_first(self, func):
+        """Apply func only to first component (video), keep others unchanged, repack."""
+        if not self.is_packed:
+            self.x = func(self.x)
+        else:
+            tensors = comfy.utils.unpack_latents(self.x, self.latent_shapes)
+            tensors[0] = func(tensors[0])
+            self.x, _ = comfy.utils.pack_latents(tensors)
+        return self
+
+    def map_with(self, other, func):
+        """Apply func(self_component, other_component) pairwise, repack."""
+        if not self.is_packed:
+            self.x = func(self.x, other)
+        else:
+            x_tensors = comfy.utils.unpack_latents(self.x, self.latent_shapes)
+            y_tensors = comfy.utils.unpack_latents(other, self.latent_shapes)
+            results = [func(x_t, y_t) for x_t, y_t in zip(x_tensors, y_tensors)]
+            self.x, _ = comfy.utils.pack_latents(results)
+        return self
+
+    def get_first(self):
+        """Get first component tensor (for shape reference, mask prep, etc.)."""
+        return get_first_latent(self.x, self.latent_shapes)
+
+
 @torch.no_grad()
 def sample_rk_beta(
         model,
@@ -295,19 +358,9 @@ def sample_rk_beta(
         if x.shape == state_info['raw_x'].shape:
             x = state_info['raw_x'].to(work_device)
         else:
-            if latent_shapes is not None and len(latent_shapes) > 1:
-                # Packed nested tensor - unpack, resize each component, repack
-                x_tensors = comfy.utils.unpack_latents(x, latent_shapes)
-                denoised_tensors = comfy.utils.unpack_latents(state_info['denoised'], latent_shapes)
-                resized_tensors = []
-                for x_t, d_t in zip(x_tensors, denoised_tensors):
-                    resized = comfy.utils.bislerp(d_t, x_t.shape[-1], x_t.shape[-2])
-                    resized_tensors.append(resized.to(x_t))
-                x, _ = comfy.utils.pack_latents(resized_tensors)
-            else:
-                # Regular tensor - use spatial dimensions directly
-                denoised = comfy.utils.bislerp(state_info['denoised'], x.shape[-1], x.shape[-2])
-                x = denoised.to(x)
+            x = (LatentHandler(x, latent_shapes)
+                 .map_with(state_info['denoised'], lambda x_t, d_t: comfy.utils.bislerp(d_t, x_t.shape[-1], x_t.shape[-2]).to(x_t))
+                 .tensor)
             RENOISE = True
         RESplain("Continuing from raw latent from previous sampler.", debug=False)
     
@@ -337,12 +390,7 @@ def sample_rk_beta(
             
     if sde_mask is not None:
         from .rk_guide_func_beta import prepare_mask
-        if latent_shapes is not None and len(latent_shapes) > 1:
-            # Packed nested tensor - prepare mask for first component (video) only
-            x_tensors = comfy.utils.unpack_latents(x, latent_shapes)
-            sde_mask, _ = prepare_mask(x_tensors[0], sde_mask, LGW_MASK_RESCALE_MIN)
-        else:
-            sde_mask, _ = prepare_mask(x, sde_mask, LGW_MASK_RESCALE_MIN)
+        sde_mask, _ = prepare_mask(get_first_latent(x, latent_shapes), sde_mask, LGW_MASK_RESCALE_MIN)
         sde_mask = sde_mask.to(x.device).to(x.dtype)
     
 
@@ -387,7 +435,7 @@ def sample_rk_beta(
     sigmas_orig = sigmas.clone()
     NS               = RK_NoiseSampler(RK, model, device=work_device, dtype=default_dtype, extra_options=extra_options)
     sigmas, UNSAMPLE = NS.prepare_sigmas(sigmas, sigmas_override, d_noise, d_noise_start_step, sampler_mode)
-    if UNSAMPLE and sigmas_orig[0] == 0.0 and sigmas_orig[0] != sigmas[0] and sigmas[1] < sigmas[2]:
+    if UNSAMPLE and sigmas_orig[0] == 0.0 and sigmas_orig[0] != sigmas[0] and len(sigmas_orig) > 2 and sigmas_orig[1] < sigmas_orig[2]:
         sigmas = torch.cat([torch.full_like(sigmas[0], 0.0).unsqueeze(0), sigmas])
         if start_step == 0:
             start_step  = 1
@@ -396,7 +444,10 @@ def sample_rk_beta(
     
     if sampler_mode in {"resample", "unsample"}:
         state_info_sigma_next = state_info.get('sigma_next', -1)
-        state_info_start_step = (sigmas == state_info_sigma_next).nonzero().flatten()
+        if isinstance(state_info_sigma_next, torch.Tensor):
+            state_info_start_step = torch.isclose(sigmas, state_info_sigma_next.to(sigmas), rtol=1e-5, atol=1e-8).nonzero().flatten()
+        else:
+            state_info_start_step = (sigmas == state_info_sigma_next).nonzero().flatten()
         if state_info_start_step.shape[0] > 0:
             start_step = state_info_start_step.item()
             
@@ -405,7 +456,7 @@ def sample_rk_beta(
     
     SDE_NOISE_EXTERNAL = False
     if sde_noise is not None:
-        if len(sde_noise) > 0 and sigmas[1] > sigmas[2]:
+        if len(sde_noise) > 0 and len(sigmas_orig) > 2 and sigmas_orig[1] > sigmas_orig[2]:
             SDE_NOISE_EXTERNAL = True
             sigma_up_total = torch.zeros_like(sigmas[0])
             for i in range(len(sde_noise)-1):
@@ -484,7 +535,7 @@ def sample_rk_beta(
     
 
     # SETUP GUIDES
-    LG = LatentGuide(model, sigmas, UNSAMPLE, VE_MODEL, LGW_MASK_RESCALE_MIN, extra_options, device=work_device, dtype=default_dtype, frame_weights_mgr=frame_weights_mgr)
+    LG = LatentGuide(model, sigmas, UNSAMPLE, VE_MODEL, LGW_MASK_RESCALE_MIN, extra_options, device=work_device, dtype=default_dtype, frame_weights_mgr=frame_weights_mgr, latent_shapes=latent_shapes)
 
     guide_inversion_y0     = state_info.get('guide_inversion_y0')
     guide_inversion_y0_inv = state_info.get('guide_inversion_y0_inv')
@@ -806,23 +857,13 @@ def sample_rk_beta(
                     if x.shape == state_info['raw_x'].shape:
                         data_prev_ = state_info['data_prev_'].clone().to(dtype=default_dtype, device=work_device)
                     else:
-                        if latent_shapes is not None and len(latent_shapes) > 1:
-                            # Packed nested tensor - unpack, resize each component, repack for each data_prev_item
-                            x_tensors = comfy.utils.unpack_latents(x, latent_shapes)
-                            resized_items = []
-                            for data_prev_item in state_info['data_prev_']:
-                                prev_tensors = comfy.utils.unpack_latents(data_prev_item, latent_shapes)
-                                resized_tensors = []
-                                for x_t, p_t in zip(x_tensors, prev_tensors):
-                                    resized = comfy.utils.bislerp(p_t, x_t.shape[-1], x_t.shape[-2])
-                                    resized_tensors.append(resized.to(x_t))
-                                repacked, _ = comfy.utils.pack_latents(resized_tensors)
-                                resized_items.append(repacked)
-                            data_prev_ = torch.stack(resized_items).to(x)
-                        else:
-                            # Regular tensor - use spatial dimensions directly
-                            data_prev_ = torch.stack([comfy.utils.bislerp(data_prev_item, x.shape[-1], x.shape[-2]) for data_prev_item in state_info['data_prev_']])
-                            data_prev_ = data_prev_.to(x)
+                        resized_items = [
+                            LatentHandler(prev_item, latent_shapes)
+                            .map_with(x, lambda p_t, x_t: comfy.utils.bislerp(p_t, x_t.shape[-1], x_t.shape[-2]).to(x_t))
+                            .tensor
+                            for prev_item in state_info['data_prev_']
+                        ]
+                        data_prev_ = torch.stack(resized_items).to(x)
                 else:
                     data_prev_ =  torch.zeros(4, *x.shape, dtype=default_dtype, device=work_device) # multistep max is 4m... so 4 needed
             else:
@@ -1828,7 +1869,11 @@ def sample_rk_beta(
                                 data_row_mean = apply_scattersort_spatial(data_[row], LG.y0_mean)
                                 eps_row_mean  = RK.get_eps(x_0, data_row_mean, s_tmp)
                             else:
-                                eps_row_mean = eps_[row] - eps_[row].mean(dim=(-2,-1), keepdim=True) + (LG.y0_mean - x_0).mean(dim=(-2,-1), keepdim=True)
+                                y0_x0_diff = LG.y0_mean - x_0
+                                target_mean = get_first_latent(y0_x0_diff, latent_shapes).mean(dim=(-2,-1), keepdim=True)
+                                eps_row_mean = (LatentHandler(eps_[row], latent_shapes)
+                                                .map_first(lambda t: t - t.mean(dim=(-2,-1), keepdim=True) + target_mean)
+                                                .tensor)
                             
                             if LG.mask_mean is not None:
                                 eps_row_mean = LG.mask_mean * eps_row_mean + (1-LG.mask_mean) * eps_[row]
@@ -1854,7 +1899,7 @@ def sample_rk_beta(
                     
                     if not RK.IMPLICIT and NS.noise_mode_sde_substep != "hard_sq":
 
-                        x_means_per_substep = x_[row+RK.row_offset].mean(dim=(-2,-1), keepdim=True)
+                        x_means_per_substep = get_first_latent(x_[row+RK.row_offset], latent_shapes).mean(dim=(-2,-1), keepdim=True)
 
                         if not LG.guide_mode.startswith("flow") or (LG.lgw[step_sched] == 0 and LG.lgw[step+1] == 0   and   LG.lgw_inv[step_sched] == 0 and LG.lgw_inv[step+1] == 0):
                             #if LG.guide_mode.startswith("sync") and (LG.lgw[step_sched] != 0.0 or LG.lgw_inv[step_sched] != 0.0):
@@ -2005,7 +2050,7 @@ def sample_rk_beta(
             
             x_0_prev = x_0.clone()
 
-            x_means_per_step = x_next.mean(dim=(-2,-1), keepdim=True)
+            x_means_per_step = get_first_latent(x_next, latent_shapes).mean(dim=(-2,-1), keepdim=True)
 
             if eta == 0.0:
                 x = x_next
@@ -2062,11 +2107,13 @@ def sample_rk_beta(
                 x = x_next
             
             if EO("keep_step_means"):
-                x = x - x.mean(dim=(-2,-1), keepdim=True) + x_means_per_step
+                x = (LatentHandler(x, latent_shapes)
+                     .map_first(lambda t: t - t.mean(dim=(-2,-1), keepdim=True) + x_means_per_step)
+                     .tensor)
 
             
             callback_step = len(sigmas)-1 - step if sampler_mode == "unsample" else step
-            preview_callback(x, eps, denoised, x_, eps_, data_, callback_step, sigma, sigma_next, callback, EO, preview_override=data_cached, FLOW_STOPPED=FLOW_STOPPED)
+            preview_callback(x, eps, denoised, x_, eps_, data_, callback_step, sigma, sigma_next, callback, EO, preview_override=data_cached, FLOW_STOPPED=FLOW_STOPPED, device=model_device)
             
             h_prev = NS.h
             x_prev = x_0
@@ -2078,8 +2125,10 @@ def sample_rk_beta(
             
             if LG.lgw[step_sched] > 0 and step >= EO("guide_cutoff_start_step", 0) and cossim_counter < EO("guide_cutoff_max_iter", 10) and (EO("guide_cutoff") or EO("guide_min")):
                 guide_cutoff = EO("guide_cutoff", 1.0)
-                denoised_norm = data_[0] - data_[0].mean(dim=(-2,-1), keepdim=True)
-                y0_norm       = LG.y0    - LG.y0   .mean(dim=(-2,-1), keepdim=True)
+                data_first = get_first_latent(data_[0], latent_shapes)
+                y0_first   = get_first_latent(LG.y0, latent_shapes)
+                denoised_norm = data_first - data_first.mean(dim=(-2,-1), keepdim=True)
+                y0_norm       = y0_first   - y0_first  .mean(dim=(-2,-1), keepdim=True)
                 y0_cossim     = get_cosine_similarity(denoised_norm, y0_norm)
                 if y0_cossim > guide_cutoff and LG.lgw[step_sched] > EO("guide_cutoff_floor", 0.0):
                     if not EO("guide_cutoff_fast"):
@@ -2165,8 +2214,10 @@ def sample_rk_beta(
         if LG.lgw[step_sched] > 0 and step >= EO("guide_step_cutoff_start_step", 0) and cossim_counter < EO("guide_step_cutoff_max_iter", 10) and (EO("guide_step_cutoff") or EO("guide_step_min")):
             guide_cutoff = EO("guide_step_cutoff", 1.0)
             eps_trash, data_trash = RK(x, sigma_next, x_0, sigma)
-            denoised_norm = data_trash - data_trash.mean(dim=(-2,-1), keepdim=True)
-            y0_norm       = LG.y0    - LG.y0   .mean(dim=(-2,-1), keepdim=True)
+            data_first = get_first_latent(data_trash, latent_shapes)
+            y0_first   = get_first_latent(LG.y0, latent_shapes)
+            denoised_norm = data_first - data_first.mean(dim=(-2,-1), keepdim=True)
+            y0_norm       = y0_first   - y0_first  .mean(dim=(-2,-1), keepdim=True)
             y0_cossim     = get_cosine_similarity(denoised_norm, y0_norm)
             if y0_cossim > guide_cutoff and LG.lgw[step_sched] > EO("guide_step_cutoff_floor", 0.0):
                 if not EO("guide_step_cutoff_fast"):
@@ -2206,7 +2257,7 @@ def sample_rk_beta(
 
     if not (UNSAMPLE and sigmas[1] > sigmas[0]) and not EO("preview_last_step_always") and sigma is not None   and   not (FLOW_STARTED and not FLOW_STOPPED):
         callback_step = len(sigmas)-1 - step if sampler_mode == "unsample" else step
-        preview_callback(x, eps, denoised, x_, eps_, data_, callback_step, sigma, sigma_next, callback, EO)
+        preview_callback(x, eps, denoised, x_, eps_, data_, callback_step, sigma, sigma_next, callback, EO, device=model_device)
         
     if UNSAMPLE and sigmas[0] != 0:
         sigmas = torch.cat((torch.zeros(1, dtype=sigmas.dtype, device=sigmas.device), sigmas.clone()), dim=0)
@@ -2295,7 +2346,8 @@ def preview_callback(
                     callback   : Callable,
                     EO         : ExtraOptions,
                     preview_override : Optional[Tensor] = None,
-                    FLOW_STOPPED : bool = False):
+                    FLOW_STOPPED : bool = False,
+                    device     : Optional[torch.device] = None,):
 
     if EO("eps_substep_preview"):
         row_callback = EO("eps_substep_preview", 0)
@@ -2323,6 +2375,9 @@ def preview_callback(
         
     else:
         denoised_callback = data_[0]
+
+    if device is not None:
+        denoised_callback = denoised_callback.to(device)
         
     callback({'x': x, 'i': step, 'sigma': sigma, 'sigma_next': sigma_next, 'denoised': denoised_callback.to(torch.float32)}) if callback is not None else None
     
