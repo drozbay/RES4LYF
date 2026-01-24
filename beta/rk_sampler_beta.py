@@ -12,7 +12,10 @@ import comfy
 
 from ..res4lyf              import RESplain
 from ..helper               import ExtraOptions, FrameWeightsManager
-from ..latents              import lagrange_interpolation, get_collinear, get_orthogonal, get_cosine_similarity, get_pearson_similarity, get_slerp_weight_for_cossim, get_slerp_ratio, slerp_tensor, get_edge_mask, normalize_zscore, compute_slerp_ratio_for_target, find_slerp_ratio_grid
+from ..latents              import lagrange_interpolation, get_collinear, get_orthogonal, get_cosine_similarity, get_pearson_similarity, \
+                                   get_slerp_weight_for_cossim, get_slerp_ratio, slerp_tensor, get_edge_mask, normalize_zscore, \
+                                   compute_slerp_ratio_for_target, find_slerp_ratio_grid, \
+                                   is_packed_latent, get_latent, apply_per_step_latent_normalization, LatentHandler
 from ..style_transfer       import apply_scattersort_spatial, apply_adain_spatial
 
 from .rk_method_beta        import RK_Method_Beta
@@ -105,102 +108,6 @@ def init_implicit_sampling(
 
     x_, eps_ = RK.newton_iter(x_0, x_, eps_, eps_prev_, data_, s_, 0, h, sigmas, step, "init", SYNC_GUIDE_ACTIVE)
     return x_, eps_, data_
-
-
-def apply_per_step_latent_normalization(x, step, latent_shapes, factors_0_list, factors_1_list):
-    """
-    Unpack packed latent, apply per-tensor normalization, repack.
-
-    The latent x is already packed by CFGGuider. We unpack using the stored
-    shapes, apply the normalization factor for the current step, then repack.
-    """
-    if latent_shapes is None or len(latent_shapes) <= 1:
-        return x
-
-    # Get factor for current step (repeat last if fewer values than steps)
-    factor_0 = factors_0_list[min(step, len(factors_0_list) - 1)]
-    factor_1 = factors_1_list[min(step, len(factors_1_list) - 1)]
-
-    if factor_0 == 1.0 and factor_1 == 1.0:
-        return x
-
-    # Unpack using stored shapes
-    tensors = comfy.utils.unpack_latents(x, latent_shapes)
-
-    # Apply per-tensor normalization
-    factors = [factor_0, factor_1]
-    for idx, t in enumerate(tensors):
-        factor = factors[idx] if idx < len(factors) else 1.0
-        if factor != 1.0:
-            tensors[idx] = t * factor
-
-    # Repack
-    packed, _ = comfy.utils.pack_latents(tensors)
-    RESplain(f"Per-step latent normalize: step={step}, idx_0={factor_0}, idx_1={factor_1}", debug=True)
-    return packed
-
-
-# --- Packed/Nested Latent Helpers ---
-
-def is_packed_latent(latent_shapes):
-    """Check if working with packed nested latents."""
-    return latent_shapes is not None and len(latent_shapes) > 1
-
-def get_first_latent(x, latent_shapes):
-    """Get first component (or x if not packed). For shape references."""
-    if not is_packed_latent(latent_shapes):
-        return x
-    return comfy.utils.unpack_latents(x, latent_shapes)[0]
-
-
-class LatentHandler:
-    """Fluent interface for operations on packed/regular latents."""
-
-    def __init__(self, x, latent_shapes=None):
-        self.x = x
-        self.latent_shapes = latent_shapes
-
-    @property
-    def is_packed(self):
-        return is_packed_latent(self.latent_shapes)
-
-    @property
-    def tensor(self):
-        return self.x
-
-    def map(self, func):
-        """Apply func to each component (or x directly if not packed), repack."""
-        if not self.is_packed:
-            self.x = func(self.x)
-        else:
-            tensors = comfy.utils.unpack_latents(self.x, self.latent_shapes)
-            self.x, _ = comfy.utils.pack_latents([func(t) for t in tensors])
-        return self
-
-    def map_first(self, func):
-        """Apply func only to first component (video), keep others unchanged, repack."""
-        if not self.is_packed:
-            self.x = func(self.x)
-        else:
-            tensors = comfy.utils.unpack_latents(self.x, self.latent_shapes)
-            tensors[0] = func(tensors[0])
-            self.x, _ = comfy.utils.pack_latents(tensors)
-        return self
-
-    def map_with(self, other, func):
-        """Apply func(self_component, other_component) pairwise, repack."""
-        if not self.is_packed:
-            self.x = func(self.x, other)
-        else:
-            x_tensors = comfy.utils.unpack_latents(self.x, self.latent_shapes)
-            y_tensors = comfy.utils.unpack_latents(other, self.latent_shapes)
-            results = [func(x_t, y_t) for x_t, y_t in zip(x_tensors, y_tensors)]
-            self.x, _ = comfy.utils.pack_latents(results)
-        return self
-
-    def get_first(self):
-        """Get first component tensor (for shape reference, mask prep, etc.)."""
-        return get_first_latent(self.x, self.latent_shapes)
 
 
 @torch.no_grad()
@@ -390,7 +297,7 @@ def sample_rk_beta(
             
     if sde_mask is not None:
         from .rk_guide_func_beta import prepare_mask
-        sde_mask, _ = prepare_mask(get_first_latent(x, latent_shapes), sde_mask, LGW_MASK_RESCALE_MIN)
+        sde_mask, _ = prepare_mask(get_latent(x, latent_shapes, 0), sde_mask, LGW_MASK_RESCALE_MIN)
         sde_mask = sde_mask.to(x.device).to(x.dtype)
     
 
@@ -1870,7 +1777,7 @@ def sample_rk_beta(
                                 eps_row_mean  = RK.get_eps(x_0, data_row_mean, s_tmp)
                             else:
                                 y0_x0_diff = LG.y0_mean - x_0
-                                target_mean = get_first_latent(y0_x0_diff, latent_shapes).mean(dim=(-2,-1), keepdim=True)
+                                target_mean = get_latent(y0_x0_diff, latent_shapes, 0).mean(dim=(-2,-1), keepdim=True)
                                 eps_row_mean = (LatentHandler(eps_[row], latent_shapes)
                                                 .map_first(lambda t: t - t.mean(dim=(-2,-1), keepdim=True) + target_mean)
                                                 .tensor)
@@ -1899,7 +1806,7 @@ def sample_rk_beta(
                     
                     if not RK.IMPLICIT and NS.noise_mode_sde_substep != "hard_sq":
 
-                        x_means_per_substep = get_first_latent(x_[row+RK.row_offset], latent_shapes).mean(dim=(-2,-1), keepdim=True)
+                        x_means_per_substep = get_latent(x_[row+RK.row_offset], latent_shapes, 0).mean(dim=(-2,-1), keepdim=True)
 
                         if not LG.guide_mode.startswith("flow") or (LG.lgw[step_sched] == 0 and LG.lgw[step+1] == 0   and   LG.lgw_inv[step_sched] == 0 and LG.lgw_inv[step+1] == 0):
                             #if LG.guide_mode.startswith("sync") and (LG.lgw[step_sched] != 0.0 or LG.lgw_inv[step_sched] != 0.0):
@@ -2050,7 +1957,7 @@ def sample_rk_beta(
             
             x_0_prev = x_0.clone()
 
-            x_means_per_step = get_first_latent(x_next, latent_shapes).mean(dim=(-2,-1), keepdim=True)
+            x_means_per_step = get_latent(x_next, latent_shapes, 0).mean(dim=(-2,-1), keepdim=True)
 
             if eta == 0.0:
                 x = x_next
@@ -2125,8 +2032,8 @@ def sample_rk_beta(
             
             if LG.lgw[step_sched] > 0 and step >= EO("guide_cutoff_start_step", 0) and cossim_counter < EO("guide_cutoff_max_iter", 10) and (EO("guide_cutoff") or EO("guide_min")):
                 guide_cutoff = EO("guide_cutoff", 1.0)
-                data_first = get_first_latent(data_[0], latent_shapes)
-                y0_first   = get_first_latent(LG.y0, latent_shapes)
+                data_first = get_latent(data_[0], latent_shapes, 0)
+                y0_first   = get_latent(LG.y0, latent_shapes, 0)
                 denoised_norm = data_first - data_first.mean(dim=(-2,-1), keepdim=True)
                 y0_norm       = y0_first   - y0_first  .mean(dim=(-2,-1), keepdim=True)
                 y0_cossim     = get_cosine_similarity(denoised_norm, y0_norm)
@@ -2214,8 +2121,8 @@ def sample_rk_beta(
         if LG.lgw[step_sched] > 0 and step >= EO("guide_step_cutoff_start_step", 0) and cossim_counter < EO("guide_step_cutoff_max_iter", 10) and (EO("guide_step_cutoff") or EO("guide_step_min")):
             guide_cutoff = EO("guide_step_cutoff", 1.0)
             eps_trash, data_trash = RK(x, sigma_next, x_0, sigma)
-            data_first = get_first_latent(data_trash, latent_shapes)
-            y0_first   = get_first_latent(LG.y0, latent_shapes)
+            data_first = get_latent(data_trash, latent_shapes, 0)
+            y0_first   = get_latent(LG.y0, latent_shapes, 0)
             denoised_norm = data_first - data_first.mean(dim=(-2,-1), keepdim=True)
             y0_norm       = y0_first   - y0_first  .mean(dim=(-2,-1), keepdim=True)
             y0_cossim     = get_cosine_similarity(denoised_norm, y0_norm)

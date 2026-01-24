@@ -913,3 +913,91 @@ def apply_to_state_info_tensors(obj, ref_shape, modify_func, *args, **kwargs):
 
     return obj
 
+
+# LATENT PACKING HELPERS
+def is_packed_latent(latent_shapes):
+    return latent_shapes is not None and len(latent_shapes) > 1
+
+
+def get_latent(x, latent_shapes=None, index=0):
+    if latent_shapes is None:
+        return x
+    if not is_packed_latent(latent_shapes):
+        return x
+    return comfy.utils.unpack_latents(x, latent_shapes)[index]
+
+
+def apply_per_step_latent_normalization(x, step, latent_shapes, factors_0_list, factors_1_list):
+    if latent_shapes is None or len(latent_shapes) <= 1:
+        return x
+
+    # Get normalization factor for step
+    factor_0 = factors_0_list[min(step, len(factors_0_list) - 1)]
+    factor_1 = factors_1_list[min(step, len(factors_1_list) - 1)]
+
+    if factor_0 == 1.0 and factor_1 == 1.0:
+        return x
+
+    # Unpack
+    tensors = comfy.utils.unpack_latents(x, latent_shapes)
+
+    factors = [factor_0, factor_1]
+    for idx, t in enumerate(tensors):
+        factor = factors[idx] if idx < len(factors) else 1.0
+        if factor != 1.0:
+            tensors[idx] = t * factor
+
+    # Repack
+    packed, _ = comfy.utils.pack_latents(tensors)
+    RESplain(f"Per-step latent normalize: step={step}, idx_0={factor_0}, idx_1={factor_1}", debug=True)
+    return packed
+
+
+class LatentHandler:
+    """Interface for operations on packed/regular latents."""
+    def __init__(self, x, latent_shapes=None):
+        self.x = x
+        self.latent_shapes = latent_shapes
+
+    @property
+    def is_packed(self):
+        return is_packed_latent(self.latent_shapes)
+
+    @property
+    def tensor(self):
+        return self.x
+
+    def map(self, func):
+        """Apply func to each component (or x directly if not packed), repack."""
+        if not self.is_packed:
+            self.x = func(self.x)
+        else:
+            tensors = comfy.utils.unpack_latents(self.x, self.latent_shapes)
+            self.x, _ = comfy.utils.pack_latents([func(t) for t in tensors])
+        return self
+
+    def map_first(self, func):
+        """Apply func only to first component (video), keep others unchanged, repack."""
+        if not self.is_packed:
+            self.x = func(self.x)
+        else:
+            tensors = comfy.utils.unpack_latents(self.x, self.latent_shapes)
+            tensors[0] = func(tensors[0])
+            self.x, _ = comfy.utils.pack_latents(tensors)
+        return self
+
+    def map_with(self, other, func):
+        """Apply func(self_component, other_component) pairwise, repack."""
+        if not self.is_packed:
+            self.x = func(self.x, other)
+        else:
+            x_tensors = comfy.utils.unpack_latents(self.x, self.latent_shapes)
+            y_tensors = comfy.utils.unpack_latents(other, self.latent_shapes)
+            results = [func(x_t, y_t) for x_t, y_t in zip(x_tensors, y_tensors)]
+            self.x, _ = comfy.utils.pack_latents(results)
+        return self
+
+    def get_first_tensor(self):
+        """Get first component tensor (for shape reference, mask prep, etc.)."""
+        return get_latent(self.x, self.latent_shapes, 0)
+

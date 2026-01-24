@@ -16,31 +16,13 @@ from einops          import rearrange
 from ..sigmas        import get_sigmas
 from ..helper        import ExtraOptions, FrameWeightsManager, initialize_or_scale, is_video_model
 from ..latents       import normalize_zscore, get_collinear, get_orthogonal, get_cosine_similarity, get_pearson_similarity, \
-                            get_slerp_weight_for_cossim, normalize_latent, hard_light_blend, slerp_tensor, get_orthogonal_noise_from_channelwise, get_edge_mask
+                            get_slerp_weight_for_cossim, normalize_latent, hard_light_blend, slerp_tensor, get_orthogonal_noise_from_channelwise, \
+                            get_edge_mask, is_packed_latent, get_latent
 
 from .rk_method_beta import RK_Method_Beta
 from .constants      import MAX_STEPS
 
-from ..models import PRED
-
 import comfy.utils
-
-# --- Packed/Nested Latent Helpers ---
-
-def is_packed_latent(latent_shapes):
-    """Check if working with packed nested latents."""
-    return latent_shapes is not None and len(latent_shapes) > 1
-
-def get_first_latent(x, latent_shapes):
-    """Get first component (or x if not packed). For shape references."""
-    if not is_packed_latent(latent_shapes):
-        return x
-    return comfy.utils.unpack_latents(x, latent_shapes)[0]
-
-
-#from ..latents import hard_light_blend, normalize_latent
-
-
 
 class LatentGuide:
     def __init__(self,
@@ -969,8 +951,7 @@ class LatentGuide:
 
 
     def get_cossim_adjusted_lgw_masks(self, data:Tensor, step:int) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-        # For packed nested tensors, use first component (video) for similarity
-        data_for_cossim = get_first_latent(data, self.latent_shapes)
+        data_for_cossim = get_latent(data, self.latent_shapes, 0)
 
         if self.HAS_LATENT_GUIDE:
             y0     = self.y0.clone()
@@ -1579,10 +1560,8 @@ class LatentGuide:
         if not self.HAS_LATENT_GUIDE and not self.HAS_LATENT_GUIDE_INV:
             return eps_, x_
 
-        # === ENTRY CHOKE POINT: Unpack video components if working with packed nested latents ===
         is_packed = is_packed_latent(self.latent_shapes)
         if is_packed:
-            # Unpack to get video components, cache audio for repacking later
             x_0_components = comfy.utils.unpack_latents(x_0, self.latent_shapes)
             x_0_v = x_0_components[0]
 
@@ -1601,7 +1580,6 @@ class LatentGuide:
             x_row1_v = x_row1_components[0]
             x_row1_audio = x_row1_components[1:]
         else:
-            # Not packed - use originals directly
             x_0_v = x_0
             eps_row_v = eps_[row]
             data_row_v = data_[row]
@@ -1721,8 +1699,9 @@ class LatentGuide:
 
                     
                 elif self.guide_mode in {"epsilon_cw", "epsilon_projection_cw"}:
-                    # NOTE: Channelwise modes not yet supported with packed latents
-                    if not is_packed:
+                    if is_packed:
+                        raise NotImplementedError("Channelwise epsilon guide modes are not supported with packed latents yet.")
+                    else:
                         eps_ = self.process_channelwise(x_0_v,
                                                         eps_,
                                                         data_,
@@ -1755,7 +1734,6 @@ class LatentGuide:
         if self.EO("substep_eps_std"):
             eps_row_v = normalize_latent(eps_row_v, eps_row_v_orig, mean=False, channelwise=False)
 
-        # === EXIT CHOKE POINT: Repack video with cached audio and write back ===
         if is_packed:
             eps_[row], _ = comfy.utils.pack_latents([eps_row_v] + list(eps_row_audio))
             if self.guide_mode in {"data_old", "data_old_projection"}:
