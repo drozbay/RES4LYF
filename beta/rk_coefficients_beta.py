@@ -1333,7 +1333,9 @@ def get_rk_methods_beta(rk_type       : str,
     hybrid_stages    = 0
     u                = None
     v                = None
-    
+    primary_rk_type  = rk_type
+    sampler_change_reason = None
+
     EO                            = ExtraOptions(extra_options)
     use_analytic_solution         = not EO("disable_analytic_solution", debugMode=1)
     multistep_initial_sampler     = EO("multistep_initial_sampler", "", debugMode=1)
@@ -1371,142 +1373,102 @@ def get_rk_methods_beta(rk_type       : str,
         
     if rk_type[:4] == "deis":
         order = int(rk_type[-2])
-        RESplain(f"DEIS detected: order={order}, step={step}, threshold={order + multistep_extra_initial_steps}", debug='debug')
         if step < order + multistep_extra_initial_steps:
+            sampler_change_reason = "initial"
             if order == 4:
-                original_rk_type = rk_type
                 #rk_type = "res_4s_strehmel_weiner"
                 rk_type = "ralston_4s"
                 rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-                RESplain(f"DEIS order 4 initial step: {original_rk_type} -> {rk_type} (step {step} < {order + multistep_extra_initial_steps})", debug='debug')
                 order = 3
             elif order == 3:
-                original_rk_type = rk_type
                 #rk_type = "res_3s"
                 rk_type = "ralston_3s"
                 rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-                RESplain(f"DEIS order 3 initial step: {original_rk_type} -> {rk_type} (step {step} < {order + multistep_extra_initial_steps})", debug='debug')
             elif order == 2:
-                original_rk_type = rk_type
                 #rk_type = "res_2s"
                 rk_type = "ralston_2s"
                 rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-                RESplain(f"DEIS order 2 initial step: {original_rk_type} -> {rk_type} (step {step} < {order + multistep_extra_initial_steps})", debug='debug')
         else:
-            RESplain(f"DEIS switching to main method at step {step} (>= {order + multistep_extra_initial_steps}), multistep_stages={order-1}", debug='debug')
             rk_type = "deis"
             multistep_stages = order-1
     
     if rk_type[-2:] == "2m": #multistep method
-        original_rk_type = rk_type
         rk_type = rk_type[:-2] + "2s"
-        RESplain(f"2m multistep method detected: {original_rk_type} -> {rk_type}, step={step}, h_no_eta={h_no_eta.item() if isinstance(h_no_eta, torch.Tensor) else h_no_eta:.6f}", debug='debug')
         #if h_prev is not None and step >= 1:
         if h_no_eta < 1.0:
             if step >= 1 + multistep_extra_initial_steps:
                 multistep_stages = 1
                 c2 = (-h_prev1_no_eta / h_no_eta).item()
-                RESplain(f"2m: Using multistep (step {step} >= {1 + multistep_extra_initial_steps}), c2={c2:.6f}", debug='debug')
             else:
-                before_change = rk_type
+                sampler_change_reason = "initial"
                 rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-                RESplain(f"2m initial step: {before_change} -> {rk_type} (step {step} < {1 + multistep_extra_initial_steps})", debug='debug')
             if rk_type.startswith("abnorsett"):
-                before_abnorsett = rk_type
                 rk_type = "res_2s"
                 rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-                RESplain(f"2m abnorsett override: {before_abnorsett} -> {rk_type}", debug='debug')
         else:
+            sampler_change_reason = "fallback"
             #rk_type = "res_2s"
-            before_fallback = rk_type
             rk_type = "euler" if sigma < 0.1 else "res_2s"
             rk_type = multistep_fallback_sampler if multistep_fallback_sampler else rk_type
-            RESplain(f"2m fallback (h_no_eta={h_no_eta.item() if isinstance(h_no_eta, torch.Tensor) else h_no_eta:.6f} >= 1.0, sigma={sigma.item() if isinstance(sigma, torch.Tensor) else sigma:.6f}): {before_fallback} -> {rk_type}", debug='debug')
             
     if rk_type[-2:] == "3m": #multistep method
-        original_rk_type = rk_type
         rk_type = rk_type[:-2] + "3s"
-        RESplain(f"3m multistep method detected: {original_rk_type} -> {rk_type}, step={step}, h_no_eta={h_no_eta.item() if isinstance(h_no_eta, torch.Tensor) else h_no_eta:.6f}", debug='debug')
         #if h_prev2 is not None and step >= 2:
         if h_no_eta < 1.0:
             if step >= 2 + multistep_extra_initial_steps:
                 multistep_stages = 2
-
                 c2 = (-h_prev1_no_eta / h_no_eta).item()
                 c3 = (-h_prev2_no_eta / h_no_eta).item()
-                RESplain(f"3m: Using multistep (step {step} >= {2 + multistep_extra_initial_steps}), c2={c2:.6f}, c3={c3:.6f}", debug='debug')
             else:
-                before_change = rk_type
+                sampler_change_reason = "initial"
                 rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-                RESplain(f"3m initial step: {before_change} -> {rk_type} (step {step} < {2 + multistep_extra_initial_steps})", debug='debug')
             if rk_type.startswith("abnorsett"):
-                before_abnorsett = rk_type
                 rk_type = "res_3s"
                 rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-                RESplain(f"3m abnorsett override: {before_abnorsett} -> {rk_type}", debug='debug')
         else:
+            sampler_change_reason = "fallback"
             #rk_type = "res_3s"
-            before_fallback = rk_type
             rk_type = "euler" if sigma < 0.1 else "res_3s"
             rk_type = multistep_fallback_sampler if multistep_fallback_sampler else rk_type
-            RESplain(f"3m fallback (h_no_eta={h_no_eta.item() if isinstance(h_no_eta, torch.Tensor) else h_no_eta:.6f} >= 1.0, sigma={sigma.item() if isinstance(sigma, torch.Tensor) else sigma:.6f}): {before_fallback} -> {rk_type}", debug='debug')
             
     if rk_type[-2:] == "4m": #multistep method
-        original_rk_type = rk_type
         rk_type = rk_type[:-2] + "4s"
-        RESplain(f"4m multistep method detected: {original_rk_type} -> {rk_type}, step={step}, h_no_eta={h_no_eta.item() if isinstance(h_no_eta, torch.Tensor) else h_no_eta:.6f}", debug='debug')
         #if h_prev2 is not None and step >= 2:
         if h_no_eta < 1.0:
             if step >= 3 + multistep_extra_initial_steps:
                 multistep_stages = 3
-
                 c2 = (-h_prev1_no_eta / h_no_eta).item()
                 c3 = (-h_prev2_no_eta / h_no_eta).item()
                 # WOULD NEED A C4 (POW) TO IMPLEMENT RES_4M IF IT EXISTED
-                RESplain(f"4m: Using multistep (step {step} >= {3 + multistep_extra_initial_steps}), c2={c2:.6f}, c3={c3:.6f}", debug='debug')
             else:
-                before_change = rk_type
+                sampler_change_reason = "initial"
                 rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-                RESplain(f"4m initial step: {before_change} -> {rk_type} (step {step} < {3 + multistep_extra_initial_steps})", debug='debug')
             if rk_type == "res_4s":
-                before_res4s = rk_type
                 rk_type = "res_4s_strehmel_weiner"
                 rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-                RESplain(f"4m res_4s override: {before_res4s} -> {rk_type}", debug='debug')
             if rk_type.startswith("abnorsett"):
-                before_abnorsett = rk_type
                 rk_type = "res_4s_strehmel_weiner"
                 rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-                RESplain(f"4m abnorsett override: {before_abnorsett} -> {rk_type}", debug='debug')
         else:
+            sampler_change_reason = "fallback"
             #rk_type = "res_4s_strehmel_weiner"
-            before_fallback = rk_type
             rk_type = "euler" if sigma < 0.1 else "res_4s_strehmel_weiner"
             rk_type = multistep_fallback_sampler if multistep_fallback_sampler else rk_type
-            RESplain(f"4m fallback (h_no_eta={h_no_eta.item() if isinstance(h_no_eta, torch.Tensor) else h_no_eta:.6f} >= 1.0, sigma={sigma.item() if isinstance(sigma, torch.Tensor) else sigma:.6f}): {before_fallback} -> {rk_type}", debug='debug')
 
     if rk_type[-3] == "h" and rk_type[-1] == "s": #hybrid method
-        original_rk_type = rk_type
         hybrid_order = int(rk_type[-4])
-        RESplain(f"Hybrid method detected: {original_rk_type}, order={hybrid_order}, step={step}", debug='debug')
         if step < hybrid_order + multistep_extra_initial_steps:
-            before_change = rk_type
+            sampler_change_reason = "initial"
             rk_type = "res_" + rk_type[-2:]
             rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-            RESplain(f"Hybrid initial step: {before_change} -> {rk_type} (step {step} < {hybrid_order + multistep_extra_initial_steps})", debug='debug')
         else:
             hybrid_stages = hybrid_order  #+1 adjustment needed?
-            RESplain(f"Hybrid using {hybrid_stages} stages (step {step} >= {hybrid_order + multistep_extra_initial_steps})", debug='debug')
         if rk_type == "res_4s":
-            before_res4s = rk_type
             rk_type = "res_4s_strehmel_weiner"
             rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-            RESplain(f"Hybrid res_4s override: {before_res4s} -> {rk_type}", debug='debug')
         if rk_type == "res_1s":
-            before_res1s = rk_type
             rk_type = "res_2s"
             rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-            RESplain(f"Hybrid res_1s override: {before_res1s} -> {rk_type}", debug='debug')
 
     if rk_type in rk_coeff:
         a, b, ci = copy.deepcopy(rk_coeff[rk_type])
@@ -3231,7 +3193,24 @@ def get_rk_methods_beta(rk_type       : str,
     if EO("exp2lin_override_coeff") and is_exponential(rk_type):
         a = scale_all(a, -sigma.item())
         b = scale_all(b, -sigma.item())
-    
+
+    # Log when sampler differs from primary
+    is_normal_multistep = (
+        (primary_rk_type.endswith("2m") and rk_type.endswith("2s") and multistep_stages >= 1) or
+        (primary_rk_type.endswith("3m") and rk_type.endswith("3s") and multistep_stages >= 2) or
+        (primary_rk_type.endswith("4m") and rk_type.endswith("4s") and multistep_stages >= 3) or
+        (primary_rk_type.startswith("deis") and rk_type == "deis" and multistep_stages >= 1)
+    )
+    if rk_type != primary_rk_type and not is_normal_multistep:
+        if sampler_change_reason == "fallback":
+            h_val = h_no_eta.item() if isinstance(h_no_eta, torch.Tensor) else h_no_eta
+            reason_str = f" (fallback, h={h_val:.4f})"
+        elif sampler_change_reason == "initial":
+            reason_str = " (initial warmup step)"
+        else:
+            reason_str = ""
+        RESplain(f"step {step}: {primary_rk_type} -> {rk_type}{reason_str}", debug='debug')
+
     return a, b, u, v, ci, multistep_stages, hybrid_stages, FSAL
 
 

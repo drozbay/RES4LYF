@@ -12,7 +12,7 @@ from .rk_coefficients_beta import get_implicit_sampler_name_list, get_rk_methods
 from ..helper              import ExtraOptions
 from ..latents             import get_orthogonal, get_collinear, get_cosine_similarity, tile_latent, untile_latent
 
-from ..res4lyf             import RESplain
+from ..res4lyf             import RESplain, is_debug_logging_enabled
 
 MAX_STEPS = 10000
 
@@ -579,7 +579,11 @@ class RK_Method_Beta:
                 rk_swap_type = "deis_3m"
             
         if step > rk_swap_step and self.rk_type != rk_swap_type:
-            RESplain("Switching rk_type to:", rk_swap_type)
+            if is_debug_logging_enabled():
+                RESplain("Switching rk_type to:", rk_swap_type, "at step:", step, debug=True)
+            elif rk_swap_print:
+                RESplain("Switching rk_type to:", rk_swap_type, "at step:", step)
+
             self.rk_type = rk_swap_type
             
             if RK_Method_Beta.is_exponential(rk_swap_type):
@@ -608,7 +612,8 @@ class RK_Method_Beta:
                 if rk_swap_print:
                     RESplain("res_3m - res_2m:", torch.norm(denoised_res_3m - denoised_res_2m).item())
                 if rk_swap_threshold > torch.norm(denoised_res_2m - denoised_res_3m):
-                    RESplain("Switching rk_type to:", rk_swap_type, "at step:", step)
+                    if rk_swap_print:
+                        RESplain("Switching rk_type to:", rk_swap_type, "at step:", step)
                     self.rk_type = rk_swap_type
             
                     if RK_Method_Beta.is_exponential(rk_swap_type):
