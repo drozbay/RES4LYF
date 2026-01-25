@@ -3,6 +3,7 @@ import torch.nn.functional as F
 from typing import Tuple, List, Union
 import math
 
+import comfy.utils
 
 # TENSOR PROJECTION OPS
 

@@ -419,9 +419,14 @@ class SharkSampler:
                 
                     data_prev_ = state_info.get('data_prev_')
                     if EO("ultracascade_stage_up_preserve_data_prev") and data_prev_ is not None:
-                        data_prev_ = data_prev_.squeeze(1) 
-
-                        if data_prev_.dim() == 4: 
+                        if data_prev_.dim() == 5:  # [B, C, T, H, W]
+                            data_prev_ = F.interpolate(
+                                data_prev_.squeeze(2),  # Remove T dim for 2D interpolate
+                                size=latent_x['samples'].shape[-2:],
+                                mode=ultracascade_stage_up_upscale_mode,
+                                align_corners=ultracascade_stage_up_upscale_align_corners
+                                ).unsqueeze(2)  # Restore T dim
+                        elif data_prev_.dim() == 4:
                             data_prev_ = F.interpolate(
                                 data_prev_,
                                 size=latent_x['samples'].shape[-2:],
@@ -430,7 +435,7 @@ class SharkSampler:
                                 )
                         else:
                             print("data_prev_ upscale failed.")
-                        state_info['data_prev_'] = data_prev_.unsqueeze(1)
+                        state_info['data_prev_'] = data_prev_
                     
                     else:
                         state_info['data_prev_'] = data_prev_ #None   # = None was leading to errors even with sampler_mode=standard due to below with = state_info['data_prev_'][batch_num]
@@ -629,6 +634,14 @@ class SharkSampler:
 
                 state_info_out = {}
                 if 'BONGMATH' in sampler.extra_options:
+                    # For no_batch_loop, last_rng may be 2D [B, rng_size] from batch_loop output
+                    # Sampler expects 1D [rng_size], so extract single batch's RNG state for B=1
+                    if state_info and 'last_rng' in state_info:
+                        if state_info['last_rng'].dim() > 1 and state_info['last_rng'].shape[0] == 1:
+                            state_info = copy.copy(state_info)
+                            state_info['last_rng'] = state_info['last_rng'].squeeze(0)
+                            if 'last_rng_substep' in state_info and state_info['last_rng_substep'].dim() > 1:
+                                state_info['last_rng_substep'] = state_info['last_rng_substep'].squeeze(0)
                     sampler.extra_options['state_info'] = state_info
                     sampler.extra_options['state_info_out'] = state_info_out
                     sampler.extra_options['image_initial'] = x_initial
@@ -886,7 +899,7 @@ class SharkSampler:
                         stored_noise = state_info.get('noise_initial')
                         if stored_noise is not None:
                             if stored_noise.dim() > 3 and stored_noise.shape[0] > batch_num:
-                                stored_noise = stored_noise[batch_num]
+                                stored_noise = stored_noise[batch_num:batch_num+1]
                             if stored_noise.shape == noise.shape:
                                 noise = stored_noise.to(noise.device, dtype=noise.dtype)
                                 RESplain("Using stored noise_initial from previous sampler", debug=True)
@@ -894,7 +907,7 @@ class SharkSampler:
                         stored_image = state_info.get('image_initial')
                         if stored_image is not None:
                             if stored_image.dim() > 3 and stored_image.shape[0] > batch_num:
-                                stored_image = stored_image[batch_num]
+                                stored_image = stored_image[batch_num:batch_num+1]
                             if stored_image.shape == x.shape:
                                 x_input = stored_image.to(x.device, dtype=x.dtype)
                                 RESplain("Using stored image_initial from previous sampler", debug=True)
@@ -914,14 +927,14 @@ class SharkSampler:
                     if 'BONGMATH' in sampler.extra_options: # verify the sampler is rk_sampler_beta()
                         sampler.extra_options['state_info']     = copy.deepcopy(state_info)         ##############################
                         if state_info != {} and state_info != {'data_prev_': None}:  #second condition is for ultracascade
-                            sampler.extra_options['state_info']['raw_x']            = state_info['raw_x']           [batch_num]
-                            sampler.extra_options['state_info']['data_prev_']       = state_info['data_prev_']      [batch_num]
+                            sampler.extra_options['state_info']['raw_x']            = state_info['raw_x']           [batch_num:batch_num+1]
+                            sampler.extra_options['state_info']['data_prev_']       = state_info['data_prev_']      [batch_num]  # Use index, not slice - first dim is recycled_stages
                             sampler.extra_options['state_info']['last_rng']         = state_info['last_rng']        [batch_num]
                             sampler.extra_options['state_info']['last_rng_substep'] = state_info['last_rng_substep'][batch_num]
                             if 'image_initial' in state_info and state_info['image_initial'].dim() > 3:
-                                sampler.extra_options['state_info']['image_initial'] = state_info['image_initial'][batch_num]
+                                sampler.extra_options['state_info']['image_initial'] = state_info['image_initial'][batch_num:batch_num+1]
                             if 'noise_initial' in state_info and state_info['noise_initial'].dim() > 3:
-                                sampler.extra_options['state_info']['noise_initial'] = state_info['noise_initial'][batch_num]
+                                sampler.extra_options['state_info']['noise_initial'] = state_info['noise_initial'][batch_num:batch_num+1]
                         #state_info     = copy.deepcopy(latent_image['state_info']) if 'state_info' in latent_image else {}
                         state_info_out = {}
                         sampler.extra_options['state_info_out'] = state_info_out
@@ -1234,17 +1247,17 @@ class SharkSampler:
 
             gc.collect()
 
-            # STACK SDE NOISES, SAVE STATE INFO
+            # CAT SDE NOISES, SAVE STATE INFO
             state_info_out = out_state_info[0]
             if 'raw_x' in out_state_info[0]:
-                state_info_out['raw_x']            = torch.stack([out_state_info[_]['raw_x']            for _ in range(len(out_state_info))])
-                state_info_out['data_prev_']       = torch.stack([out_state_info[_]['data_prev_']       for _ in range(len(out_state_info))])
-                state_info_out['last_rng']         = torch.stack([out_state_info[_]['last_rng']         for _ in range(len(out_state_info))])
-                state_info_out['last_rng_substep'] = torch.stack([out_state_info[_]['last_rng_substep'] for _ in range(len(out_state_info))])
+                state_info_out['raw_x']            = torch.cat([out_state_info[_]['raw_x']            for _ in range(len(out_state_info))], dim=0)
+                state_info_out['data_prev_']       = torch.stack([out_state_info[_]['data_prev_']       for _ in range(len(out_state_info))])  # Keep stack - first dim is recycled_stages, not batch
+                state_info_out['last_rng']         = torch.stack([out_state_info[_]['last_rng']         for _ in range(len(out_state_info))])  # Keep stack - 1D RNG state
+                state_info_out['last_rng_substep'] = torch.stack([out_state_info[_]['last_rng_substep'] for _ in range(len(out_state_info))])  # Keep stack - 1D RNG state
                 if 'image_initial' in out_state_info[0]:
-                    state_info_out['image_initial'] = torch.stack([out_state_info[_]['image_initial'] for _ in range(len(out_state_info))])
+                    state_info_out['image_initial'] = torch.cat([out_state_info[_]['image_initial'] for _ in range(len(out_state_info))], dim=0)
                 if 'noise_initial' in out_state_info[0]:
-                    state_info_out['noise_initial'] = torch.stack([out_state_info[_]['noise_initial'] for _ in range(len(out_state_info))])
+                    state_info_out['noise_initial'] = torch.cat([out_state_info[_]['noise_initial'] for _ in range(len(out_state_info))], dim=0)
             elif 'raw_x' in state_info:
                 state_info_out = state_info
 
