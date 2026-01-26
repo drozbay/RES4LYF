@@ -623,7 +623,7 @@ class SharkSampler:
 
                 noise_mask = latent_image_batch.get("noise_mask", None)
 
-                if noise_mask is not None:
+                if noise_mask is not None and sampler_mode in {"resample", "unsample"}:
                     stored_image = state_info.get('image_initial')
                     x_initial = stored_image if stored_image is not None else x
                     stored_noise = state_info.get('noise_initial')
@@ -792,11 +792,14 @@ class SharkSampler:
                         for idx, s in enumerate(samples.unbind()):
                             xi = x_initial_list[idx] if idx < len(x_initial_list) else x_initial_list[0]
                             m = mask_list[idx] if idx < len(mask_list) else mask_list[0]
-                            if s.ndim == m.ndim:
-                                reshaped_mask = comfy.utils.reshape_mask(m, s.shape).to(s.device)
-                                blended.append(s * reshaped_mask + xi.to(s.device) * (1.0 - reshaped_mask))
-                            else:
-                                blended.append(s)
+                            reshaped_mask = comfy.utils.reshape_mask(m, s.shape).to(s.device)
+                            blended.append(s * reshaped_mask + xi.to(s.device) * (1.0 - reshaped_mask))
+                            # probably don't need to check ndim here, comfy utils handles it
+                            # if s.ndim == m.ndim:
+                            #     reshaped_mask = comfy.utils.reshape_mask(m, s.shape).to(s.device)
+                            #     blended.append(s * reshaped_mask + xi.to(s.device) * (1.0 - reshaped_mask))
+                            # else:
+                            #     blended.append(s)
                         samples = comfy.nested_tensor.NestedTensor(blended)
                     else:
                         if hasattr(noise_mask, 'is_nested') and noise_mask.is_nested:
