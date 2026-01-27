@@ -118,7 +118,7 @@ def calculate_sigmas_RES4LYF(model_sampling, scheduler_name, steps):
 # Patched set_step for IndexListContextHandler to handle substep sampling.
 def _patched_context_window_set_step(self, timestep: torch.Tensor, model_options: dict):
     sample_sigmas = model_options["transformer_options"]["sample_sigmas"]
-    current_timestep = timestep[0]
+    current_timestep = timestep[0].to(sample_sigmas.dtype)
 
     # try exact match
     mask = torch.isclose(sample_sigmas, current_timestep, rtol=0.0001)
