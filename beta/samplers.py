@@ -687,7 +687,7 @@ class SharkSampler:
 
                 # Per-step normalization: pass shapes and factors to inner sampler
                 has_per_step_factors = len(factors_0_steps) > 1 or len(factors_1_steps) > 1
-                if isinstance(x, comfy.nested_tensor.NestedTensor):
+                if isinstance(x, comfy.nested_tensor.NestedTensor) and 'rk_type' in sampler.extra_options:
                     sampler.extra_options['latent_shapes'] = [t.shape for t in x.unbind()]
                     sampler.extra_options['latent_normalize_idx_0_steps'] = factors_0_steps
                     sampler.extra_options['latent_normalize_idx_1_steps'] = factors_1_steps
@@ -1111,7 +1111,7 @@ class SharkSampler:
 
                         # Per-step normalization: pass shapes and factors to inner sampler
                         has_per_step_factors = len(factors_0_steps) > 1 or len(factors_1_steps) > 1
-                        if isinstance(x_input, comfy.nested_tensor.NestedTensor):
+                        if isinstance(x_input, comfy.nested_tensor.NestedTensor) and 'rk_type' in sampler.extra_options:
                             sampler.extra_options['latent_shapes'] = [t.shape for t in x_input.unbind()]
                             sampler.extra_options['latent_normalize_idx_0_steps'] = factors_0_steps
                             sampler.extra_options['latent_normalize_idx_1_steps'] = factors_1_steps
