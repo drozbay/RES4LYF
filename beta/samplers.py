@@ -758,8 +758,11 @@ class SharkSampler:
                             sampler.extra_options['etas_substep'] = etas_substep_decay
                             sampler.extra_options['etas']         = etas_decay
                             sampler.extra_options['rk_type']      = rk_type_cached
-                            sampler.extra_options['steps_to_run'] = steps_to_run_cached
-                        
+                            if unsample_steps_to_run > -1:
+                                sampler.extra_options['steps_to_run'] = unsample_steps_to_run
+                            else:
+                                sampler.extra_options['steps_to_run'] = steps_to_run_cached
+
                         samples = guider.sample(noise, samples, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=-1)
 
                         eta_substep_decay   *= eta_decay_scale
@@ -1179,9 +1182,12 @@ class SharkSampler:
                                     sampler.extra_options['etas_substep'] = etas_substep_decay
                                     sampler.extra_options['etas']         = etas_decay
                                     sampler.extra_options['rk_type']      = rk_type_cached
-                                    sampler.extra_options['steps_to_run'] = steps_to_run_cached
+                                    if unsample_steps_to_run > -1:
+                                        sampler.extra_options['steps_to_run'] = unsample_steps_to_run
+                                    else:
+                                        sampler.extra_options['steps_to_run'] = steps_to_run_cached
 
-                                    
+
                                 samples = guider.sample(noise, samples.clone(), sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=-1)
 
                                 eta_substep_decay   *= eta_decay_scale
