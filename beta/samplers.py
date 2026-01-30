@@ -382,7 +382,7 @@ class SharkSampler:
             # INIT STATE INFO FOR CONTINUING GENERATION ACROSS MULTIPLE SAMPLER NODES
             if latent_image is not None:
                 samples = latent_image['samples']
-                latent_x['samples'] = samples._copy() if isinstance(samples, comfy.nested_tensor.NestedTensor) else samples.clone()
+                latent_x['samples'] = samples
                 if 'noise_mask' in latent_image:
                     noise_mask = latent_image['noise_mask']
                     latent_x['noise_mask'] = noise_mask._copy() if isinstance(noise_mask, comfy.nested_tensor.NestedTensor) else noise_mask.clone()
@@ -553,10 +553,10 @@ class SharkSampler:
                 sampler.extra_options['extra_options'] = extra_options
 
             samples = latent_x['samples']
-            latent_image_batch = {"samples": samples._copy() if isinstance(samples, comfy.nested_tensor.NestedTensor) else samples.clone()}
+            latent_image_batch = {"samples": samples}
             if 'noise_mask' in latent_x and latent_x['noise_mask'] is not None:
                 noise_mask = latent_x['noise_mask']
-                latent_image_batch['noise_mask'] = noise_mask._copy() if isinstance(noise_mask, comfy.nested_tensor.NestedTensor) else noise_mask.clone()
+                latent_image_batch['noise_mask'] = noise_mask
 
             if not EO("use_batch_loop"):
                 x = latent_image_batch['samples'].to(default_dtype)
@@ -711,10 +711,7 @@ class SharkSampler:
                         state_info['raw_x'], _ = comfy.utils.pack_latents(tensors)
                         RESplain(f"Latent normalize: applied to raw_x (packed), idx_0={idx_0_factor}, idx_1={idx_1_factor}", debug=True)
 
-                if isinstance(x, comfy.nested_tensor.NestedTensor):
-                    samples = guider.sample(noise, x._copy(), sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
-                else:
-                    samples = guider.sample(noise, x.clone(), sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
+                samples = guider.sample(noise, x, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
 
                 if rebounds > 0:
                     noise_seed_cached   = sampler.extra_options['noise_seed']
@@ -762,8 +759,8 @@ class SharkSampler:
                             sampler.extra_options['etas']         = etas_decay
                             sampler.extra_options['rk_type']      = rk_type_cached
                             sampler.extra_options['steps_to_run'] = steps_to_run_cached
-
-                        samples = guider.sample(noise, samples.clone(), sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=-1)
+                        
+                        samples = guider.sample(noise, samples, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=-1)
 
                         eta_substep_decay   *= eta_decay_scale
                         eta_decay           *= eta_decay_scale
@@ -819,11 +816,19 @@ class SharkSampler:
                         x0_out = comfy.nested_tensor.NestedTensor(
                             comfy.utils.unpack_latents(x0_out, latent_shapes)
                         )
+                    if hasattr(x0_out, 'is_nested') and x0_out.is_nested:
+                        x0_out = comfy.nested_tensor.NestedTensor([t.to(torch.float32) for t in x0_out.unbind()])
+                    else:
+                        x0_out = x0_out.to(torch.float32)
                     out_denoised = latent_x.copy()
                     out_denoised["samples"] = x0_out
                 else:
-                    out_denoised = out
-
+                    out_denoised = latent_x.copy()
+                    if hasattr(samples, 'is_nested') and samples.is_nested:
+                        out_denoised["samples"] = comfy.nested_tensor.NestedTensor([t.to(torch.float32) for t in samples.unbind()])
+                    else:
+                        out_denoised["samples"] = samples.to(torch.float32)
+                        
                 out['positive'] = positive
                 out['negative'] = negative
                 out['model'] = work_model
