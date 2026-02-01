@@ -77,6 +77,16 @@ def extract_cond_from_guider(guider, cond_type):
     return None
 
 
+def has_custom_cfg_handling(guider):
+    # MultimodalGuider and similar use a 'parameters' dict with per-modality CFG
+    if hasattr(guider, 'parameters') and isinstance(getattr(guider, 'parameters', None), dict):
+        return True
+    # DualCFGGuider uses cfg1/cfg2 instead of cfg
+    if hasattr(guider, 'cfg1') and hasattr(guider, 'cfg2'):
+        return True
+    return False
+
+
 def generate_init_noise(x, seed, noise_type_init, noise_stdev, noise_mean, noise_normalize,
                         sigma_max, sigma_min, alpha_init=None, k_init=None, EO=None):
     if noise_type_init == "none" or noise_stdev == 0.0:
@@ -297,29 +307,42 @@ class SharkSampler:
             guider_from_latent = latent_image.get('guider') if latent_image is not None else None
 
             if guider_input is not None:
+                # Explicit guider input takes full precedence - all settings come from guider
                 guider = guider_input
                 work_model = guider.model_patcher
-                RESplain("Shark: Using guider from SharkOptions_GuiderInput: ", guider.model_patcher.model.diffusion_model.__class__.__name__)
+                RESplain("Shark: Using guider from SharkOptions_GuiderInput: ", work_model.model.diffusion_model.__class__.__name__)
                 RESplain("SharkWarning: \"flow\" guide mode does not work with SharkOptions_GuiderInput")
-                if hasattr(guider, 'cfg') and guider.cfg is not None:
+                if has_custom_cfg_handling(guider):
+                    RESplain(f"Shark: Guider has custom CFG handling ({guider.__class__.__name__}) - using guider's internal CFG settings")
+                elif hasattr(guider, 'cfg') and guider.cfg is not None:
                     cfg = guider.cfg
                     RESplain("Shark: Using cfg from SharkOptions_GuiderInput: ", cfg)
-                if positive is None:
-                    positive = extract_cond_from_guider(guider, 'positive')
-                    if positive is not None:
-                        RESplain("Shark: Using positive cond from SharkOptions_GuiderInput")
-                if negative is None:
-                    negative = extract_cond_from_guider(guider, 'negative')
-                    if negative is not None:
-                        RESplain("Shark: Using negative cond from SharkOptions_GuiderInput")
+                extracted_positive = extract_cond_from_guider(guider, 'positive')
+                if extracted_positive is not None:
+                    positive = extracted_positive
+                    RESplain("Shark: Using positive cond from SharkOptions_GuiderInput")
+                extracted_negative = extract_cond_from_guider(guider, 'negative')
+                if extracted_negative is not None:
+                    negative = extracted_negative
+                    RESplain("Shark: Using negative cond from SharkOptions_GuiderInput")
             elif guider_from_latent is not None:
                 guider = guider_from_latent
-                work_model = guider.model_patcher
-                RESplain("Shark: Continuing guider from chained latent: ", guider.model_patcher.model.diffusion_model.__class__.__name__)
+                if model is not None:
+                    work_model = model
+                    guider.model_patcher = model
+                    guider.model_options = model.model_options
+                    RESplain("Shark: Overriding chained guider model with provided model input")
+                else:
+                    work_model = guider.model_patcher
+                RESplain("Shark: Continuing guider from chained latent: ", work_model.model.diffusion_model.__class__.__name__)
                 RESplain("SharkWarning: \"flow\" guide mode does not work with chained guider")
-                if hasattr(guider, 'cfg') and guider.cfg is not None:
-                    cfg = guider.cfg
-                    RESplain("Shark: Using cfg from chained guider: ", cfg)
+                # CFG is set per-node, not inherited from chained guider (will be applied via set_cfg/set_cfgs later)
+                if has_custom_cfg_handling(guider):
+                    RESplain(f"SharkWarning: Guider has custom CFG handling ({guider.__class__.__name__}) - node CFG input will be ignored")
+                else:
+                    guider_cfg = guider.cfg if hasattr(guider, 'cfg') else None
+                    if guider_cfg is not None and guider_cfg != cfg:
+                        RESplain(f"Shark: Chained guider CFG ({guider_cfg}) will be overridden with node CFG ({cfg})")
                 if positive is None:
                     positive = extract_cond_from_guider(guider, 'positive')
                     if positive is not None:
@@ -343,6 +366,7 @@ class SharkSampler:
 
             if cfg < 0:
                 sampler.extra_options['cfg_cw'] = -cfg
+                RESplain(f"Shark: Using channelwise CFG ({-cfg}), guider CFG set to 1.0")
                 cfg = 1.0
             else:
                 sampler.extra_options.pop("cfg_cw", None) 
@@ -621,13 +645,23 @@ class SharkSampler:
                 elif type(guider) == SharkGuider:
                     guider.set_cfgs(xt=cfg)
                     guider.set_conds(xt_positive=pos_cond, xt_negative=neg_cond)
+                    RESplain(f"Shark: Applied CFG ({cfg}) to SharkGuider", debug=True)
                 else:
-                    try:
-                        guider.set_cfg(cfg)
-                        guider.set_conds(pos_cond, neg_cond)
-                    except:
-                        RESplain("SharkWarning: custom guider.set_cfg or set_conds failed.", debug=True)
-                        pass
+                    if has_custom_cfg_handling(guider):
+                        # Guider has its own CFG handling - set_cfg would succeed but be ignored
+                        RESplain(f"Shark: Guider ({guider.__class__.__name__}) has custom CFG - using guider's internal settings", debug=True)
+                        try:
+                            guider.set_conds(pos_cond, neg_cond)
+                        except:
+                            pass
+                    else:
+                        try:
+                            guider.set_cfg(cfg)
+                            guider.set_conds(pos_cond, neg_cond)
+                            RESplain(f"Shark: Applied CFG ({cfg}) to guider", debug=True)
+                        except:
+                            RESplain(f"SharkWarning: guider.set_cfg failed - guider will use its original CFG settings (node CFG {cfg} ignored)")
+                            pass
 
                 if latent_image is not None and 'state_info' in latent_image and 'sigmas' in latent_image['state_info']:
                     steps_len = max(sigmas.shape[-1] - 1, latent_image['state_info']['sigmas'].shape[-1] - 1)
@@ -660,7 +694,11 @@ class SharkSampler:
                     sampler.extra_options['noise_initial'] = noise_initial
 
                 if rebounds > 0:
-                    cfgs_cached = guider.cfgs
+                    if has_custom_cfg_handling(guider):
+                        RESplain(f"SharkWarning: Rebounds with guider ({guider.__class__.__name__}) that has custom CFG - unsample_cfg will be ignored")
+                    has_cfgs = hasattr(guider, 'cfgs')
+                    cfgs_cached = guider.cfgs if has_cfgs else None
+                    cfg_cached = guider.cfg
                     steps_to_run_cached = sampler.extra_options['steps_to_run']
                     eta_cached         = sampler.extra_options['eta']
                     eta_substep_cached = sampler.extra_options['eta_substep']
@@ -672,10 +710,12 @@ class SharkSampler:
                     rk_type_cached = sampler.extra_options['rk_type']
 
                     if sampler.extra_options['sampler_mode'] == "unsample":
-                        guider.cfgs = {
-                            'xt': unsample_cfg,
-                            'yt': unsample_cfg,
-                        }
+                        if has_cfgs:
+                            guider.cfgs = {'xt': unsample_cfg, 'yt': unsample_cfg}
+                            RESplain(f"Shark: Rebounds init - setting unsample CFG (cfgs): xt={unsample_cfg}, yt={unsample_cfg}", debug=True)
+                        else:
+                            guider.cfg = unsample_cfg
+                            RESplain(f"Shark: Rebounds init - setting unsample CFG: {unsample_cfg}", debug=True)
                         if unsample_eta != -1.0:
                             sampler.extra_options['eta_substep']  = unsample_eta
                             sampler.extra_options['eta']          = unsample_eta
@@ -686,9 +726,15 @@ class SharkSampler:
                         if unsample_steps_to_run > -1:
                             sampler.extra_options['steps_to_run'] = unsample_steps_to_run
                     else:
-                        guider.cfgs = cfgs_cached
+                        if has_cfgs:
+                            guider.cfgs = cfgs_cached
+                        else:
+                            guider.cfg = cfg_cached
 
-                    guider.cfgs = cfgs_cached
+                    if has_cfgs:
+                        guider.cfgs = cfgs_cached
+                    else:
+                        guider.cfg = cfg_cached
                     sampler.extra_options['steps_to_run'] = steps_to_run_cached
 
                     eta_decay           = eta_cached
@@ -735,7 +781,8 @@ class SharkSampler:
 
                 if rebounds > 0:
                     noise_seed_cached   = sampler.extra_options['noise_seed']
-                    cfgs_cached         = guider.cfgs
+                    cfgs_cached         = guider.cfgs if has_cfgs else None
+                    cfg_cached          = guider.cfg
                     sampler_mode_cached = sampler.extra_options['sampler_mode']
 
                     for restarts_iter in range(rebounds):
@@ -753,10 +800,12 @@ class SharkSampler:
                         sampler.extra_options['noise_seed'] = -1
 
                         if sampler.extra_options['sampler_mode'] == "unsample":
-                            guider.cfgs = {
-                                'xt': unsample_cfg,
-                                'yt': unsample_cfg,
-                            }
+                            if has_cfgs:
+                                guider.cfgs = {'xt': unsample_cfg, 'yt': unsample_cfg}
+                                RESplain(f"Shark: Rebounds unsample - CFG (cfgs): xt={unsample_cfg}, yt={unsample_cfg}", debug=True)
+                            else:
+                                guider.cfg = unsample_cfg
+                                RESplain(f"Shark: Rebounds unsample - CFG: {unsample_cfg}", debug=True)
                             if unsample_eta != -1.0:
                                 sampler.extra_options['eta_substep']  = unsample_eta_decay
                                 sampler.extra_options['eta']          = unsample_eta_decay
@@ -772,7 +821,12 @@ class SharkSampler:
                             if unsample_steps_to_run > -1:
                                 sampler.extra_options['steps_to_run'] = unsample_steps_to_run
                         else:
-                            guider.cfgs = cfgs_cached
+                            if has_cfgs:
+                                guider.cfgs = cfgs_cached
+                                RESplain(f"Shark: Rebounds resample - restored CFG (cfgs)", debug=True)
+                            else:
+                                guider.cfg = cfg_cached
+                                RESplain(f"Shark: Rebounds resample - restored CFG: {cfg_cached}", debug=True)
                             sampler.extra_options['eta_substep']  = eta_substep_decay
                             sampler.extra_options['eta']          = eta_decay
                             sampler.extra_options['etas_substep'] = etas_substep_decay
@@ -794,7 +848,12 @@ class SharkSampler:
                         unsample_etas_decay *= eta_decay_scale
 
                     sampler.extra_options['noise_seed'] = noise_seed_cached
-                    guider.cfgs = cfgs_cached
+                    if has_cfgs:
+                        guider.cfgs = cfgs_cached
+                        RESplain(f"Shark: Rebounds complete - restored original CFG (cfgs)", debug=True)
+                    else:
+                        guider.cfg = cfg_cached
+                        RESplain(f"Shark: Rebounds complete - restored original CFG: {cfg_cached}", debug=True)
                     sampler.extra_options['sampler_mode'] = sampler_mode_cached
                     sampler.extra_options['eta_substep']  = eta_substep_cached
                     sampler.extra_options['eta']          = eta_cached
@@ -1961,15 +2020,30 @@ class ClownsharKSampler_Beta:
         guider_from_latent = latent_image.get('guider') if latent_image is not None else None
 
         if guider_input is not None:
+            # Explicit guider input takes full precedence - all settings come from guider
             guider = guider_input
             model = guider.model_patcher
-            if positive is None:
-                positive = extract_cond_from_guider(guider, 'positive')
-            if negative is None:
-                negative = extract_cond_from_guider(guider, 'negative')
+            if has_custom_cfg_handling(guider):
+                RESplain(f"Clown: Guider has custom CFG handling ({guider.__class__.__name__}) - using guider's internal CFG settings")
+            elif hasattr(guider, 'cfg') and guider.cfg is not None:
+                cfg = guider.cfg
+                RESplain(f"Clown: Using CFG from explicit guider input: {cfg}")
+            extracted_positive = extract_cond_from_guider(guider, 'positive')
+            if extracted_positive is not None:
+                positive = extracted_positive
+            extracted_negative = extract_cond_from_guider(guider, 'negative')
+            if extracted_negative is not None:
+                negative = extracted_negative
         elif guider_from_latent is not None:
+            # Chained guider - node inputs can override
             guider = guider_from_latent
-            model = guider.model_patcher
+            if model is not None:
+                guider.model_patcher = model
+                guider.model_options = model.model_options
+            else:
+                model = guider.model_patcher
+            if has_custom_cfg_handling(guider):
+                RESplain(f"ClownWarning: Guider has custom CFG handling ({guider.__class__.__name__}) - node CFG input will be ignored")
             if positive is None:
                 positive = extract_cond_from_guider(guider, 'positive')
             if negative is None:
