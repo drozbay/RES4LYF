@@ -284,35 +284,56 @@ class SharkSampler:
                                 negative[i][1]['control'].base = latent_image['negative'][i][1]['control'].base
                     is_chained = True
                 if 'sampler' in latent_image and sampler is None:
-                    sampler = copy_cond(latent_image['sampler'])  #.clone()
+                    sampler = copy_cond(latent_image['sampler'])
                     is_chained = True
             
             if 'steps_to_run' in sampler.extra_options:
                 sampler.extra_options['steps_to_run'] = steps_to_run
 
             guider_input = options_mgr.get('guider', None)
-            if guider_input is not None and is_chained is False:
+            guider_from_latent = latent_image.get('guider') if latent_image is not None else None
+
+            if guider_input is not None:
                 guider = guider_input
                 work_model = guider.model_patcher
-                RESplain("Shark: Using model from ClownOptions_GuiderInput: ", guider.model_patcher.model.diffusion_model.__class__.__name__)
-                RESplain("SharkWarning: \"flow\" guide mode does not work with ClownOptions_GuiderInput")
+                RESplain("Shark: Using guider from SharkOptions_GuiderInput: ", guider.model_patcher.model.diffusion_model.__class__.__name__)
+                RESplain("SharkWarning: \"flow\" guide mode does not work with SharkOptions_GuiderInput")
                 if hasattr(guider, 'cfg') and guider.cfg is not None:
                     cfg = guider.cfg
-                    RESplain("Shark: Using cfg from ClownOptions_GuiderInput: ", cfg)
+                    RESplain("Shark: Using cfg from SharkOptions_GuiderInput: ", cfg)
                 if hasattr(guider, 'original_conds') and guider.original_conds is not None:
                     if 'positive' in guider.original_conds:
                         first_ = guider.original_conds['positive'][0]['cross_attn']
                         second_ = {k: v for k, v in guider.original_conds['positive'][0].items() if k != 'cross_attn'}
                         positive = [[first_, second_],]
-                        RESplain("Shark: Using positive cond from ClownOptions_GuiderInput")
+                        RESplain("Shark: Using positive cond from SharkOptions_GuiderInput")
                     if 'negative' in guider.original_conds:
                         first_ = guider.original_conds['negative'][0]['cross_attn']
                         second_ = {k: v for k, v in guider.original_conds['negative'][0].items() if k != 'cross_attn'}
                         negative = [[first_, second_],]
-                        RESplain("Shark: Using negative cond from ClownOptions_GuiderInput")
+                        RESplain("Shark: Using negative cond from SharkOptions_GuiderInput")
+            elif guider_from_latent is not None:
+                guider = guider_from_latent
+                work_model = guider.model_patcher
+                RESplain("Shark: Continuing guider from chained latent: ", guider.model_patcher.model.diffusion_model.__class__.__name__)
+                RESplain("SharkWarning: \"flow\" guide mode does not work with chained guider")
+                if hasattr(guider, 'cfg') and guider.cfg is not None:
+                    cfg = guider.cfg
+                    RESplain("Shark: Using cfg from chained guider: ", cfg)
+                if hasattr(guider, 'original_conds') and guider.original_conds is not None:
+                    if 'positive' in guider.original_conds:
+                        first_ = guider.original_conds['positive'][0]['cross_attn']
+                        second_ = {k: v for k, v in guider.original_conds['positive'][0].items() if k != 'cross_attn'}
+                        positive = [[first_, second_],]
+                        RESplain("Shark: Using positive cond from chained guider")
+                    if 'negative' in guider.original_conds:
+                        first_ = guider.original_conds['negative'][0]['cross_attn']
+                        second_ = {k: v for k, v in guider.original_conds['negative'][0].items() if k != 'cross_attn'}
+                        negative = [[first_, second_],]
+                        RESplain("Shark: Using negative cond from chained guider")
             else:
                 guider = None
-                work_model   = model#.clone()
+                work_model = model
             
             if latent_image is not None:
                 latent_image['samples'] = comfy.sample.fix_empty_latent_channels(work_model, latent_image['samples'])
@@ -607,6 +628,7 @@ class SharkSampler:
                         guider.set_cfg(cfg)
                         guider.set_conds(pos_cond, neg_cond)
                     except:
+                        RESplain("SharkWarning: custom guider.set_cfg or set_conds failed.", debug=True)
                         pass
 
                 if latent_image is not None and 'state_info' in latent_image and 'sigmas' in latent_image['state_info']:
@@ -836,6 +858,7 @@ class SharkSampler:
                 out['negative'] = negative
                 out['model'] = work_model
                 out['sampler'] = sampler
+                out['guider'] = guider
 
                 if noise_mask is not None:
                     state_info_out['image_initial'] = x_initial
