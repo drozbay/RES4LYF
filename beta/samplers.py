@@ -54,8 +54,27 @@ def copy_cond(conditioning):
                 else:
                     cond_copy[k] = v  # ensure we're not copying huge shit like controlnets
             new_conditioning.append([embedding.clone(), cond_copy])
-            
+
     return new_conditioning
+
+
+def extract_cond_from_guider(guider, cond_type):
+    if not hasattr(guider, 'original_conds') or guider.original_conds is None:
+        return None
+
+    # Try SharkGuider keys first, then CFGGuider keys
+    key_prefixes = ['xt_', '']
+    for prefix in key_prefixes:
+        key = f'{prefix}{cond_type}'
+        if key in guider.original_conds:
+            cond_list = guider.original_conds[key]
+            result = []
+            for cond in cond_list:
+                tensor = cond.get('cross_attn')
+                dict_part = {k: v for k, v in cond.items() if k != 'cross_attn'}
+                result.append([tensor, dict_part])
+            return result
+    return None
 
 
 def generate_init_noise(x, seed, noise_type_init, noise_stdev, noise_mean, noise_normalize,
@@ -267,26 +286,10 @@ class SharkSampler:
                 
             is_chained = False
             if latent_image is not None:
-                if 'positive' in latent_image and positive is None:
-                    positive = copy_cond(latent_image['positive'])
-                    if positive is not None and 'control' in positive[0][1]:
-                        for i in range(len(positive)):
-                            positive[i][1]['control']      = latent_image['positive'][i][1]['control']
-                            if hasattr(latent_image['positive'][i][1]['control'], 'base'):
-                                positive[i][1]['control'].base = latent_image['positive'][i][1]['control'].base
-                    is_chained = True
-                if 'negative' in latent_image and negative is None:
-                    negative = copy_cond(latent_image['negative'])
-                    if negative is not None and 'control' in negative[0][1]:
-                        for i in range(len(negative)):
-                            negative[i][1]['control']      = latent_image['negative'][i][1]['control']
-                            if hasattr(latent_image['negative'][i][1]['control'], 'base'):
-                                negative[i][1]['control'].base = latent_image['negative'][i][1]['control'].base
-                    is_chained = True
                 if 'sampler' in latent_image and sampler is None:
                     sampler = copy_cond(latent_image['sampler'])
                     is_chained = True
-            
+
             if 'steps_to_run' in sampler.extra_options:
                 sampler.extra_options['steps_to_run'] = steps_to_run
 
@@ -301,16 +304,13 @@ class SharkSampler:
                 if hasattr(guider, 'cfg') and guider.cfg is not None:
                     cfg = guider.cfg
                     RESplain("Shark: Using cfg from SharkOptions_GuiderInput: ", cfg)
-                if hasattr(guider, 'original_conds') and guider.original_conds is not None:
-                    if 'positive' in guider.original_conds:
-                        first_ = guider.original_conds['positive'][0]['cross_attn']
-                        second_ = {k: v for k, v in guider.original_conds['positive'][0].items() if k != 'cross_attn'}
-                        positive = [[first_, second_],]
+                if positive is None:
+                    positive = extract_cond_from_guider(guider, 'positive')
+                    if positive is not None:
                         RESplain("Shark: Using positive cond from SharkOptions_GuiderInput")
-                    if 'negative' in guider.original_conds:
-                        first_ = guider.original_conds['negative'][0]['cross_attn']
-                        second_ = {k: v for k, v in guider.original_conds['negative'][0].items() if k != 'cross_attn'}
-                        negative = [[first_, second_],]
+                if negative is None:
+                    negative = extract_cond_from_guider(guider, 'negative')
+                    if negative is not None:
                         RESplain("Shark: Using negative cond from SharkOptions_GuiderInput")
             elif guider_from_latent is not None:
                 guider = guider_from_latent
@@ -320,17 +320,15 @@ class SharkSampler:
                 if hasattr(guider, 'cfg') and guider.cfg is not None:
                     cfg = guider.cfg
                     RESplain("Shark: Using cfg from chained guider: ", cfg)
-                if hasattr(guider, 'original_conds') and guider.original_conds is not None:
-                    if 'positive' in guider.original_conds:
-                        first_ = guider.original_conds['positive'][0]['cross_attn']
-                        second_ = {k: v for k, v in guider.original_conds['positive'][0].items() if k != 'cross_attn'}
-                        positive = [[first_, second_],]
+                if positive is None:
+                    positive = extract_cond_from_guider(guider, 'positive')
+                    if positive is not None:
                         RESplain("Shark: Using positive cond from chained guider")
-                    if 'negative' in guider.original_conds:
-                        first_ = guider.original_conds['negative'][0]['cross_attn']
-                        second_ = {k: v for k, v in guider.original_conds['negative'][0].items() if k != 'cross_attn'}
-                        negative = [[first_, second_],]
+                if negative is None:
+                    negative = extract_cond_from_guider(guider, 'negative')
+                    if negative is not None:
                         RESplain("Shark: Using negative cond from chained guider")
+                is_chained = True
             else:
                 guider = None
                 work_model = model
@@ -854,9 +852,6 @@ class SharkSampler:
                     else:
                         out_denoised["samples"] = samples.to(torch.float32)
                         
-                out['positive'] = positive
-                out['negative'] = negative
-                out['model'] = work_model
                 out['sampler'] = sampler
                 out['guider'] = guider
 
@@ -1302,12 +1297,9 @@ class SharkSampler:
 
                 out['state_info']       = copy.deepcopy(state_info_out)
                 state_info              = {}
-                
-                out['positive'] = positive
-                out['negative'] = negative
-                out['model']    = work_model#.clone()
+
                 out['sampler']  = sampler
-                
+                out['guider']   = guider
 
                 return (out, out_denoised, sde_noise,)
                 
@@ -1390,22 +1382,9 @@ class SharkSampler_Beta:
             denoise_alt = -denoise
             denoise = 1.0
         
-        #if 'steps_to_run' in sampler.extra_options:
-        #    sampler.extra_options['steps_to_run'] = steps_to_run
-        if 'positive' in latent_image and positive is None:
-            positive = latent_image['positive']
-        if 'negative' in latent_image and negative is None:
-            negative = latent_image['negative']
-        if 'sampler'  in latent_image and sampler  is None:
-            sampler  = latent_image['sampler']
-        if 'model'    in latent_image and model    is None:
-            model    = latent_image['model']
-            
-        #if model.model.model_config.unet_config.get('stable_cascade_stage') == 'b':
-        #    if 'noise_type_sde' in sampler.extra_options:
-        #        noise_type_sde         = "pyramid-cascade_B"
-        #        noise_type_sde_substep = "pyramid-cascade_B"
-        
+        if 'sampler' in latent_image and sampler is None:
+            sampler = latent_image['sampler']
+
         output, denoised, sde_noise = SharkSampler().main(
             model           = model, 
             cfg             = cfg, 
@@ -1978,19 +1957,26 @@ class ClownsharKSampler_Beta:
         
         is_chained = False
 
-        if latent_image is not None and 'positive' in latent_image and positive is None:
-            positive = latent_image['positive']
-            is_chained = True
-        if latent_image is not None and 'negative' in latent_image and negative is None:
-            negative = latent_image['negative']
-            is_chained = True
-        if latent_image is not None and 'model' in latent_image and model is None:
-            model = latent_image['model']
-            is_chained = True
-        
-        guider = options_mgr.get('guider', None)
-        if is_chained is False and guider is not None:
+        guider_input = options_mgr.get('guider', None)
+        guider_from_latent = latent_image.get('guider') if latent_image is not None else None
+
+        if guider_input is not None:
+            guider = guider_input
             model = guider.model_patcher
+            if positive is None:
+                positive = extract_cond_from_guider(guider, 'positive')
+            if negative is None:
+                negative = extract_cond_from_guider(guider, 'negative')
+        elif guider_from_latent is not None:
+            guider = guider_from_latent
+            model = guider.model_patcher
+            if positive is None:
+                positive = extract_cond_from_guider(guider, 'positive')
+            if negative is None:
+                negative = extract_cond_from_guider(guider, 'negative')
+            is_chained = True
+        else:
+            guider = None
 
         if model.model.model_config.unet_config.get('stable_cascade_stage') == 'b':
             noise_type_sde         = "pyramid-cascade_B"
