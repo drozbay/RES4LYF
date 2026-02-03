@@ -23,9 +23,11 @@ def get_cosine_similarity(a, b, mask=None, dim=0):
 def get_pearson_similarity(a, b, mask=None, dim=0, norm_dim=None):
     if a.ndim == 5 and b.ndim == 5 and b.shape[2] == 1:
         b = b.expand(-1, -1, a.shape[2], -1, -1)
-    
+
     if norm_dim is None:
-        if   a.ndim == 4:
+        if   a.ndim == 3:       # [1,1,N] flat tensor
+            norm_dim = -1
+        elif a.ndim == 4:
             norm_dim=(-2,-1)
         elif a.ndim == 5:
             norm_dim=(-4,-2,-1)
@@ -377,8 +379,9 @@ def magnitude_aware_interpolation(t: float, v0: torch.Tensor, v1: torch.Tensor) 
 
 
 def slerp_tensor(val: torch.Tensor, low: torch.Tensor, high: torch.Tensor, dim=-3) -> torch.Tensor:
-    #dim = (2,3)
-    if low.ndim == 4 and low.shape[-3] > 1:
+    if low.ndim == 3:  # [1,1,N] flat tensor
+        dim = -1
+    elif low.ndim == 4 and low.shape[-3] > 1:
         dim=-3
     elif low.ndim == 5 and low.shape[-3] > 1:
         dim=-4

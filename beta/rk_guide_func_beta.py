@@ -17,7 +17,7 @@ from ..sigmas        import get_sigmas
 from ..helper        import ExtraOptions, FrameWeightsManager, initialize_or_scale, is_video_model
 from ..latents       import normalize_zscore, get_collinear, get_orthogonal, get_cosine_similarity, get_pearson_similarity, \
                             get_slerp_weight_for_cossim, normalize_latent, hard_light_blend, slerp_tensor, get_orthogonal_noise_from_channelwise, \
-                            get_edge_mask, is_packed_latent, get_latent
+                            get_edge_mask, is_packed_latent
 
 from .rk_method_beta import RK_Method_Beta
 from .constants      import MAX_STEPS
@@ -981,29 +981,14 @@ class LatentGuide:
 
     def get_masks_for_step(self, step:int, lgw_type="default") -> Tuple[Tensor, Tensor]:
         lgw_mask, lgw_mask_inv = self.prepare_weighted_masks(step, lgw_type=lgw_type)
-        normalize_frame_weights_per_step = self.EO("normalize_frame_weights_per_step")
-        normalize_frame_weights_per_step_inv = self.EO("normalize_frame_weights_per_step_inv")
-
-        if self.VIDEO and self.frame_weights_mgr:
-            num_frames = lgw_mask.shape[2]
-            if self.HAS_LATENT_GUIDE:
-                frame_weights = self.frame_weights_mgr.get_frame_weights_by_name('frame_weights', num_frames, step)
-                apply_frame_weights(lgw_mask, frame_weights, normalize_frame_weights_per_step)
-            if self.HAS_LATENT_GUIDE_INV:
-                frame_weights_inv = self.frame_weights_mgr.get_frame_weights_by_name('frame_weights_inv', num_frames, step)
-                apply_frame_weights(lgw_mask_inv, frame_weights_inv, normalize_frame_weights_per_step_inv)
-
+        # PACK-FIRST: Skip frame_weights - all tensors are flat [1,1,N] internally
         return lgw_mask.to(self.device), lgw_mask_inv.to(self.device)
 
 
 
     def get_cossim_adjusted_lgw_masks(self, data:Tensor, step:int) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-        # PACK-FIRST EXPERIMENT: If data is already flat [1,1,N], use it directly
-        # (skip get_latent which would try to unpack based on latent_shapes)
-        if data.ndim == 3 and data.shape[0] == 1 and data.shape[1] == 1:
-            data_for_cossim = data  # Already flat
-        else:
-            data_for_cossim = get_latent(data, self.latent_shapes, 0)
+        # PACK-FIRST: Require flat [1,1,N] input - callers must pack first
+        data_for_cossim = data
 
         if self.HAS_LATENT_GUIDE:
             y0     = self.y0.clone()
@@ -1365,41 +1350,18 @@ class LatentGuide:
                                 data_row      : Tensor,
                                 step          : int,
                                 sigma_row     : Tensor,
-                                frame_targets : Optional[Tensor] = None,
                                 ):
         if not self.HAS_LATENT_GUIDE and not self.HAS_LATENT_GUIDE_INV:
             return x_row
 
         y0, y0_inv, lgw_mask, lgw_mask_inv = self.get_cossim_adjusted_lgw_masks(data_row, step)
-        
-        if not (lgw_mask.any() != 0 or lgw_mask_inv.any() != 0):  # cossim score too similar! deactivate guide for this step
+
+        if not (lgw_mask.any() != 0 or lgw_mask_inv.any() != 0):
             return x_row
 
-        if self.VIDEO and self.frame_weights_mgr is not None and frame_targets is None:
-            num_frames = data_row.shape[2]
-            frame_targets = self.frame_weights_mgr.get_frame_weights_by_name('frame_targets', num_frames, step)
-            if frame_targets is None:
-                frame_targets = torch.tensor(self.EO("frame_targets", [1.0]))
-            frame_targets = torch.clamp(frame_targets, 0.0, 1.0).to(self.device)
-
         if self.guide_mode in {"data", "data_projection", "lure", "lure_projection"}:
-            if frame_targets is None:
-                x_row = self.get_data_substep(x_row, data_row, y0, y0_inv, lgw_mask, lgw_mask_inv, step, sigma_row)
-            else:
-                t_dim = x_row.shape[-3]
-                for t in range(t_dim): #temporal dimension
-                    frame_target = float(frame_targets[t] if len(frame_targets) > t else frame_targets[-1])
-                    x_row[...,t:t+1,:,:] = self.get_data_substep(
-                                                                x_row       [...,t:t+1,:,:], 
-                                                                data_row    [...,t:t+1,:,:],
-                                                                y0          [...,t:t+1,:,:], 
-                                                                y0_inv      [...,t:t+1,:,:], 
-                                                                lgw_mask    [...,t:t+1,:,:], 
-                                                                lgw_mask_inv[...,t:t+1,:,:], 
-                                                                step, 
-                                                                sigma_row, 
-                                                                frame_target)
-        
+            x_row = self.get_data_substep(x_row, data_row, y0, y0_inv, lgw_mask, lgw_mask_inv, step, sigma_row)
+
         return x_row
 
 
@@ -1505,51 +1467,28 @@ class LatentGuide:
                                 sigma         : Tensor,
                                 sigma_down    : Tensor,
                                 sigma_row     : Tensor,
-                                frame_targets : Optional[Tensor] = None,
                                 RK=None,
                                 ):
-        
         if not self.HAS_LATENT_GUIDE and not self.HAS_LATENT_GUIDE_INV:
             return eps_row
 
         y0, y0_inv, lgw_mask, lgw_mask_inv = self.get_cossim_adjusted_lgw_masks(data_row, step)
-        
-        if not (lgw_mask.any() != 0 or lgw_mask_inv.any() != 0):  # cossim score too similar! deactivate guide for this step
+
+        if not (lgw_mask.any() != 0 or lgw_mask_inv.any() != 0):
             return eps_row
 
-        if self.VIDEO and data_row.ndim == 5 and frame_targets is None:
-            num_frames = data_row.shape[2]
-            frame_targets = self.frame_weights_mgr.get_frame_weights_by_name('frame_targets', num_frames, step)
-            if frame_targets is None:
-                frame_targets = self.EO("frame_targets", [1.0])
-            frame_targets = torch.clamp(frame_targets, 0.0, 1.0)
-            
         eps_y0     = torch.zeros_like(x_0)
         eps_y0_inv = torch.zeros_like(x_0)
-        
+
         if self.HAS_LATENT_GUIDE:
-            eps_y0     = RK.get_guide_epsilon(x_0, x_row, y0,     sigma, sigma_row, sigma_down, None)  
-            
+            eps_y0     = RK.get_guide_epsilon(x_0, x_row, y0, sigma, sigma_row, sigma_down, None)
+
         if self.HAS_LATENT_GUIDE_INV:
-            eps_y0_inv = RK.get_guide_epsilon(x_0, x_row, y0_inv, sigma, sigma_row, sigma_down, None)  
+            eps_y0_inv = RK.get_guide_epsilon(x_0, x_row, y0_inv, sigma, sigma_row, sigma_down, None)
 
         if self.guide_mode in {"epsilon", "epsilon_projection"}:
-            if frame_targets is None:
-                eps_row = self.get_eps_substep(eps_row, eps_y0, eps_y0_inv, lgw_mask, lgw_mask_inv, step, sigma_row)
-            else:
-                t_dim = x_row.shape[-3]
-                for t in range(t_dim): #temporal dimension
-                    frame_target = float(frame_targets[t] if len(frame_targets) > t else frame_targets[-1])
-                    eps_row[...,t:t+1,:,:] = self.get_eps_substep(
-                                                                eps_row     [...,t:t+1,:,:],
-                                                                eps_y0      [...,t:t+1,:,:], 
-                                                                eps_y0_inv  [...,t:t+1,:,:], 
-                                                                lgw_mask    [...,t:t+1,:,:], 
-                                                                lgw_mask_inv[...,t:t+1,:,:], 
-                                                                step, 
-                                                                sigma_row, 
-                                                                frame_target)
-                    
+            eps_row = self.get_eps_substep(eps_row, eps_y0, eps_y0_inv, lgw_mask, lgw_mask_inv, step, sigma_row)
+
         return eps_row
 
 
