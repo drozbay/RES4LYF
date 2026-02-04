@@ -92,6 +92,7 @@ class LatentGuide:
         self.max_steps                 = MAX_STEPS
         self.mask                      = None
         self.mask_inv                  = None
+        self.invert_mask               = False
         self.mask_sync                 = None
         self.mask_drift_x              = None
         self.mask_drift_y              = None
@@ -114,6 +115,11 @@ class LatentGuide:
         self.HAS_LATENT_GUIDE_STYLE_POS= False
         self.HAS_LATENT_GUIDE_STYLE_NEG= False
         self.USE_DENOISED_AS_GUIDE     = False
+        self.SELF_REFINE_EPSILON_MODE  = False
+        self.self_refine_epsilon_ref   = None
+        self.self_refine_epsilon_last_step = -1
+        self.self_refine_epsilon_last_row = -1
+        self.self_refine_epsilon_call_count = 0  # Track calls per (step, row)
         
         self.lgw                       = torch.full_like(sigmas, 0., dtype=dtype) 
         self.lgw_inv                   = torch.full_like(sigmas, 0., dtype=dtype)
@@ -273,6 +279,7 @@ class LatentGuide:
 
             self.mask                        = guides.get("mask")
             self.mask_inv                    = guides.get("unmask")
+            self.invert_mask                 = guides.get("invert_mask", False)
             self.mask_sync                   = guides.get("mask_sync")
             self.mask_drift_x                = guides.get("mask_drift_x")
             self.mask_drift_y                = guides.get("mask_drift_y")
@@ -715,6 +722,16 @@ class LatentGuide:
         else:
             self.y0 = torch.zeros_like(x, dtype=self.dtype, device=self.device)
 
+        # Initialize self_refine_epsilon mode (including projection variant via _projection suffix)
+        self.SELF_REFINE_EPSILON_MODE = self.guide_mode.startswith("self_refine_epsilon")
+        if self.SELF_REFINE_EPSILON_MODE:
+            self.HAS_LATENT_GUIDE = True  # Enable guide processing
+            self.y0 = torch.zeros_like(x, dtype=self.dtype, device=self.device)  # y0 will be set dynamically to denoised_prev
+            self.self_refine_epsilon_ref = None  # Reference for within-step refinement
+            self.self_refine_epsilon_last_step = -1  # Track which step we're on
+            self.self_refine_epsilon_last_row = -1
+            self.self_refine_epsilon_call_count = 0
+
         if latent_guide_inv is not None:
             self.HAS_LATENT_GUIDE_INV = True
             if type(latent_guide_inv) is dict:
@@ -989,6 +1006,50 @@ class LatentGuide:
         return y0, y0_inv, lgw_mask, lgw_mask_inv
 
 
+    def get_self_refine_epsilon_mask(self, current: Tensor, previous: Tensor, step_sched: int) -> Tensor:
+        """
+        Compute per-pixel certainty mask for self_refine_epsilon mode.
+        Returns mask where 1 = certain (guide), 0 = uncertain (no guide).
+
+        When invert_mask=False (default): guide CERTAIN (low-diff/stable) regions
+        When invert_mask=True: guide UNCERTAIN (high-diff/changing) regions
+        """
+        threshold = self.EO("self_refine_epsilon_threshold", 0.2)
+        metric = self.EO("self_refine_epsilon_metric", "l1")  # "l1" or "l2"
+
+        if metric == "l2":
+            # Normalized L2 (Euclidean distance per pixel, normalized by channel count)
+            diff = current - previous
+            if diff.ndim >= 4 and diff.shape[1] > 1:
+                diff = torch.sqrt(torch.sum(diff ** 2, dim=1, keepdim=True)) / diff.shape[1]
+            else:
+                diff = torch.abs(diff)
+        else:
+            # L1 (absolute difference, averaged over channels)
+            diff = torch.abs(current - previous)
+            if diff.ndim >= 4 and diff.shape[1] > 1:
+                diff = diff.mean(dim=1, keepdim=True)
+
+        # Certain = low diff (BELOW threshold)
+        # Uncertain = high diff (ABOVE threshold)
+        certain_mask = (diff < threshold).float()
+
+        # Apply invert_mask: if True, guide uncertain regions instead of certain
+        if self.invert_mask:
+            certain_mask = 1.0 - certain_mask
+
+        # Apply guide weight schedule
+        lgw = self.lgw[step_sched] if step_sched < len(self.lgw) else 0.0
+
+        if self.EO("debug_self_refine_epsilon"):
+            coverage = certain_mask.mean().item()
+            mode = "UNCERTAIN (inverted)" if self.invert_mask else "CERTAIN"
+            RESplain(f"self_refine_epsilon step {step_sched}: guiding {mode} regions, coverage={coverage:.2%}, metric={metric}, threshold={threshold}, lgw={lgw:.4f}")
+
+        # Store raw mask for visualization (before lgw scaling)
+        self._debug_certainty_mask = certain_mask.clone()
+
+        return certain_mask * lgw
 
 
 
@@ -1019,7 +1080,9 @@ class LatentGuide:
                                             BONGMATH                    : bool,
                                             ):
 
-        if "pseudoimplicit" not in self.guide_mode or (self.lgw[step_sched] == 0 and self.lgw_inv[step_sched] == 0):
+        # Check if this is a pseudoimplicit mode (including self_refine_pseudoimplicit variants)
+        is_pseudoimplicit_mode = "pseudoimplicit" in self.guide_mode or self.guide_mode.startswith("self_refine_pseudoimplicit")
+        if not is_pseudoimplicit_mode or (self.lgw[step_sched] == 0 and self.lgw_inv[step_sched] == 0):
             return x_0, x_, eps_, None, None
 
         # PACK-FIRST EXPERIMENT: Block channelwise pseudoimplicit modes
@@ -1029,6 +1092,79 @@ class LatentGuide:
             raise NotImplementedError(f"Mode '{self.guide_mode}' requires channel structure, incompatible with pack-first experiment")
 
         sigma = sigmas[step]
+
+        # Handle self_refine_pseudoimplicit modes
+        if self.guide_mode.startswith("self_refine_pseudoimplicit"):
+            # Skip step 0 - no valid previous exists
+            if step == 0 or denoised_prev.abs().max() == 0:
+                if self.EO("debug_self_refine_epsilon"):
+                    RESplain(f"self_refine_pseudoimplicit step {step}, row {row}: SKIPPED - no valid denoised_prev")
+                return x_0, x_, eps_, None, None
+
+            # Within-step refinement: reset reference at start of new step
+            if step != self.self_refine_epsilon_last_step:
+                self.self_refine_epsilon_ref = denoised_prev.clone()
+                self.self_refine_epsilon_last_step = step
+                if self.EO("debug_self_refine_epsilon"):
+                    RESplain(f"self_refine_pseudoimplicit step {step}: initialized reference from denoised_prev")
+
+            # Use reference as guide target
+            y0 = self.self_refine_epsilon_ref
+
+            # Compute certainty mask
+            lgw_mask = self.get_self_refine_epsilon_mask(data_[row], y0, step_sched)
+
+            if lgw_mask.max() == 0:
+                if self.EO("debug_self_refine_epsilon"):
+                    RESplain(f"self_refine_pseudoimplicit step {step}, row {row}: SKIPPED - no certain regions")
+                return x_0, x_, eps_, None, None
+
+            # Compute guide epsilon
+            eps_substep_guide = RK.get_guide_epsilon(x_0, x_[row], y0, sigma, NS.s_[row], NS.sigma_down, None)
+
+            # Pseudoimplicit sigma adjustment
+            maxmin_ratio = (NS.sub_sigma - RK.sigma_min) / NS.sub_sigma
+            sub_sigma_2 = NS.sub_sigma - maxmin_ratio * (NS.sub_sigma * pseudoimplicit_row_weights[row] * pseudoimplicit_step_weights[full_iter] * self.lgw[step_sched])
+
+            eps_tmp_ = eps_.clone()
+            eps_row = eps_[row]
+
+            # Blend with certainty mask
+            if "_projection" in self.guide_mode:
+                # Projection variant: preserve magnitude, steer direction
+                eps_row_lerp = eps_row + lgw_mask * (eps_substep_guide - eps_row)
+                eps_collinear = get_collinear(eps_row, eps_row_lerp)
+                eps_ortho = get_orthogonal(eps_row_lerp, eps_row)
+                eps_sum = eps_collinear + eps_ortho
+                eps_row = eps_row + lgw_mask * (eps_sum - eps_row)
+            else:
+                # Standard lerp blending
+                eps_row = eps_row + lgw_mask * (eps_substep_guide - eps_row)
+            eps_[row] = eps_row
+
+            # Compute pseudoimplicit x
+            x_row_pseudoimplicit = x_[row] + RK.h_fn(sub_sigma_2, NS.sub_sigma) * eps_[row]
+            sub_sigma_pseudoimplicit = sub_sigma_2
+
+            eps_ = eps_tmp_
+
+            if self.EO("debug_self_refine_epsilon"):
+                coverage = (lgw_mask > 0).float().mean().item()
+                RESplain(f"self_refine_pseudoimplicit step {step}, row {row}: APPLIED - certain_coverage={coverage:.2%}")
+
+            # Visualize certainty mask in preview (partially destructive - for debugging)
+            if self.EO("debug_self_refine_visualize_mask"):
+                vis_value = self.EO("debug_self_refine_visualize_value", 2.0)
+                mask_vis = self._debug_certainty_mask if hasattr(self, '_debug_certainty_mask') else (lgw_mask > 0).float()
+                # Highlight certain pixels, leave uncertain pixels showing actual denoised
+                data_[row] = mask_vis * vis_value + (1 - mask_vis) * data_[row]
+
+            # Apply bongmath if enabled
+            if RK.IMPLICIT and BONGMATH and step < sigmas.shape[0]-1 and not self.EO("disable_pseudobongmath"):
+                x_[row] = NS.sigma_from_to(x_0, x_row_pseudoimplicit, sigma, sub_sigma_pseudoimplicit, NS.s_[row])
+                x_0, x_, eps_ = RK.bong_iter(x_0, x_, eps_, eps_prev_, data_, sigma, NS.s_, row, RK.row_offset, NS.h, step, step_sched)
+
+            return x_0, x_, eps_, x_row_pseudoimplicit, sub_sigma_pseudoimplicit
 
         if self.s_lying_ is not None:
             if row >= len(self.s_lying_):
@@ -1531,7 +1667,9 @@ class LatentGuide:
                                 x_            : Tensor,
                                 eps_          : Tensor,
                                 data_         : Tensor,
+                                denoised_prev : Tensor,
                                 row           :  int,
+                                step          :  int,
                                 step_sched    :  int,
                                 sigma         : Tensor,
                                 sigma_next    : Tensor,
@@ -1551,6 +1689,84 @@ class LatentGuide:
 
         if self.frame_weights_mgr is not None:
             raise NotImplementedError("Frame weights require temporal structure, incompatible with pack-first experiment")
+
+        # Handle self_refine_epsilon mode - uses denoised_prev as guide target
+        if self.SELF_REFINE_EPSILON_MODE:
+            data_row = data_[row]
+            eps_row = eps_[row]
+            x_row = x_[row]
+            sigma_row = s_[row]
+
+            # Skip step 0 - no valid previous exists (denoised_prev is zeros)
+            if step == 0 or denoised_prev.abs().max() == 0:
+                if self.EO("debug_self_refine_epsilon"):
+                    RESplain(f"self_refine_epsilon step {step}, row {row}: SKIPPED - no valid denoised_prev")
+                return eps_, x_
+
+            # Track calls per (step, row) - function is called twice per row (for eps_ and eps_prev_)
+            is_new_step = (step != self.self_refine_epsilon_last_step)
+            is_new_row = (row != self.self_refine_epsilon_last_row)
+
+            if is_new_step or is_new_row:
+                # First call for this (step, row)
+                self.self_refine_epsilon_call_count = 1
+                self.self_refine_epsilon_last_row = row
+            else:
+                # Second call for same (step, row) - this is eps_prev_
+                self.self_refine_epsilon_call_count += 1
+
+                if not self.EO("self_refine_guide_eps_prev"):
+                    # Default: skip guiding eps_prev_
+                    if self.EO("debug_self_refine_epsilon"):
+                        RESplain(f"self_refine_epsilon step {step}, row {row}: SKIPPED eps_prev_ (use 'self_refine_guide_eps_prev' to enable)")
+                    return eps_, x_
+
+            # Reset reference at start of new step
+            if is_new_step:
+                self.self_refine_epsilon_ref = denoised_prev.clone()
+                self.self_refine_epsilon_last_step = step
+                if self.EO("debug_self_refine_epsilon"):
+                    RESplain(f"self_refine_epsilon step {step}: initialized reference from denoised_prev")
+
+            # Compare current prediction against reference
+            y0 = self.self_refine_epsilon_ref
+
+            # Compute certainty mask (guide certain regions, let uncertain evolve)
+            lgw_mask = self.get_self_refine_epsilon_mask(data_row, y0, step_sched)
+
+            if lgw_mask.max() == 0:
+                if self.EO("debug_self_refine_epsilon"):
+                    RESplain(f"self_refine_epsilon step {step}, row {row}: SKIPPED - no certain regions")
+                return eps_, x_
+
+            # Compute guide epsilon (direction toward reference)
+            eps_y0 = RK.get_guide_epsilon(x_0, x_row, y0, sigma, sigma_row, sigma_down, None)
+
+            # Blend: anchor certain regions toward reference
+            if "_projection" in self.guide_mode:
+                # Projection variant: preserve magnitude, steer direction
+                eps_row_lerp = eps_row + lgw_mask * (eps_y0 - eps_row)
+                eps_collinear = get_collinear(eps_row, eps_row_lerp)
+                eps_ortho = get_orthogonal(eps_row_lerp, eps_row)
+                eps_sum = eps_collinear + eps_ortho
+                eps_[row] = eps_row + lgw_mask * (eps_sum - eps_row)
+            else:
+                # Standard lerp blending
+                eps_[row] = eps_row + lgw_mask * (eps_y0 - eps_row)
+
+            if self.EO("debug_self_refine_epsilon"):
+                call_type = "eps_" if self.self_refine_epsilon_call_count == 1 else "eps_prev_"
+                coverage = (lgw_mask > 0).float().mean().item()
+                RESplain(f"self_refine_epsilon step {step}, row {row} ({call_type}): APPLIED - certain_coverage={coverage:.2%}, eps mean/std={eps_[row].mean():.4f}/{eps_[row].std():.4f}")
+
+            # Visualize certainty mask in preview (partially destructive - for debugging)
+            if self.EO("debug_self_refine_visualize_mask"):
+                vis_value = self.EO("debug_self_refine_visualize_value", 2.0)
+                mask_vis = self._debug_certainty_mask if hasattr(self, '_debug_certainty_mask') else (lgw_mask > 0).float()
+                # Highlight certain pixels, leave uncertain pixels showing actual denoised
+                data_[row] = mask_vis * vis_value + (1 - mask_vis) * data_[row]
+
+            return eps_, x_
 
         # Local references for the row tensors we'll modify
         eps_row = eps_[row]

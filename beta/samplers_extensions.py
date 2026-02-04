@@ -2600,6 +2600,7 @@ class ClownGuides_Beta:
             "guide_unmasked"            : guide_unmasked,
             "mask"                      : mask,
             "unmask"                    : unmask,
+            "invert_mask"               : invert_mask,
 
             "weight_scheduler_masked"   : weight_scheduler_masked,
             "weight_scheduler_unmasked" : weight_scheduler_unmasked,

@@ -1014,10 +1014,10 @@ def sample_rk_beta(
 
 
 
-                            if RK.IMPLICIT: 
+                            if RK.IMPLICIT:
                                 if not EO("disable_implicit_guide_preproc"):
-                                    eps_, x_      = LG.process_guides_substep(x_0, x_, eps_,      data_, row, step_sched, sigma, sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK)
-                                    eps_prev_, x_ = LG.process_guides_substep(x_0, x_, eps_prev_, data_, row, step_sched, sigma, sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK)
+                                    eps_, x_      = LG.process_guides_substep(x_0, x_, eps_,      data_, denoised_prev, row, step, step_sched, sigma, sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK)
+                                    eps_prev_, x_ = LG.process_guides_substep(x_0, x_, eps_prev_, data_, denoised_prev, row, step, step_sched, sigma, sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK)
                                 if row == 0 and (EO("implicit_lagrange_init")  or   EO("radaucycle")):
                                     pass
                                 else:
@@ -1764,11 +1764,11 @@ def sample_rk_beta(
                                 
                                 lying_eps_row_factor = (1 - noise_scaling_weight*(substep_noise_scaling_ratio-1))
 
-                        # GUIDE 
+                        # GUIDE
                         if not EO("disable_guides_eps_substep"):
-                            eps_, x_      = LG.process_guides_substep(x_0, x_, eps_,      data_, row, step_sched, NS.sigma, NS.sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK)
+                            eps_, x_      = LG.process_guides_substep(x_0, x_, eps_,      data_, denoised_prev, row, step, step_sched, NS.sigma, NS.sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK)
                         if not EO("disable_guides_eps_prev_substep"):
-                            eps_prev_, x_ = LG.process_guides_substep(x_0, x_, eps_prev_, data_, row, step_sched, NS.sigma, NS.sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK)
+                            eps_prev_, x_ = LG.process_guides_substep(x_0, x_, eps_prev_, data_, denoised_prev, row, step, step_sched, NS.sigma, NS.sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK)
                         
                         if LG.y0_mean is not None and LG.y0_mean.sum() != 0.0:
                             raise NotImplementedError("y0_mean guide requires spatial structure, incompatible with pack-first")
