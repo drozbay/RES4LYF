@@ -21,29 +21,29 @@ from ..latents       import normalize_zscore, get_collinear, get_orthogonal, get
 
 from .rk_method_beta import RK_Method_Beta
 from .constants      import MAX_STEPS
+from ..res4lyf       import RESplain, is_debug_logging_enabled
 
 import comfy.utils
 
 
-def pack_to_flat(tensor: Tensor) -> Tuple[Tensor, Tuple]:
-    """Pack any tensor to [1, 1, N] format for shape-agnostic operations.
+def flatten_to_match(guide: Tensor, target: Tensor) -> Tensor:
+    """Flatten guide tensor to match target's shape when target is flat [1,1,N].
 
-    Returns:
-        Tuple of (packed_tensor, original_shape)
+    If target is not flat, returns guide unchanged.
+    If guide is NestedTensor, packs it to flat format.
+    If guide is regular tensor, reshapes to [1,1,N].
     """
-    if hasattr(tensor, 'is_nested') and tensor.is_nested:
-        # NestedTensor - use existing pack_latents
-        return comfy.utils.pack_latents(tensor.unbind())
+    if target.ndim != 3:
+        return guide
+
+    # Target is flat [1,1,N], flatten the guide to match
+    if hasattr(guide, 'is_nested') and guide.is_nested:
+        # NestedTensor - pack to flat
+        flat_guide, _ = comfy.utils.pack_latents(guide.unbind())
+        return flat_guide
     else:
-        # Regular tensor - flatten and store shape
-        original_shape = tensor.shape
-        flat = tensor.reshape(1, 1, -1)
-        return flat, original_shape
-
-
-def unpack_from_flat(tensor: Tensor, original_shape: Tuple) -> Tensor:
-    """Unpack a [1, 1, N] tensor back to its original shape."""
-    return tensor.reshape(original_shape)
+        # Regular tensor - reshape to flat
+        return guide.reshape(1, 1, -1)
 
 
 class LatentGuide:
@@ -113,6 +113,7 @@ class LatentGuide:
         self.HAS_LATENT_GUIDE_ATTNINJ  = False
         self.HAS_LATENT_GUIDE_STYLE_POS= False
         self.HAS_LATENT_GUIDE_STYLE_NEG= False
+        self.USE_DENOISED_AS_GUIDE     = False
         
         self.lgw                       = torch.full_like(sigmas, 0., dtype=dtype) 
         self.lgw_inv                   = torch.full_like(sigmas, 0., dtype=dtype)
@@ -457,7 +458,8 @@ class LatentGuide:
                 self.mask_lure_y  = self.mask_lure_y[batch_num].unsqueeze(0)
                 
             if self.guide_mode.startswith("fully_") and not RK_IMPLICIT:
-                self.guide_mode = self.guide_mode[6:]   # fully_pseudoimplicit is only supported for implicit samplers, default back to pseudoimplicit
+                raise ValueError("fully_pseudoimplicit is only supported for implicit RK samplers.")
+                #self.guide_mode = self.guide_mode[6:]   # fully_pseudoimplicit is only supported for implicit samplers, default back to pseudoimplicit
 
             guide_sigma_shift = self.EO("guide_sigma_shift", 0.0)                                                                         # effectively hardcoding shift to 0 !!!!!!
             
@@ -699,8 +701,7 @@ class LatentGuide:
             else:
                 raise ValueError(f"Invalid latent type: {type(latent_guide)}")
 
-            if self.VIDEO and latent_guide_samples.shape[2] == 1:
-                latent_guide_samples = latent_guide_samples.repeat(1, 1, x.shape[2], 1, 1)
+            latent_guide_samples = flatten_to_match(latent_guide_samples, x)
 
             if self.SAMPLE:
                 self.y0 = latent_guide_samples
@@ -725,8 +726,7 @@ class LatentGuide:
             else:
                 raise ValueError(f"Invalid latent type: {type(latent_guide_inv)}")
 
-            if self.VIDEO and latent_guide_inv_samples.shape[2] == 1:
-                latent_guide_inv_samples = latent_guide_inv_samples.repeat(1, 1, x.shape[2], 1, 1)
+            latent_guide_inv_samples = flatten_to_match(latent_guide_inv_samples, x)
 
             if self.SAMPLE:
                 self.y0_inv = latent_guide_inv_samples
@@ -751,9 +751,7 @@ class LatentGuide:
             else:
                 raise ValueError(f"Invalid latent type: {type(latent_guide_mean)}")
 
-            if self.VIDEO and latent_guide_mean_samples.shape[2] == 1:
-                latent_guide_mean_samples = latent_guide_mean_samples.repeat(1, 1, x.shape[2], 1, 1)
-
+            latent_guide_mean_samples = flatten_to_match(latent_guide_mean_samples, x)
             self.y0_mean = latent_guide_mean_samples
             """if self.SAMPLE:
                 self.y0_mean = latent_guide_mean_samples
@@ -776,9 +774,7 @@ class LatentGuide:
             else:
                 raise ValueError(f"Invalid latent type: {type(latent_guide_adain)}")
 
-            if self.VIDEO and latent_guide_adain_samples.shape[2] == 1:
-                latent_guide_adain_samples = latent_guide_adain_samples.repeat(1, 1, x.shape[2], 1, 1)
-
+            latent_guide_adain_samples = flatten_to_match(latent_guide_adain_samples, x)
             self.y0_adain = latent_guide_adain_samples
             """if self.SAMPLE:
                 self.y0_adain = latent_guide_adain_samples
@@ -804,9 +800,7 @@ class LatentGuide:
             else:
                 raise ValueError(f"Invalid latent type: {type(latent_guide_attninj)}")
 
-            if self.VIDEO and latent_guide_attninj_samples.shape[2] == 1:
-                latent_guide_attninj_samples = latent_guide_attninj_samples.repeat(1, 1, x.shape[2], 1, 1)
-
+            latent_guide_attninj_samples = flatten_to_match(latent_guide_attninj_samples, x)
             self.y0_attninj = latent_guide_attninj_samples
             """if self.SAMPLE:
                 self.y0_attninj = latent_guide_attninj_samples
@@ -833,9 +827,7 @@ class LatentGuide:
             else:
                 raise ValueError(f"Invalid latent type: {type(latent_guide_style_pos)}")
 
-            if self.VIDEO and latent_guide_style_pos_samples.shape[2] == 1:
-                latent_guide_style_pos_samples = latent_guide_style_pos_samples.repeat(1, 1, x.shape[2], 1, 1)
-
+            latent_guide_style_pos_samples = flatten_to_match(latent_guide_style_pos_samples, x)
             self.y0_style_pos = latent_guide_style_pos_samples
             """if self.SAMPLE:
                 self.y0_style_pos = latent_guide_style_pos_samples
@@ -862,9 +854,7 @@ class LatentGuide:
             else:
                 raise ValueError(f"Invalid latent type: {type(latent_guide_style_neg)}")
 
-            if self.VIDEO and latent_guide_style_neg_samples.shape[2] == 1:
-                latent_guide_style_neg_samples = latent_guide_style_neg_samples.repeat(1, 1, x.shape[2], 1, 1)
-
+            latent_guide_style_neg_samples = flatten_to_match(latent_guide_style_neg_samples, x)
             self.y0_style_neg = latent_guide_style_neg_samples
             """if self.SAMPLE:
                 self.y0_style_neg = latent_guide_style_neg_samples
@@ -895,34 +885,12 @@ class LatentGuide:
                 self.y0_inv*= self.sigma_max
 
             
-        if self.VIDEO and self.frame_weights_mgr is not None:
+        if self.frame_weights_mgr is not None and x.ndim == 5:
             num_frames = x.shape[2]
             self.frame_weights     = self.frame_weights_mgr.get_frame_weights_by_name('frame_weights', num_frames)
             self.frame_weights_inv = self.frame_weights_mgr.get_frame_weights_by_name('frame_weights_inv', num_frames)
             
         x, self.y0, self.y0_inv = self.normalize_inputs(x, self.y0, self.y0_inv)       # ???
-
-        # PACK-FIRST EXPERIMENT: Pack guides to flat [1, 1, N] format
-        # This makes all operations shape-agnostic
-        if self.y0 is not None:
-            self.y0_original_shape = self.y0.shape
-            self.y0, _ = pack_to_flat(self.y0)
-        if self.y0_inv is not None:
-            self.y0_inv, _ = pack_to_flat(self.y0_inv)
-        if self.mask is not None:
-            self.mask, _ = pack_to_flat(self.mask)
-        if self.mask_inv is not None:
-            self.mask_inv, _ = pack_to_flat(self.mask_inv)
-        if self.mask_sync is not None:
-            self.mask_sync, _ = pack_to_flat(self.mask_sync)
-        if self.mask_drift_x is not None:
-            self.mask_drift_x, _ = pack_to_flat(self.mask_drift_x)
-        if self.mask_drift_y is not None:
-            self.mask_drift_y, _ = pack_to_flat(self.mask_drift_y)
-        if self.mask_lure_x is not None:
-            self.mask_lure_x, _ = pack_to_flat(self.mask_lure_x)
-        if self.mask_lure_y is not None:
-            self.mask_lure_y, _ = pack_to_flat(self.mask_lure_y)
 
         return x
 
@@ -958,7 +926,7 @@ class LatentGuide:
             mask     = torch.ones_like (self.y0) if self.mask     is None else self.mask
             mask_inv = torch.zeros_like(self.y0) if self.mask_inv is None else self.mask_inv
 
-        if self.LGW_MASK_RESCALE_MIN: 
+        if self.LGW_MASK_RESCALE_MIN:
             lgw_mask     =    mask  * (1-lgw_)     + lgw_
             lgw_mask_inv = (1-mask) * (1-lgw_inv_) + lgw_inv_
         else:
@@ -1066,11 +1034,10 @@ class LatentGuide:
             if row >= len(self.s_lying_):
                 return x_0, x_, eps_, None, None
 
-        # PACK-FIRST EXPERIMENT: Pack data for cossim test
         if self.guide_mode.startswith("fully_"):
-            data_cossim_test, _ = pack_to_flat(denoised_prev)
+            data_cossim_test = denoised_prev
         else:
-            data_cossim_test, _ = pack_to_flat(data_[row])
+            data_cossim_test = data_[row]
 
         y0, y0_inv, lgw_mask, lgw_mask_inv = self.get_cossim_adjusted_lgw_masks(data_cossim_test, step_sched)
 
@@ -1122,19 +1089,13 @@ class LatentGuide:
         if self.EO("pseudoimplicit_denoised_prev"):
             eps_[row] = RK.get_epsilon(x_0, x_[row], denoised_prev, sigma, NS.s_[row])
 
-        # PACK-FIRST EXPERIMENT: Pack tensors for guide epsilon computation
-        x_0_flat, _ = pack_to_flat(x_0)
-        x_row_flat, _ = pack_to_flat(x_[row])
-
-        eps_substep_guide     = torch.zeros_like(x_0_flat)
-        eps_substep_guide_inv = torch.zeros_like(x_0_flat)
+        eps_substep_guide     = torch.zeros_like(x_0)
+        eps_substep_guide_inv = torch.zeros_like(x_0)
 
         if self.HAS_LATENT_GUIDE:
-            eps_substep_guide     = RK.get_guide_epsilon(x_0_flat, x_row_flat, y0,     sigma, NS.s_[row], NS.sigma_down, None)
+            eps_substep_guide     = RK.get_guide_epsilon(x_0, x_[row], y0,     sigma, NS.s_[row], NS.sigma_down, None)
         if self.HAS_LATENT_GUIDE_INV:
-            eps_substep_guide_inv = RK.get_guide_epsilon(x_0_flat, x_row_flat, y0_inv, sigma, NS.s_[row], NS.sigma_down, None)
-
-
+            eps_substep_guide_inv = RK.get_guide_epsilon(x_0, x_[row], y0_inv, sigma, NS.s_[row], NS.sigma_down, None)
 
         if self.guide_mode in {"pseudoimplicit", "pseudoimplicit_projection"}:
             maxmin_ratio = (NS.sub_sigma - RK.sigma_min) / NS.sub_sigma
@@ -1148,22 +1109,30 @@ class LatentGuide:
 
             eps_tmp_ = eps_.clone()
 
-            # PACK-FIRST EXPERIMENT: Pack eps_[row] and do elementwise ops instead of process_channelwise
-            eps_row_flat, eps_row_shape = pack_to_flat(eps_[row])
+            eps_row = eps_[row]
 
             # Elementwise blend (same as epsilon mode)
             if self.guide_mode == "pseudoimplicit":
-                eps_row_flat = eps_row_flat + lgw_mask * (eps_substep_guide - eps_row_flat) + lgw_mask_inv * (eps_substep_guide_inv - eps_row_flat)
+                eps_row = eps_row + lgw_mask * (eps_substep_guide - eps_row) + lgw_mask_inv * (eps_substep_guide_inv - eps_row)
             elif self.guide_mode == "pseudoimplicit_projection":
                 # Projection mode: blend then project
-                eps_row_lerp = eps_row_flat + self.mask * (eps_substep_guide - eps_row_flat) + (1 - self.mask) * (eps_substep_guide_inv - eps_row_flat)
-                eps_collinear_eps_lerp = get_collinear(eps_row_flat, eps_row_lerp)
-                eps_lerp_ortho_eps = get_orthogonal(eps_row_lerp, eps_row_flat)
+                # Only include inverse guide term if we have an inverse guide (otherwise it's zeros which corrupts the projection)
+                if self.HAS_LATENT_GUIDE_INV:
+                    eps_row_lerp = eps_row + self.mask * (eps_substep_guide - eps_row) + (1 - self.mask) * (eps_substep_guide_inv - eps_row)
+                else:
+                    eps_row_lerp = eps_row + self.mask * (eps_substep_guide - eps_row)
+                eps_collinear_eps_lerp = get_collinear(eps_row, eps_row_lerp)
+                eps_lerp_ortho_eps = get_orthogonal(eps_row_lerp, eps_row)
                 eps_sum = eps_collinear_eps_lerp + eps_lerp_ortho_eps
-                eps_row_flat = eps_row_flat + lgw_mask * (eps_sum - eps_row_flat) + lgw_mask_inv * (eps_sum - eps_row_flat)
+                eps_row = eps_row + lgw_mask * (eps_sum - eps_row) + lgw_mask_inv * (eps_sum - eps_row)
 
-            # Unpack back to structured
-            eps_[row] = unpack_from_flat(eps_row_flat, eps_row_shape)
+            eps_[row] = eps_row
+
+            if self.EO("debug_pseudoimplicit"):
+                RESplain(
+                    f"Step {step}, Row {row}: eps_row post-blend mean/std="
+                    f"{eps_row.mean().item():.6f}/{eps_row.std().item():.6f}"
+                )
 
             x_row_tmp = x_[row] + RK.h_fn(sub_sigma_2, NS.sub_sigma) * eps_[row]
 
@@ -1217,6 +1186,8 @@ class LatentGuide:
                                                     ):
 
         if "fully_pseudoimplicit" not in self.guide_mode or (self.lgw[step_sched] == 0 and self.lgw_inv[step_sched] == 0):
+            if self.EO("debug_pseudoimplicit"):
+                RESplain(f"prepare_fully: SKIPPED - mode={self.guide_mode}, lgw={self.lgw[step_sched]:.4f}, lgw_inv={self.lgw_inv[step_sched]:.4f}")
             return x_0, x_, eps_
 
         # PACK-FIRST EXPERIMENT: Block channelwise fully_pseudoimplicit modes
@@ -1226,9 +1197,7 @@ class LatentGuide:
 
         sigma = sigmas[step]
 
-        # PACK-FIRST EXPERIMENT: Pack denoised_prev for cossim test
-        denoised_prev_flat, _ = pack_to_flat(denoised_prev)
-        y0, y0_inv, lgw_mask, lgw_mask_inv = self.get_cossim_adjusted_lgw_masks(denoised_prev_flat, step_sched)
+        y0, y0_inv, lgw_mask, lgw_mask_inv = self.get_cossim_adjusted_lgw_masks(denoised_prev, step_sched)
 
         if not (lgw_mask.any() != 0 or lgw_mask_inv.any() != 0):  # cossim score too similar! deactivate guide for this step
             return x_0, x_, eps_
@@ -1239,9 +1208,6 @@ class LatentGuide:
             x_lying_   = x_.clone()
             eps_lying_ = eps_.clone()
             s_lying_   = []
-
-            # PACK-FIRST EXPERIMENT: Pack x_0 once for use in loop
-            x_0_flat, _ = pack_to_flat(x_0)
 
             for r in range(RK.rows):
 
@@ -1281,39 +1247,32 @@ class LatentGuide:
                                                         step,
                                                         step_sched,
                                                         )
-                            # Re-pack x_0 if bong_iter modified it
-                            x_0_flat, _ = pack_to_flat(x_0)
 
                 if self.EO("fully_pseudoimplicit_denoised_prev"):
                     eps_[r] = RK.get_epsilon(x_0, x_[r], denoised_prev, sigma, NS.s_[r])
 
-                # PACK-FIRST EXPERIMENT: Pack x_[r] for guide epsilon computation
-                x_r_flat, _ = pack_to_flat(x_[r])
-
-                eps_substep_guide     = torch.zeros_like(x_0_flat)
-                eps_substep_guide_inv = torch.zeros_like(x_0_flat)
+                eps_substep_guide     = torch.zeros_like(x_0)
+                eps_substep_guide_inv = torch.zeros_like(x_0)
 
                 if self.HAS_LATENT_GUIDE:
-                    eps_substep_guide     = RK.get_guide_epsilon(x_0_flat, x_r_flat, y0,     sigma, NS.s_[r], NS.sigma_down, None)
+                    eps_substep_guide     = RK.get_guide_epsilon(x_0, x_[r], y0,     sigma, NS.s_[r], NS.sigma_down, None)
                 if self.HAS_LATENT_GUIDE_INV:
-                    eps_substep_guide_inv = RK.get_guide_epsilon(x_0_flat, x_r_flat, y0_inv, sigma, NS.s_[r], NS.sigma_down, None)
+                    eps_substep_guide_inv = RK.get_guide_epsilon(x_0, x_[r], y0_inv, sigma, NS.s_[r], NS.sigma_down, None)
 
-                # PACK-FIRST EXPERIMENT: Pack eps_[r] and do elementwise ops instead of process_channelwise
-                eps_r_flat, eps_r_shape = pack_to_flat(eps_[r])
+                eps_r = eps_[r]
 
                 # Elementwise blend (same as epsilon mode)
                 if self.guide_mode == "fully_pseudoimplicit":
-                    eps_r_flat = eps_r_flat + lgw_mask * (eps_substep_guide - eps_r_flat) + lgw_mask_inv * (eps_substep_guide_inv - eps_r_flat)
+                    eps_r = eps_r + lgw_mask * (eps_substep_guide - eps_r) + lgw_mask_inv * (eps_substep_guide_inv - eps_r)
                 elif self.guide_mode == "fully_pseudoimplicit_projection":
                     # Projection mode: blend then project
-                    eps_row_lerp = eps_r_flat + self.mask * (eps_substep_guide - eps_r_flat) + (1 - self.mask) * (eps_substep_guide_inv - eps_r_flat)
-                    eps_collinear_eps_lerp = get_collinear(eps_r_flat, eps_row_lerp)
-                    eps_lerp_ortho_eps = get_orthogonal(eps_row_lerp, eps_r_flat)
+                    eps_row_lerp = eps_r + self.mask * (eps_substep_guide - eps_r) + (1 - self.mask) * (eps_substep_guide_inv - eps_r)
+                    eps_collinear_eps_lerp = get_collinear(eps_r, eps_row_lerp)
+                    eps_lerp_ortho_eps = get_orthogonal(eps_row_lerp, eps_r)
                     eps_sum = eps_collinear_eps_lerp + eps_lerp_ortho_eps
-                    eps_r_flat = eps_r_flat + lgw_mask * (eps_sum - eps_r_flat) + lgw_mask_inv * (eps_sum - eps_r_flat)
+                    eps_r = eps_r + lgw_mask * (eps_sum - eps_r) + lgw_mask_inv * (eps_sum - eps_r)
 
-                # Unpack back to structured
-                eps_[r] = unpack_from_flat(eps_r_flat, eps_r_shape)
+                eps_[r] = eps_r
 
                 x_lying_[r]   = x_[r] + RK.h_fn(fully_sub_sigma_2, NS.sub_sigma) * eps_[r]
                 data_lying    = x_[r] + RK.h_fn(0,                 NS.s_[r])     * eps_[r]
@@ -1335,6 +1294,7 @@ class LatentGuide:
                                         sigmas,
                                         step,
                                         "lying",
+                                        False,  # SYNC_GUIDE_ACTIVE
                                         )
 
             self.x_lying_ = x_lying_
@@ -1592,30 +1552,28 @@ class LatentGuide:
         if self.frame_weights_mgr is not None:
             raise NotImplementedError("Frame weights require temporal structure, incompatible with pack-first experiment")
 
-        # PACK-FIRST EXPERIMENT: Pack input tensors to flat [1, 1, N] for shape-agnostic operations
-        # We pack x_0 and the row-specific tensors to match the already-packed guides
-        x_0_v, x_0_shape = pack_to_flat(x_0)
-        eps_row_v, _ = pack_to_flat(eps_[row])
-        data_row_v, _ = pack_to_flat(data_[row])
-        x_row_v, _ = pack_to_flat(x_[row])
-        x_row1_v, x_row1_shape = pack_to_flat(x_[row+1])
+        # Local references for the row tensors we'll modify
+        eps_row = eps_[row]
+        data_row = data_[row]
+        x_row = x_[row]
+        x_row1 = x_[row+1]
 
-        y0, y0_inv, lgw_mask, lgw_mask_inv = self.get_cossim_adjusted_lgw_masks(data_row_v, step_sched)
+        y0, y0_inv, lgw_mask, lgw_mask_inv = self.get_cossim_adjusted_lgw_masks(data_row, step_sched)
         
         if not (lgw_mask.any() != 0 or lgw_mask_inv.any() != 0):  # cossim score too similar! deactivate guide for this step
             return eps_, x_
 
         if self.EO(["substep_eps_ch_mean_std", "substep_eps_ch_mean", "substep_eps_ch_std", "substep_eps_mean_std", "substep_eps_mean", "substep_eps_std"]):
-            eps_row_v_orig = eps_row_v.clone()
+            eps_row_orig = eps_row.clone()
 
         if self.EO("dynamic_guides_mean_std"):
-            y_shift, y_inv_shift = normalize_latent([y0, y0_inv], [data_row_v, data_row_v])
+            y_shift, y_inv_shift = normalize_latent([y0, y0_inv], [data_row, data_row])
             y0 = y_shift
             if self.EO("dynamic_guides_inv"):
                 y0_inv = y_inv_shift
 
         if self.EO("dynamic_guides_mean"):
-            y_shift, y_inv_shift = normalize_latent([y0, y0_inv], [data_row_v, data_row_v], std=False)
+            y_shift, y_inv_shift = normalize_latent([y0, y0_inv], [data_row, data_row], std=False)
             y0 = y_shift
             if self.EO("dynamic_guides_inv"):
                 y0_inv = y_inv_shift
@@ -1625,20 +1583,20 @@ class LatentGuide:
         if "data_old" == self.guide_mode:
             y0_tmp = y0.clone()
             if self.HAS_LATENT_GUIDE:
-                y0_tmp = (1-lgw_mask) * data_row_v + lgw_mask * y0
+                y0_tmp = (1-lgw_mask) * data_row + lgw_mask * y0
                 y0_tmp = (1-lgw_mask_inv) * y0_tmp + lgw_mask_inv * y0_inv
-            x_row1_v = y0_tmp + eps_row_v
+            x_row1 = y0_tmp + eps_row
 
         if self.guide_mode == "data_old_projection":
 
-            d_lerp             = data_row_v   +   lgw_mask * (y0-data_row_v)   +   lgw_mask_inv * (y0_inv-data_row_v)
+            d_lerp             = data_row   +   lgw_mask * (y0-data_row)   +   lgw_mask_inv * (y0_inv-data_row)
 
-            d_collinear_d_lerp = get_collinear(data_row_v, d_lerp)
-            d_lerp_ortho_d     = get_orthogonal(d_lerp, data_row_v)
+            d_collinear_d_lerp = get_collinear(data_row, d_lerp)
+            d_lerp_ortho_d     = get_orthogonal(d_lerp, data_row)
 
-            data_row_v         = d_collinear_d_lerp + d_lerp_ortho_d
+            data_row           = d_collinear_d_lerp + d_lerp_ortho_d
 
-            x_row1_v           = data_row_v + eps_row_v * sigma
+            x_row1             = data_row + eps_row * sigma
             
 
 
@@ -1646,79 +1604,76 @@ class LatentGuide:
         elif self.guide_mode in {"epsilon", "epsilon_cw", "epsilon_projection", "epsilon_projection_cw"} and (self.lgw[step_sched] > 0 or self.lgw_inv[step_sched] > 0):
             if sigma_down < sigma   or   s_[row] < RK.sigma_max:
 
-                eps_substep_guide     = torch.zeros_like(x_0_v)
-                eps_substep_guide_inv = torch.zeros_like(x_0_v)
+                eps_substep_guide     = torch.zeros_like(x_0)
+                eps_substep_guide_inv = torch.zeros_like(x_0)
 
                 if self.HAS_LATENT_GUIDE:
-                    eps_substep_guide     = RK.get_guide_epsilon(x_0_v, x_row_v, y0,     sigma, s_[row], sigma_down, epsilon_scale)
+                    eps_substep_guide     = RK.get_guide_epsilon(x_0, x_row, y0,     sigma, s_[row], sigma_down, epsilon_scale)
 
                 if self.HAS_LATENT_GUIDE_INV:
-                    eps_substep_guide_inv = RK.get_guide_epsilon(x_0_v, x_row_v, y0_inv, sigma, s_[row], sigma_down, epsilon_scale)
+                    eps_substep_guide_inv = RK.get_guide_epsilon(x_0, x_row, y0_inv, sigma, s_[row], sigma_down, epsilon_scale)
 
-                # PACK-FIRST EXPERIMENT: Block tolerance mode that iterates over batch/channel
+                # Block tolerance mode that iterates over batch/channel
                 tol_value = self.EO("tol", -1.0)
                 if tol_value >= 0:
-                    raise NotImplementedError("Tolerance mode requires batch/channel structure, incompatible with pack-first experiment")
+                    raise NotImplementedError("Tolerance mode requires batch/channel structure, incompatible with shape-agnostic processing")
 
                 if self.guide_mode in {"epsilon"}:
-                    #eps_row_v = slerp(lgw_mask.mean().item(), eps_row_v, eps_substep_guide)
                     if self.EO("slerp_epsilon_guide"):
                         if eps_substep_guide.sum() != 0:
-                            eps_row_v = slerp_tensor(lgw_mask, eps_row_v, eps_substep_guide)
+                            eps_row = slerp_tensor(lgw_mask, eps_row, eps_substep_guide)
                         if eps_substep_guide_inv.sum() != 0:
-                            eps_row_v = slerp_tensor(lgw_mask_inv, eps_row_v, eps_substep_guide_inv)
+                            eps_row = slerp_tensor(lgw_mask_inv, eps_row, eps_substep_guide_inv)
                     else:
-                        eps_row_v = eps_row_v + lgw_mask * (eps_substep_guide - eps_row_v) + lgw_mask_inv * (eps_substep_guide_inv - eps_row_v)
-
-                    #eps_row_v = slerp_barycentric(eps_row_v.norm(), eps_substep_guide.norm(), eps_substep_guide_inv.norm(), 1-lgw_mask-lgw_mask_inv, lgw_mask, lgw_mask_inv)
+                        eps_row = eps_row + lgw_mask * (eps_substep_guide - eps_row) + lgw_mask_inv * (eps_substep_guide_inv - eps_row)
 
                 elif self.guide_mode in {"epsilon_projection"}:
                     if self.EO("slerp_epsilon_guide"):
                         if eps_substep_guide.sum() != 0:
-                            eps_row_slerp = slerp_tensor(self.mask, eps_row_v, eps_substep_guide)
+                            eps_row_slerp = slerp_tensor(self.mask, eps_row, eps_substep_guide)
                         if eps_substep_guide_inv.sum() != 0:
                             eps_row_slerp = slerp_tensor((1-self.mask), eps_row_slerp, eps_substep_guide_inv)
 
-                        eps_collinear_eps_slerp = get_collinear(eps_row_v, eps_row_slerp)
-                        eps_slerp_ortho_eps     = get_orthogonal(eps_row_slerp, eps_row_v)
+                        eps_collinear_eps_slerp = get_collinear(eps_row, eps_row_slerp)
+                        eps_slerp_ortho_eps     = get_orthogonal(eps_row_slerp, eps_row)
 
                         eps_sum                = eps_collinear_eps_slerp + eps_slerp_ortho_eps
 
-                        eps_row_v = slerp_tensor(lgw_mask, eps_row_v, eps_sum)
-                        eps_row_v = slerp_tensor(lgw_mask_inv, eps_row_v, eps_sum)
+                        eps_row = slerp_tensor(lgw_mask, eps_row, eps_sum)
+                        eps_row = slerp_tensor(lgw_mask_inv, eps_row, eps_sum)
                     else:
-                        eps_row_lerp           = eps_row_v   +   self.mask * (eps_substep_guide-eps_row_v)   +   (1-self.mask) * (eps_substep_guide_inv-eps_row_v)
+                        eps_row_lerp           = eps_row   +   self.mask * (eps_substep_guide-eps_row)   +   (1-self.mask) * (eps_substep_guide_inv-eps_row)
 
-                        eps_collinear_eps_lerp = get_collinear(eps_row_v, eps_row_lerp)
-                        eps_lerp_ortho_eps     = get_orthogonal(eps_row_lerp, eps_row_v)
+                        eps_collinear_eps_lerp = get_collinear(eps_row, eps_row_lerp)
+                        eps_lerp_ortho_eps     = get_orthogonal(eps_row_lerp, eps_row)
 
                         eps_sum                = eps_collinear_eps_lerp + eps_lerp_ortho_eps
 
-                        eps_row_v              = eps_row_v + lgw_mask * (eps_sum - eps_row_v) + lgw_mask_inv * (eps_sum - eps_row_v)
+                        eps_row                = eps_row + lgw_mask * (eps_sum - eps_row) + lgw_mask_inv * (eps_sum - eps_row)
 
                 # epsilon_cw and epsilon_projection_cw are blocked at function entry
 
-        # PACK-FIRST EXPERIMENT: Block temporal smoothing that needs temporal structure
+        # Block temporal smoothing that needs temporal structure
         temporal_smoothing = self.EO("temporal_smoothing", 0.0)
         if temporal_smoothing > 0:
-            raise NotImplementedError("Temporal smoothing requires temporal structure, incompatible with pack-first experiment")
+            raise NotImplementedError("Temporal smoothing requires temporal structure, incompatible with shape-agnostic processing")
 
-        # PACK-FIRST EXPERIMENT: Block channelwise normalization that needs structure
+        # Block channelwise normalization that needs structure
         if self.EO(["substep_eps_ch_mean_std", "substep_eps_ch_mean", "substep_eps_ch_std"]):
-            raise NotImplementedError("Channelwise substep normalization requires channel structure, incompatible with pack-first experiment")
+            raise NotImplementedError("Channelwise substep normalization requires channel structure, incompatible with shape-agnostic processing")
         if self.EO("substep_eps_mean_std"):
-            eps_row_v = normalize_latent(eps_row_v, eps_row_v_orig, channelwise=False)
+            eps_row = normalize_latent(eps_row, eps_row_orig, channelwise=False)
         if self.EO("substep_eps_mean"):
-            eps_row_v = normalize_latent(eps_row_v, eps_row_v_orig, std=False, channelwise=False)
+            eps_row = normalize_latent(eps_row, eps_row_orig, std=False, channelwise=False)
         if self.EO("substep_eps_std"):
-            eps_row_v = normalize_latent(eps_row_v, eps_row_v_orig, mean=False, channelwise=False)
+            eps_row = normalize_latent(eps_row, eps_row_orig, mean=False, channelwise=False)
 
-        # PACK-FIRST EXPERIMENT: Unpack results back to original shape
-        eps_[row] = unpack_from_flat(eps_row_v, eps_[row].shape)
+        # Write results back to tensors
+        eps_[row] = eps_row
         if self.guide_mode in {"data_old", "data_old_projection"}:
-            x_[row+1] = unpack_from_flat(x_row1_v, x_[row+1].shape)
+            x_[row+1] = x_row1
         if self.guide_mode == "data_old_projection":
-            data_[row] = unpack_from_flat(data_row_v, data_[row].shape)
+            data_[row] = data_row
 
         return eps_, x_
     
@@ -1852,7 +1807,16 @@ def prepare_mask(x, mask, LGW_MASK_RESCALE_MIN) -> tuple[torch.Tensor, bool]:
         mask = torch.ones_like(x[:,0:1,...])
         LGW_MASK_RESCALE_MIN = False
         return mask, LGW_MASK_RESCALE_MIN
-    
+
+    # For flat/packed tensors, expect mask to already be compatible or use ones
+    if x.ndim == 3:
+        if mask.numel() == x.numel() or mask.numel() == x.shape[-1]:
+            return mask.reshape(1, 1, -1).expand_as(x).to(x.dtype), LGW_MASK_RESCALE_MIN
+        else:
+            # Mask incompatible with flat tensor, use ones
+            RESplain(f"Warning: mask shape {mask.shape} incompatible with flat tensor shape {x.shape}, using ones mask instead.")
+            return torch.ones_like(x), False
+
     target_height = x.shape[-2]
     target_width  = x.shape[-1]
 

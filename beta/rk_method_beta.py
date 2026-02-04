@@ -138,7 +138,7 @@ class RK_Method_Beta:
         self.model_calls_total    += 1
         self.model_calls_epsilon  += 1
         denoised = self.calc_cfg_channelwise(denoised)
-        eps      = (x - denoised) / (sigma * s_in).view(x.shape[0], 1, 1, 1)       #return x0 ###################################THIS WORKS ONLY WITH THE MODEL SAMPLING PATCH
+        eps      = (x - denoised) / (sigma * s_in).view(x.shape[0], *[1]*(x.ndim-1))
         return eps, denoised
     
     def model_denoised(self, x:Tensor, sigma:Tensor, **extra_args) -> Tensor:
@@ -733,9 +733,9 @@ class RK_Method_Beta:
                                     if self.EO("sync_x2y"):
                                         eps_ = sync_mask * eps_x_   +   (1-sync_mask) * eps_x2y_   +   weight_mask * (-eps_x2y_+sigma*(y0_bongflow-noise_sync))
                             else:
-                                eps_x_  [:s_.shape[0]] = (x_[:s_.shape[0]] - data_x_[:s_.shape[0]]) / s_.view(-1,1,1,1,1)   # or should it be vs x_0???
+                                eps_x_  [:s_.shape[0]] = (x_[:s_.shape[0]] - data_x_[:s_.shape[0]]) / s_.view(-1, *[1]*(x_.ndim-1))
                                 eps_x2y_ = torch.zeros_like(eps_x_)
-                                eps_x2y_[:s_.shape[0]] = (x_[:s_.shape[0]] - data_y_[:s_.shape[0]]) / s_.view(-1,1,1,1,1)   # or should it be vs x_0???
+                                eps_x2y_[:s_.shape[0]] = (x_[:s_.shape[0]] - data_y_[:s_.shape[0]]) / s_.view(-1, *[1]*(x_.ndim-1))
 
                                 if self.VE_MODEL:
                                     eps_ = sync_mask * eps_x_   +   (1-sync_mask) * eps_x2y_   +   weight_mask * (noise_sync-eps_y_)
@@ -1089,7 +1089,7 @@ class RK_Method_Linear(RK_Method_Beta):
         if   len(args) == 3:
             x, denoised, sigma = args
             return (x - denoised) / sigma
-        elif len(args == 5):
+        elif len(args) == 5:
             x_0, x, denoised, sigma, sub_sigma = args
             eps_anchor   = (x_0 - denoised) / sigma
             eps_unmoored =   (x - denoised) / sub_sigma
