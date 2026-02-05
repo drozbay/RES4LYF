@@ -1042,13 +1042,25 @@ class LatentGuide:
         if self.invert_mask:
             certain_mask = 1.0 - certain_mask
 
+        # Apply spatial mask from ClownGuides if provided (intersection)
+        if self.mask is not None:
+            spatial_mask = self.mask
+            if spatial_mask.shape != certain_mask.shape:
+                if spatial_mask.ndim == certain_mask.ndim:
+                    if spatial_mask.shape[1] == 1 and certain_mask.shape[1] > 1:
+                        spatial_mask = spatial_mask.expand_as(certain_mask)
+                    elif certain_mask.shape[1] == 1 and spatial_mask.shape[1] > 1:
+                        spatial_mask = spatial_mask.mean(dim=1, keepdim=True)
+            certain_mask = certain_mask * spatial_mask
+
         # Apply guide weight schedule
         lgw = self.lgw[step_sched] if step_sched < len(self.lgw) else 0.0
 
-        if self.EO("debug_self_refine_epsilon"):
+        if self.EO("debug_self_refine"):
             coverage = certain_mask.mean().item()
             mode = "UNCERTAIN (inverted)" if self.invert_mask else "CERTAIN"
-            RESplain(f"self_refine_epsilon step {step_sched}: guiding {mode} regions, coverage={coverage:.2%}, metric={metric}, threshold={threshold}, lgw={lgw:.4f}")
+            spatial_info = " (with spatial mask)" if self.mask is not None else ""
+            RESplain(f"self_refine_epsilon step {step_sched}: guiding {mode} regions{spatial_info}, coverage={coverage:.2%}, metric={metric}, threshold={threshold}, lgw={lgw:.4f}")
 
         # Store raw mask for visualization (before lgw scaling)
         self._debug_certainty_mask = certain_mask.clone()
