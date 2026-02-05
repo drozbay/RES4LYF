@@ -2004,7 +2004,8 @@ def sample_rk_beta(
 
             
             callback_step = len(sigmas)-1 - step if sampler_mode == "unsample" else step
-            preview_callback(x, eps, denoised, x_, eps_, data_, callback_step, sigma, sigma_next, callback, EO, preview_override=data_cached, FLOW_STOPPED=FLOW_STOPPED, device=model_device)
+            self_refine_mask = getattr(LG, '_debug_certainty_mask', None)
+            preview_callback(x, eps, denoised, x_, eps_, data_, callback_step, sigma, sigma_next, callback, EO, preview_override=data_cached, FLOW_STOPPED=FLOW_STOPPED, device=model_device, self_refine_mask=self_refine_mask)
             
             h_prev = NS.h
             x_prev = x_0
@@ -2111,7 +2112,8 @@ def sample_rk_beta(
 
     if not (UNSAMPLE and sigmas[1] > sigmas[0]) and not EO("preview_last_step_always") and sigma is not None   and   not (FLOW_STARTED and not FLOW_STOPPED):
         callback_step = len(sigmas)-1 - step if sampler_mode == "unsample" else step
-        preview_callback(x, eps, denoised, x_, eps_, data_, callback_step, sigma, sigma_next, callback, EO, device=model_device)
+        self_refine_mask = getattr(LG, '_debug_certainty_mask', None)
+        preview_callback(x, eps, denoised, x_, eps_, data_, callback_step, sigma, sigma_next, callback, EO, device=model_device, self_refine_mask=self_refine_mask)
         
     if UNSAMPLE and sigmas[0] != 0:
         sigmas = torch.cat((torch.zeros(1, dtype=sigmas.dtype, device=sigmas.device), sigmas.clone()), dim=0)
@@ -2201,34 +2203,55 @@ def preview_callback(
                     EO         : ExtraOptions,
                     preview_override : Optional[Tensor] = None,
                     FLOW_STOPPED : bool = False,
-                    device     : Optional[torch.device] = None,):
+                    device     : Optional[torch.device] = None,
+                    self_refine_mask : Optional[Tensor] = None,):
 
     if EO("eps_substep_preview"):
         row_callback = EO("eps_substep_preview", 0)
         denoised_callback = eps_[row_callback]
-        
+
     elif EO("denoised_substep_preview"):
         row_callback = EO("denoised_substep_preview", 0)
         denoised_callback = data_[row_callback]
-        
+
     elif EO("x_substep_preview"):
         row_callback = EO("x_substep_preview", 0)
         denoised_callback = x_[row_callback]
-        
+
     elif EO("eps_preview"):
         denoised_callback = eps
-        
+
     elif EO("denoised_preview"):
         denoised_callback = denoised
-        
+
     elif EO("x_preview"):
         denoised_callback = x
-        
+
     elif preview_override is not None and FLOW_STOPPED == False:
         denoised_callback = preview_override
-        
+
     else:
         denoised_callback = data_[0]
+
+    # Overlay self-refine certainty mask on preview
+    if EO("self_refine_mask_preview") and self_refine_mask is not None:
+        mask_mode = EO("self_refine_mask_preview_mode", "zero")
+
+        # Expand mask to match data channels if needed
+        if self_refine_mask.shape != denoised_callback.shape:
+            if self_refine_mask.shape[1] == 1 and denoised_callback.shape[1] > 1:
+                mask_expanded = self_refine_mask.expand_as(denoised_callback)
+            else:
+                mask_expanded = self_refine_mask
+        else:
+            mask_expanded = self_refine_mask
+
+        if mask_mode == "invert":
+            denoised_callback = denoised_callback * (1 - 2 * mask_expanded)
+
+        elif mask_mode == "zero":
+            denoised_callback = denoised_callback * (1 - mask_expanded)
+
 
     if device is not None:
         denoised_callback = denoised_callback.to(device)
