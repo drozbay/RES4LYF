@@ -731,6 +731,10 @@ class LatentGuide:
             self.self_refine_epsilon_last_step = -1  # Track which step we're on
             self.self_refine_epsilon_last_row = -1
             self.self_refine_epsilon_call_count = 0
+        # Per-iteration tracking (for self_refine_per_iteration mode)
+        self._self_refine_last_iter = -1
+        self._self_refine_iter_prediction = None
+        self._self_refine_certain_mask_accum = None
 
         if latent_guide_inv is not None:
             self.HAS_LATENT_GUIDE_INV = True
@@ -1095,18 +1099,55 @@ class LatentGuide:
 
         # Handle self_refine_pseudoimplicit modes
         if self.guide_mode.startswith("self_refine_pseudoimplicit"):
-            # Skip step 0 - no valid previous exists
-            if step == 0 or denoised_prev.abs().max() == 0:
-                if self.EO("debug_self_refine_epsilon"):
-                    RESplain(f"self_refine_pseudoimplicit step {step}, row {row}: SKIPPED - no valid denoised_prev")
-                return x_0, x_, eps_, None, None
+            # Per-iteration mode: track changes across implicit iterations
+            per_iteration_mode = not self.EO("self_refine_by_step")
 
-            # Within-step refinement: reset reference at start of new step
-            if step != self.self_refine_epsilon_last_step:
-                self.self_refine_epsilon_ref = denoised_prev.clone()
-                self.self_refine_epsilon_last_step = step
-                if self.EO("debug_self_refine_epsilon"):
-                    RESplain(f"self_refine_pseudoimplicit step {step}: initialized reference from denoised_prev")
+            # Skip conditions
+            if per_iteration_mode:
+                if step == 0 and full_iter == 0:
+                    if self.EO("debug_self_refine"):
+                        RESplain(f"self_refine_pseudoimplicit step {step}, iter {full_iter}, row {row}: SKIPPED - no valid reference")
+                    return x_0, x_, eps_, None, None
+            else:
+                if step == 0 or denoised_prev.abs().max() == 0:
+                    if self.EO("debug_self_refine"):
+                        RESplain(f"self_refine_pseudoimplicit step {step}, row {row}: SKIPPED - no valid denoised_prev")
+                    return x_0, x_, eps_, None, None
+
+            is_new_step = (step != self.self_refine_epsilon_last_step)
+            is_new_iter = (full_iter != self._self_refine_last_iter) if per_iteration_mode else False
+
+            # Reference management
+            if per_iteration_mode:
+                if is_new_step:
+                    # New step: reset everything
+                    self.self_refine_epsilon_ref = denoised_prev.clone()
+                    self.self_refine_epsilon_last_step = step
+                    self._self_refine_last_iter = full_iter
+                    self._self_refine_certain_mask_accum = None
+                    self._self_refine_iter_prediction = None
+                    if self.EO("debug_self_refine"):
+                        RESplain(f"self_refine_pseudoimplicit step {step}: NEW STEP - initialized reference from denoised_prev")
+
+                elif is_new_iter:
+                    # New iteration: update reference to previous iteration's prediction
+                    if self._self_refine_iter_prediction is not None:
+                        self.self_refine_epsilon_ref = self._self_refine_iter_prediction.clone()
+                        if self.EO("debug_self_refine"):
+                            RESplain(f"self_refine_pseudoimplicit step {step}, iter {full_iter}: updated reference from iter {full_iter-1}")
+                    self._self_refine_last_iter = full_iter
+                    if self.EO("self_refine_dont_accumulate_certainty"):
+                        self._self_refine_certain_mask_accum = None
+
+                if row == 0:
+                    self._self_refine_iter_prediction = data_[row].clone()
+            else:
+                # Non-iterative mode: update reference at each step
+                if is_new_step:
+                    self.self_refine_epsilon_ref = denoised_prev.clone()
+                    self.self_refine_epsilon_last_step = step
+                    if self.EO("debug_self_refine"):
+                        RESplain(f"self_refine_pseudoimplicit step {step}: initialized reference from denoised_prev")
 
             # Use reference as guide target
             y0 = self.self_refine_epsilon_ref
@@ -1114,8 +1155,18 @@ class LatentGuide:
             # Compute certainty mask
             lgw_mask = self.get_self_refine_epsilon_mask(data_[row], y0, step_sched)
 
+            # Accumulate certainty across iterations
+            if per_iteration_mode and not self.EO("self_refine_dont_accumulate_certainty"):
+                if self._self_refine_certain_mask_accum is not None:
+                    binary_mask = (lgw_mask > 0).float()
+                    binary_accum = (self._self_refine_certain_mask_accum > 0).float()
+                    combined = torch.maximum(binary_mask, binary_accum)
+                    lgw = self.lgw[step_sched] if step_sched < len(self.lgw) else 0.0
+                    lgw_mask = combined * lgw
+                self._self_refine_certain_mask_accum = lgw_mask.clone()
+
             if lgw_mask.max() == 0:
-                if self.EO("debug_self_refine_epsilon"):
+                if self.EO("debug_self_refine"):
                     RESplain(f"self_refine_pseudoimplicit step {step}, row {row}: SKIPPED - no certain regions")
                 return x_0, x_, eps_, None, None
 
@@ -1148,16 +1199,10 @@ class LatentGuide:
 
             eps_ = eps_tmp_
 
-            if self.EO("debug_self_refine_epsilon"):
+            if self.EO("debug_self_refine"):
                 coverage = (lgw_mask > 0).float().mean().item()
-                RESplain(f"self_refine_pseudoimplicit step {step}, row {row}: APPLIED - certain_coverage={coverage:.2%}")
-
-            # Visualize certainty mask in preview (partially destructive - for debugging)
-            if self.EO("debug_self_refine_visualize_mask"):
-                vis_value = self.EO("debug_self_refine_visualize_value", 2.0)
-                mask_vis = self._debug_certainty_mask if hasattr(self, '_debug_certainty_mask') else (lgw_mask > 0).float()
-                # Highlight certain pixels, leave uncertain pixels showing actual denoised
-                data_[row] = mask_vis * vis_value + (1 - mask_vis) * data_[row]
+                iter_info = f", iter {full_iter}" if per_iteration_mode else ""
+                RESplain(f"self_refine_pseudoimplicit step {step}{iter_info}, row {row}: APPLIED - certain_coverage={coverage:.2%}")
 
             # Apply bongmath if enabled
             if RK.IMPLICIT and BONGMATH and step < sigmas.shape[0]-1 and not self.EO("disable_pseudobongmath"):
@@ -1677,6 +1722,7 @@ class LatentGuide:
                                 s_            : Tensor,
                                 epsilon_scale :  float,
                                 RK,
+                                full_iter     :  int = 0,
                                 ):
 
         if not self.HAS_LATENT_GUIDE and not self.HAS_LATENT_GUIDE_INV:
@@ -1697,36 +1743,77 @@ class LatentGuide:
             x_row = x_[row]
             sigma_row = s_[row]
 
-            # Skip step 0 - no valid previous exists (denoised_prev is zeros)
-            if step == 0 or denoised_prev.abs().max() == 0:
-                if self.EO("debug_self_refine_epsilon"):
-                    RESplain(f"self_refine_epsilon step {step}, row {row}: SKIPPED - no valid denoised_prev")
-                return eps_, x_
+            # Per-iteration mode: track changes across implicit iterations
+            per_iteration_mode = not self.EO("self_refine_by_step")
 
-            # Track calls per (step, row) - function is called twice per row (for eps_ and eps_prev_)
+            # Skip conditions
+            if per_iteration_mode:
+                # In per-iteration mode, skip step 0 iter 0 only
+                if step == 0 and full_iter == 0:
+                    if self.EO("debug_self_refine"):
+                        RESplain(f"self_refine_epsilon step {step}, iter {full_iter}, row {row}: SKIPPED - no valid reference")
+                    return eps_, x_
+            else:
+                # Non-iterative mode: skip entire step 0
+                if step == 0 or denoised_prev.abs().max() == 0:
+                    if self.EO("debug_self_refine"):
+                        RESplain(f"self_refine_epsilon step {step}, row {row}: SKIPPED - no valid denoised_prev")
+                    return eps_, x_
+
+            # Track state changes
             is_new_step = (step != self.self_refine_epsilon_last_step)
+            is_new_iter = (full_iter != self._self_refine_last_iter) if per_iteration_mode else False
             is_new_row = (row != self.self_refine_epsilon_last_row)
 
-            if is_new_step or is_new_row:
-                # First call for this (step, row)
+            # Track calls per (step, row) - function is called twice per row (for eps_ and eps_prev_)
+            if is_new_step or is_new_iter or is_new_row:
+                # First call for this (step, iter, row)
                 self.self_refine_epsilon_call_count = 1
                 self.self_refine_epsilon_last_row = row
             else:
-                # Second call for same (step, row) - this is eps_prev_
+                # Second call for same (step, iter, row) - this is eps_prev_
                 self.self_refine_epsilon_call_count += 1
 
                 if not self.EO("self_refine_guide_eps_prev"):
                     # Default: skip guiding eps_prev_
-                    if self.EO("debug_self_refine_epsilon"):
-                        RESplain(f"self_refine_epsilon step {step}, row {row}: SKIPPED eps_prev_ (use 'self_refine_guide_eps_prev' to enable)")
+                    if self.EO("debug_self_refine"):
+                        RESplain(f"self_refine_epsilon step {step}, iter {full_iter}, row {row}: SKIPPED eps_prev_")
                     return eps_, x_
 
-            # Reset reference at start of new step
-            if is_new_step:
-                self.self_refine_epsilon_ref = denoised_prev.clone()
-                self.self_refine_epsilon_last_step = step
-                if self.EO("debug_self_refine_epsilon"):
-                    RESplain(f"self_refine_epsilon step {step}: initialized reference from denoised_prev")
+            # Reference management
+            if per_iteration_mode:
+                # Per-iteration mode: update reference based on iteration changes
+                if is_new_step:
+                    # New step: reset everything, use denoised_prev as initial reference
+                    self.self_refine_epsilon_ref = denoised_prev.clone()
+                    self.self_refine_epsilon_last_step = step
+                    self._self_refine_last_iter = full_iter
+                    self._self_refine_certain_mask_accum = None
+                    self._self_refine_iter_prediction = None
+                    if self.EO("debug_self_refine"):
+                        RESplain(f"self_refine_epsilon step {step}: NEW STEP - initialized reference from denoised_prev")
+
+                elif is_new_iter:
+                    # New iteration within same step: update reference to previous iteration's prediction
+                    if self._self_refine_iter_prediction is not None:
+                        self.self_refine_epsilon_ref = self._self_refine_iter_prediction.clone()
+                        if self.EO("debug_self_refine"):
+                            RESplain(f"self_refine_epsilon step {step}, iter {full_iter}: updated reference from iter {full_iter-1}")
+                    self._self_refine_last_iter = full_iter
+                    # Reset mask accumulator for new iteration if not using accumulation
+                    if self.EO("self_refine_dont_accumulate_certainty"):
+                        self._self_refine_certain_mask_accum = None
+
+                # Capture current prediction for next iteration's reference (at row 0, first call only)
+                if row == 0 and self.self_refine_epsilon_call_count == 1:
+                    self._self_refine_iter_prediction = data_row.clone()
+            else:
+                # Non-iterative mode: update reference only on new steps
+                if is_new_step:
+                    self.self_refine_epsilon_ref = denoised_prev.clone()
+                    self.self_refine_epsilon_last_step = step
+                    if self.EO("debug_self_refine"):
+                        RESplain(f"self_refine_epsilon step {step}: initialized reference from denoised_prev")
 
             # Compare current prediction against reference
             y0 = self.self_refine_epsilon_ref
@@ -1734,9 +1821,20 @@ class LatentGuide:
             # Compute certainty mask (guide certain regions, let uncertain evolve)
             lgw_mask = self.get_self_refine_epsilon_mask(data_row, y0, step_sched)
 
+            # Accumulate certainty across iterations
+            if per_iteration_mode and not self.EO("self_refine_dont_accumulate_certainty"):
+                if self._self_refine_certain_mask_accum is not None:
+                    # Union with previous certain regions
+                    binary_mask = (lgw_mask > 0).float()
+                    binary_accum = (self._self_refine_certain_mask_accum > 0).float()
+                    combined = torch.maximum(binary_mask, binary_accum)
+                    lgw = self.lgw[step_sched] if step_sched < len(self.lgw) else 0.0
+                    lgw_mask = combined * lgw
+                self._self_refine_certain_mask_accum = lgw_mask.clone()
+
             if lgw_mask.max() == 0:
-                if self.EO("debug_self_refine_epsilon"):
-                    RESplain(f"self_refine_epsilon step {step}, row {row}: SKIPPED - no certain regions")
+                if self.EO("debug_self_refine"):
+                    RESplain(f"self_refine_epsilon step {step}, iter {full_iter}, row {row}: SKIPPED - no certain regions")
                 return eps_, x_
 
             # Compute guide epsilon (direction toward reference)
@@ -1754,17 +1852,11 @@ class LatentGuide:
                 # Standard lerp blending
                 eps_[row] = eps_row + lgw_mask * (eps_y0 - eps_row)
 
-            if self.EO("debug_self_refine_epsilon"):
+            if self.EO("debug_self_refine"):
                 call_type = "eps_" if self.self_refine_epsilon_call_count == 1 else "eps_prev_"
                 coverage = (lgw_mask > 0).float().mean().item()
-                RESplain(f"self_refine_epsilon step {step}, row {row} ({call_type}): APPLIED - certain_coverage={coverage:.2%}, eps mean/std={eps_[row].mean():.4f}/{eps_[row].std():.4f}")
-
-            # Visualize certainty mask in preview (partially destructive - for debugging)
-            if self.EO("debug_self_refine_visualize_mask"):
-                vis_value = self.EO("debug_self_refine_visualize_value", 2.0)
-                mask_vis = self._debug_certainty_mask if hasattr(self, '_debug_certainty_mask') else (lgw_mask > 0).float()
-                # Highlight certain pixels, leave uncertain pixels showing actual denoised
-                data_[row] = mask_vis * vis_value + (1 - mask_vis) * data_[row]
+                iter_info = f", iter {full_iter}" if per_iteration_mode else ""
+                RESplain(f"self_refine_epsilon step {step}{iter_info}, row {row} ({call_type}): APPLIED - certain_coverage={coverage:.2%}, eps mean/std={eps_[row].mean():.4f}/{eps_[row].std():.4f}")
 
             return eps_, x_
 

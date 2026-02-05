@@ -385,7 +385,11 @@ def sample_rk_beta(
     eps_                = None
     eps                 = torch.zeros_like(x, dtype=default_dtype, device=work_device)
     denoised            = torch.zeros_like(x, dtype=default_dtype, device=work_device)
-    denoised_prev       = torch.zeros_like(x, dtype=default_dtype, device=work_device)
+    state_denoised      = state_info.get('denoised')
+    if state_denoised is not None and state_denoised.shape == x.shape:
+        denoised_prev   = state_denoised.to(dtype=default_dtype, device=work_device)
+    else:
+        denoised_prev   = torch.zeros_like(x, dtype=default_dtype, device=work_device)
     denoised_prev2      = torch.zeros_like(x, dtype=default_dtype, device=work_device)
     x_                  = None
     eps_prev_           = None
@@ -1016,8 +1020,8 @@ def sample_rk_beta(
 
                             if RK.IMPLICIT:
                                 if not EO("disable_implicit_guide_preproc"):
-                                    eps_, x_      = LG.process_guides_substep(x_0, x_, eps_,      data_, denoised_prev, row, step, step_sched, sigma, sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK)
-                                    eps_prev_, x_ = LG.process_guides_substep(x_0, x_, eps_prev_, data_, denoised_prev, row, step, step_sched, sigma, sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK)
+                                    eps_, x_      = LG.process_guides_substep(x_0, x_, eps_,      data_, denoised_prev, row, step, step_sched, sigma, sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK, full_iter)
+                                    eps_prev_, x_ = LG.process_guides_substep(x_0, x_, eps_prev_, data_, denoised_prev, row, step, step_sched, sigma, sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK, full_iter)
                                 if row == 0 and (EO("implicit_lagrange_init")  or   EO("radaucycle")):
                                     pass
                                 else:
@@ -1766,9 +1770,9 @@ def sample_rk_beta(
 
                         # GUIDE
                         if not EO("disable_guides_eps_substep"):
-                            eps_, x_      = LG.process_guides_substep(x_0, x_, eps_,      data_, denoised_prev, row, step, step_sched, NS.sigma, NS.sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK)
+                            eps_, x_      = LG.process_guides_substep(x_0, x_, eps_,      data_, denoised_prev, row, step, step_sched, NS.sigma, NS.sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK, full_iter)
                         if not EO("disable_guides_eps_prev_substep"):
-                            eps_prev_, x_ = LG.process_guides_substep(x_0, x_, eps_prev_, data_, denoised_prev, row, step, step_sched, NS.sigma, NS.sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK)
+                            eps_prev_, x_ = LG.process_guides_substep(x_0, x_, eps_prev_, data_, denoised_prev, row, step, step_sched, NS.sigma, NS.sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK, full_iter)
                         
                         if LG.y0_mean is not None and LG.y0_mean.sum() != 0.0:
                             raise NotImplementedError("y0_mean guide requires spatial structure, incompatible with pack-first")
