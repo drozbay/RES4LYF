@@ -1019,7 +1019,7 @@ class LatentGuide:
         When invert_mask=True: guide UNCERTAIN (high-diff/changing) regions
         """
         threshold = self.EO("self_refine_epsilon_threshold", 0.2)
-        metric = self.EO("self_refine_epsilon_metric", "l1")  # "l1" or "l2"
+        metric = self.EO("self_refine_epsilon_metric", "l2")  # "l1" or "l2"
 
         if metric == "l2":
             # Normalized L2 (Euclidean distance per pixel, normalized by channel count)
@@ -1786,8 +1786,7 @@ class LatentGuide:
                 # Second call for same (step, iter, row) - this is eps_prev_
                 self.self_refine_epsilon_call_count += 1
 
-                if not self.EO("self_refine_guide_eps_prev"):
-                    # Default: skip guiding eps_prev_
+                if self.EO("self_refine_dont_guide_eps_prev"):
                     if self.EO("debug_self_refine"):
                         RESplain(f"self_refine_epsilon step {step}, iter {full_iter}, row {row}: SKIPPED eps_prev_")
                     return eps_, x_
