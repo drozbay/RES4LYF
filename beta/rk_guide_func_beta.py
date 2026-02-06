@@ -47,6 +47,34 @@ def flatten_to_match(guide: Tensor, target: Tensor) -> Tensor:
 
 
 class LatentGuide:
+    OFFLOADABLE_ATTRS = [
+        # Guide targets (full latent size)
+        'y0', 'y0_inv', 'y0_mean', 'y0_adain', 'y0_attninj', 'y0_style_pos', 'y0_style_neg',
+        # Spatial masks (full latent size)
+        'mask', 'mask_inv', 'mask_sync', 'mask_drift_x', 'mask_drift_y',
+        'mask_lure_x', 'mask_lure_y', 'mask_mean', 'mask_adain', 'mask_attninj',
+        'mask_style_pos', 'mask_style_neg',
+        # Self-refine state (full latent size)
+        'self_refine_epsilon_ref', '_self_refine_iter_prediction',
+        '_self_refine_certain_mask_accum', '_debug_certainty_mask',
+        # Frame weights (if populated)
+        'frame_weights', 'frame_weights_inv',
+    ]
+
+    def offload(self, device):
+        for attr in self.OFFLOADABLE_ATTRS:
+            val = getattr(self, attr, None)
+            if isinstance(val, Tensor):
+                setattr(self, attr, val.to(device))
+        # Handle list-of-tensor attributes
+        for list_attr in ('x_lying_', 's_lying_'):
+            val = getattr(self, list_attr, None)
+            if isinstance(val, list):
+                setattr(self, list_attr, [t.to(device) if isinstance(t, Tensor) else t for t in val])
+
+    def restore(self):
+        self.offload(self.device)
+
     def __init__(self,
                 model,
                 sigmas               : Tensor,

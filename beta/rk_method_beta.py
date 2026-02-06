@@ -97,6 +97,8 @@ class RK_Method_Beta:
         self.model_calls_denoised : int = 0
         self.model_calls_epsilon  : int = 0
 
+        self.latent_guide = None
+
     @staticmethod
     def is_exponential(rk_type:str) -> bool:
         if rk_type.startswith(( "res", 
@@ -131,9 +133,19 @@ class RK_Method_Beta:
     def __call__(self):
         raise NotImplementedError("This method got clownsharked!")
     
+    def _offload_peripherals(self):
+        if self.latent_guide is not None:
+            self.latent_guide.offload('cpu')
+
+    def _restore_peripherals(self):
+        if self.latent_guide is not None:
+            self.latent_guide.restore()
+
     def model_epsilon(self, x:Tensor, sigma:Tensor, **extra_args) -> Tuple[Tensor, Tensor]:
         s_in     = x.new_ones([x.shape[0]])
+        self._offload_peripherals()
         denoised = self.model(x, sigma * s_in, **extra_args)
+        self._restore_peripherals()
         # increment counters (single call path)
         self.model_calls_total    += 1
         self.model_calls_epsilon  += 1
@@ -147,7 +159,9 @@ class RK_Method_Beta:
         y0_style_pos = self.extra_args['model_options']['transformer_options'].get("y0_style_pos")
         y0_style_neg = self.extra_args['model_options']['transformer_options'].get("y0_style_neg")
         y0_style_pos_tile, sy0_style_neg_tiles = None, None
-        
+
+        self._offload_peripherals()
+
         if self.EO("tile_model_calls"):
             tile_h = self.EO("tile_h", 128)
             tile_w = self.EO("tile_w", 128)
@@ -253,7 +267,9 @@ class RK_Method_Beta:
             # increment counters (single call path)
             self.model_calls_total    += 1
             self.model_calls_denoised += 1
-        
+
+        self._restore_peripherals()
+
         if control_tiles is not None:
             positive_control.cond_hint = positive_cond_hint_init
             if negative_control is not None:

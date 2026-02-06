@@ -447,6 +447,7 @@ def sample_rk_beta(
 
     # SETUP GUIDES
     LG = LatentGuide(model, sigmas, UNSAMPLE, VE_MODEL, LGW_MASK_RESCALE_MIN, extra_options, device=work_device, dtype=default_dtype, frame_weights_mgr=frame_weights_mgr, latent_shapes=latent_shapes)
+    RK.latent_guide = LG
 
     guide_inversion_y0     = state_info.get('guide_inversion_y0')
     guide_inversion_y0_inv = state_info.get('guide_inversion_y0_inv')
