@@ -414,10 +414,19 @@ def sample_rk_beta(
     noise_bongflow      = state_info.get('noise_bongflow')
     y0_standard_guide   = state_info.get('y0_standard_guide')
     y0_inv_standard_guide = state_info.get('y0_inv_standard_guide')
-    
+
+    if y0_bongflow          is not None: y0_bongflow          = y0_bongflow.clone()
+    if y0_bongflow_orig     is not None: y0_bongflow_orig     = y0_bongflow_orig.clone()
+    if noise_bongflow       is not None: noise_bongflow       = noise_bongflow.clone()
+    if y0_standard_guide    is not None: y0_standard_guide    = y0_standard_guide.clone()
+    if y0_inv_standard_guide is not None: y0_inv_standard_guide = y0_inv_standard_guide.clone()
+
     data_prev_y_        = state_info.get('data_prev_y_')
     data_prev_x_        = state_info.get('data_prev_x_')
     data_prev_x2y_      = state_info.get('data_prev_x2y_')
+    if data_prev_y_  is not None: data_prev_y_  = data_prev_y_.clone()
+    if data_prev_x_  is not None: data_prev_x_  = data_prev_x_.clone()
+    if data_prev_x2y_ is not None: data_prev_x2y_ = data_prev_x2y_.clone()
 
     # BEGIN SAMPLING LOOP
     try:
@@ -453,8 +462,8 @@ def sample_rk_beta(
     guide_inversion_y0_inv = state_info.get('guide_inversion_y0_inv')
 
     x = LG.init_guides(x, RK.IMPLICIT, guides, NS.noise_sampler, batch_num, sigmas[step], guide_inversion_y0, guide_inversion_y0_inv)
-    LG.y0     = y0_standard_guide     if y0_standard_guide     is not None else LG.y0
-    LG.y0_inv = y0_inv_standard_guide if y0_inv_standard_guide is not None else LG.y0_inv
+    LG.y0     = y0_standard_guide.clone()     if y0_standard_guide     is not None else LG.y0
+    LG.y0_inv = y0_inv_standard_guide.clone() if y0_inv_standard_guide is not None else LG.y0_inv
     if (LG.mask != 1.0).any()   and  ((LG.y0 == 0).all() or (LG.y0_inv == 0).all()) : #  and   not LG.guide_mode.startswith("flow"):  # (LG.y0.sum() == 0 or LG.y0_inv.sum() == 0):
         SKIP_PSEUDO = True
         RESplain("skipping pseudo...")
@@ -486,9 +495,9 @@ def sample_rk_beta(
     FLOW_RESUMED = False
     if state_info.get('FLOW_STARTED', False) and not state_info.get('FLOW_STOPPED', False):
         FLOW_RESUMED = True
-        y0 = state_info['y0'].to(work_device) 
-        data_cached = state_info['data_cached'].to(work_device) 
-        data_x_prev_ = state_info['data_x_prev_'].to(work_device) 
+        y0 = state_info['y0'].clone().to(work_device)
+        data_cached = state_info['data_cached'].clone().to(work_device)
+        data_x_prev_ = state_info['data_x_prev_'].clone().to(work_device)
 
     if noise_initial is not None:
         x_init = noise_initial.to(x)
@@ -667,7 +676,7 @@ def sample_rk_beta(
                 RK.update_transformer_options({'y0_style_pos':        LG.y0_style_pos.clone()})
                 RK.update_transformer_options({'y0_style_pos_weight': LG.lgw_style_pos[step_sched]})
                 RK.update_transformer_options({'y0_style_pos_synweight': guides['synweight_style_pos']})
-                RK.update_transformer_options({'y0_style_pos_mask': LG.mask_style_pos})
+                RK.update_transformer_options({'y0_style_pos_mask': LG.mask_style_pos.clone() if LG.mask_style_pos is not None else None})
                 RK.update_transformer_options({'y0_style_pos_mask_edge': guides.get('mask_edge_style_pos')})
                 RK.update_transformer_options({'y0_style_method': guides['style_method']})
                 RK.update_transformer_options({'y0_style_tile_height': guides.get('style_tile_height')})
@@ -696,7 +705,7 @@ def sample_rk_beta(
                 RK.update_transformer_options({'y0_style_neg':        LG.y0_style_neg.clone()})
                 RK.update_transformer_options({'y0_style_neg_weight': LG.lgw_style_neg[step_sched]})
                 RK.update_transformer_options({'y0_style_neg_synweight': guides['synweight_style_neg']})
-                RK.update_transformer_options({'y0_style_neg_mask': LG.mask_style_neg})
+                RK.update_transformer_options({'y0_style_neg_mask': LG.mask_style_neg.clone() if LG.mask_style_neg is not None else None})
                 RK.update_transformer_options({'y0_style_neg_mask_edge': guides.get('mask_edge_style_neg')})
                 RK.update_transformer_options({'y0_style_method': guides['style_method']})
                 RK.update_transformer_options({'y0_style_tile_height': guides.get('style_tile_height')})
@@ -2056,10 +2065,10 @@ def sample_rk_beta(
         
         if SKIP_PSEUDO and not LG.guide_mode.startswith("flow"):
             if SKIP_PSEUDO_Y == "y0":
-                LG.y0 = denoised
+                LG.y0 = denoised.clone()
                 LG.HAS_LATENT_GUIDE = True
             else:
-                LG.y0_inv = denoised
+                LG.y0_inv = denoised.clone()
                 LG.HAS_LATENT_GUIDE_INV = True
                 
         if EO("pseudo_mix_strength"):
@@ -2153,13 +2162,13 @@ def sample_rk_beta(
         state_info_out['completed']         = step == len(sigmas)-2 and sigmas[-1] == 0 and sigmas[-2] == NS.sigma_min
         state_info_out['FLOW_STARTED']      = FLOW_STARTED
         state_info_out['FLOW_STOPPED']      = FLOW_STOPPED
-        state_info_out['noise_bongflow']    = noise_bongflow
-        state_info_out['y0_bongflow']       = y0_bongflow
-        state_info_out['y0_bongflow_orig']  = y0_bongflow_orig
-        state_info_out['y0_standard_guide']       = y0_standard_guide
-        state_info_out['y0_inv_standard_guide']  = y0_inv_standard_guide
-        state_info_out['data_prev_y_']      = data_prev_y_
-        state_info_out['data_prev_x_']      = data_prev_x_
+        state_info_out['noise_bongflow']         = noise_bongflow.clone().cpu()      if noise_bongflow       is not None else None
+        state_info_out['y0_bongflow']            = y0_bongflow.clone().cpu()        if y0_bongflow          is not None else None
+        state_info_out['y0_bongflow_orig']       = y0_bongflow_orig.clone().cpu()   if y0_bongflow_orig     is not None else None
+        state_info_out['y0_standard_guide']      = y0_standard_guide.clone().cpu()  if y0_standard_guide    is not None else None
+        state_info_out['y0_inv_standard_guide']  = y0_inv_standard_guide.clone().cpu() if y0_inv_standard_guide is not None else None
+        state_info_out['data_prev_y_']           = data_prev_y_.clone().cpu()       if data_prev_y_         is not None else None
+        state_info_out['data_prev_x_']           = data_prev_x_.clone().cpu()       if data_prev_x_         is not None else None
 
         if noise_initial is not None:
             state_info_out['noise_initial'] = noise_initial.to('cpu')
