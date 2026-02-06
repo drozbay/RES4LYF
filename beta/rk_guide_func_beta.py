@@ -449,21 +449,6 @@ class LatentGuide:
                 steps_lure_y_                   = steps_
                 steps_lure_y_inv_               = steps_inv_
 
-            if self.mask         is not None and self.mask.shape    [0] > 1 and self.VIDEO     is False:
-                self.mask         = self.mask    [batch_num].unsqueeze(0)
-            if self.mask_inv     is not None and self.mask_inv.shape[0] > 1 and self.VIDEO     is False:
-                self.mask_inv     = self.mask_inv[batch_num].unsqueeze(0)
-            if self.mask_sync    is not None and self.mask_sync.shape[0] > 1 and self.VIDEO    is False:
-                self.mask_sync    = self.mask_sync[batch_num].unsqueeze(0)
-            if self.mask_drift_x is not None and self.mask_drift_x.shape[0] > 1 and self.VIDEO is False:
-                self.mask_drift_x = self.mask_drift_x[batch_num].unsqueeze(0)
-            if self.mask_drift_y is not None and self.mask_drift_y.shape[0] > 1 and self.VIDEO is False:
-                self.mask_drift_y = self.mask_drift_y[batch_num].unsqueeze(0)
-            if self.mask_lure_x  is not None and self.mask_lure_x.shape[0] > 1 and self.VIDEO  is False:
-                self.mask_lure_x  = self.mask_lure_x[batch_num].unsqueeze(0)
-            if self.mask_lure_y  is not None and self.mask_lure_y.shape[0] > 1 and self.VIDEO  is False:
-                self.mask_lure_y  = self.mask_lure_y[batch_num].unsqueeze(0)
-                
             if self.guide_mode.startswith("fully_") and not RK_IMPLICIT:
                 raise ValueError("fully_pseudoimplicit is only supported for implicit RK samplers.")
                 #self.guide_mode = self.guide_mode[6:]   # fully_pseudoimplicit is only supported for implicit samplers, default back to pseudoimplicit
@@ -700,15 +685,13 @@ class LatentGuide:
         if latent_guide is not None:
             self.HAS_LATENT_GUIDE = True
             if type(latent_guide) is dict:
-                if latent_guide    ['samples'].shape[0] > 1:
-                    latent_guide['samples']     = latent_guide    ['samples'][batch_num].unsqueeze(0)
                 latent_guide_samples = self.model.inner_model.inner_model.process_latent_in(latent_guide['samples']).to(dtype=self.dtype, device=self.device)
             elif type(latent_guide) is torch.Tensor:
                 latent_guide_samples = latent_guide.to(dtype=self.dtype, device=self.device)
             else:
                 raise ValueError(f"Invalid latent type: {type(latent_guide)}")
 
-            latent_guide_samples = flatten_to_match(latent_guide_samples, x)
+            latent_guide_samples = flatten_to_match(latent_guide_samples, x).clone()
 
             if self.SAMPLE:
                 self.y0 = latent_guide_samples
@@ -735,19 +718,18 @@ class LatentGuide:
         self._self_refine_last_iter = -1
         self._self_refine_iter_prediction = None
         self._self_refine_certain_mask_accum = None
+        self._debug_certainty_mask = None
 
         if latent_guide_inv is not None:
             self.HAS_LATENT_GUIDE_INV = True
             if type(latent_guide_inv) is dict:
-                if latent_guide_inv['samples'].shape[0] > 1:
-                    latent_guide_inv['samples'] = latent_guide_inv['samples'][batch_num].unsqueeze(0)
                 latent_guide_inv_samples = self.model.inner_model.inner_model.process_latent_in(latent_guide_inv['samples']).to(dtype=self.dtype, device=self.device)
             elif type(latent_guide_inv) is torch.Tensor:
                 latent_guide_inv_samples = latent_guide_inv.to(dtype=self.dtype, device=self.device)
             else:
                 raise ValueError(f"Invalid latent type: {type(latent_guide_inv)}")
 
-            latent_guide_inv_samples = flatten_to_match(latent_guide_inv_samples, x)
+            latent_guide_inv_samples = flatten_to_match(latent_guide_inv_samples, x).clone()
 
             if self.SAMPLE:
                 self.y0_inv = latent_guide_inv_samples
@@ -764,15 +746,13 @@ class LatentGuide:
         if latent_guide_mean is not None:
             self.HAS_LATENT_GUIDE_MEAN = True
             if type(latent_guide_mean) is dict:
-                if latent_guide_mean['samples'].shape[0] > 1:
-                    latent_guide_mean['samples'] = latent_guide_mean['samples'][batch_num].unsqueeze(0)
                 latent_guide_mean_samples = self.model.inner_model.inner_model.process_latent_in(latent_guide_mean['samples']).to(dtype=self.dtype, device=self.device)
             elif type(latent_guide_mean) is torch.Tensor:
                 latent_guide_mean_samples = latent_guide_mean.to(dtype=self.dtype, device=self.device)
             else:
                 raise ValueError(f"Invalid latent type: {type(latent_guide_mean)}")
 
-            latent_guide_mean_samples = flatten_to_match(latent_guide_mean_samples, x)
+            latent_guide_mean_samples = flatten_to_match(latent_guide_mean_samples, x).clone()
             self.y0_mean = latent_guide_mean_samples
             """if self.SAMPLE:
                 self.y0_mean = latent_guide_mean_samples
@@ -787,15 +767,13 @@ class LatentGuide:
         if latent_guide_adain is not None:
             self.HAS_LATENT_GUIDE_ADAIN = True
             if type(latent_guide_adain) is dict:
-                if latent_guide_adain['samples'].shape[0] > 1:
-                    latent_guide_adain['samples'] = latent_guide_adain['samples'][batch_num].unsqueeze(0)
                 latent_guide_adain_samples = self.model.inner_model.inner_model.process_latent_in(latent_guide_adain['samples']).to(dtype=self.dtype, device=self.device)
             elif type(latent_guide_adain) is torch.Tensor:
                 latent_guide_adain_samples = latent_guide_adain.to(dtype=self.dtype, device=self.device)
             else:
                 raise ValueError(f"Invalid latent type: {type(latent_guide_adain)}")
 
-            latent_guide_adain_samples = flatten_to_match(latent_guide_adain_samples, x)
+            latent_guide_adain_samples = flatten_to_match(latent_guide_adain_samples, x).clone()
             self.y0_adain = latent_guide_adain_samples
             """if self.SAMPLE:
                 self.y0_adain = latent_guide_adain_samples
@@ -813,15 +791,13 @@ class LatentGuide:
         if latent_guide_attninj is not None:
             self.HAS_LATENT_GUIDE_ATTNINJ = True
             if type(latent_guide_attninj) is dict:
-                if latent_guide_attninj['samples'].shape[0] > 1:
-                    latent_guide_attninj['samples'] = latent_guide_attninj['samples'][batch_num].unsqueeze(0)
                 latent_guide_attninj_samples = self.model.inner_model.inner_model.process_latent_in(latent_guide_attninj['samples']).to(dtype=self.dtype, device=self.device)
             elif type(latent_guide_attninj) is torch.Tensor:
                 latent_guide_attninj_samples = latent_guide_attninj.to(dtype=self.dtype, device=self.device)
             else:
                 raise ValueError(f"Invalid latent type: {type(latent_guide_attninj)}")
 
-            latent_guide_attninj_samples = flatten_to_match(latent_guide_attninj_samples, x)
+            latent_guide_attninj_samples = flatten_to_match(latent_guide_attninj_samples, x).clone()
             self.y0_attninj = latent_guide_attninj_samples
             """if self.SAMPLE:
                 self.y0_attninj = latent_guide_attninj_samples
@@ -840,15 +816,13 @@ class LatentGuide:
         if latent_guide_style_pos is not None:
             self.HAS_LATENT_GUIDE_STYLE_POS = True
             if type(latent_guide_style_pos) is dict:
-                if latent_guide_style_pos['samples'].shape[0] > 1:
-                    latent_guide_style_pos['samples'] = latent_guide_style_pos['samples'][batch_num].unsqueeze(0)
                 latent_guide_style_pos_samples = self.model.inner_model.inner_model.process_latent_in(latent_guide_style_pos['samples']).to(dtype=self.dtype, device=self.device)
             elif type(latent_guide_style_pos) is torch.Tensor:
                 latent_guide_style_pos_samples = latent_guide_style_pos.to(dtype=self.dtype, device=self.device)
             else:
                 raise ValueError(f"Invalid latent type: {type(latent_guide_style_pos)}")
 
-            latent_guide_style_pos_samples = flatten_to_match(latent_guide_style_pos_samples, x)
+            latent_guide_style_pos_samples = flatten_to_match(latent_guide_style_pos_samples, x).clone()
             self.y0_style_pos = latent_guide_style_pos_samples
             """if self.SAMPLE:
                 self.y0_style_pos = latent_guide_style_pos_samples
@@ -867,15 +841,13 @@ class LatentGuide:
         if latent_guide_style_neg is not None:
             self.HAS_LATENT_GUIDE_STYLE_NEG = True
             if type(latent_guide_style_neg) is dict:
-                if latent_guide_style_neg['samples'].shape[0] > 1:
-                    latent_guide_style_neg['samples'] = latent_guide_style_neg['samples'][batch_num].unsqueeze(0)
                 latent_guide_style_neg_samples = self.model.inner_model.inner_model.process_latent_in(latent_guide_style_neg['samples']).to(dtype=self.dtype, device=self.device)
             elif type(latent_guide_style_neg) is torch.Tensor:
                 latent_guide_style_neg_samples = latent_guide_style_neg.to(dtype=self.dtype, device=self.device)
             else:
                 raise ValueError(f"Invalid latent type: {type(latent_guide_style_neg)}")
 
-            latent_guide_style_neg_samples = flatten_to_match(latent_guide_style_neg_samples, x)
+            latent_guide_style_neg_samples = flatten_to_match(latent_guide_style_neg_samples, x).clone()
             self.y0_style_neg = latent_guide_style_neg_samples
             """if self.SAMPLE:
                 self.y0_style_neg = latent_guide_style_neg_samples
@@ -892,14 +864,14 @@ class LatentGuide:
 
         if self.UNSAMPLE and not self.SAMPLE: #sigma_next > sigma:   # TODO: VERIFY APPROACH FOR INVERSION
             if guide_inversion_y0 is not None:
-                self.y0 = guide_inversion_y0
+                self.y0 = guide_inversion_y0.clone()
             else:
                 self.y0     = noise_sampler(sigma=self.sigma_max, sigma_next=self.sigma_min).to(dtype=self.dtype, device=self.device)
                 self.y0     = normalize_zscore(self.y0,     channelwise=True, inplace=True)
                 self.y0    *= self.sigma_max
-                
+
             if guide_inversion_y0_inv is not None:
-                self.y0_inv = guide_inversion_y0_inv
+                self.y0_inv = guide_inversion_y0_inv.clone()
             else:
                 self.y0_inv = noise_sampler(sigma=self.sigma_max, sigma_next=self.sigma_min).to(dtype=self.dtype, device=self.device)
                 self.y0_inv = normalize_zscore(self.y0_inv, channelwise=True, inplace=True)

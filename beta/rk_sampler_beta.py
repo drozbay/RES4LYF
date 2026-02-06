@@ -2236,6 +2236,7 @@ def preview_callback(
     # Overlay self-refine certainty mask on preview
     if EO("self_refine_mask_preview") and self_refine_mask is not None:
         mask_mode = EO("self_refine_mask_preview_mode", "zero")
+        denoised_callback = denoised_callback.clone()
 
         # Expand mask to match data channels if needed
         if self_refine_mask.shape != denoised_callback.shape:
