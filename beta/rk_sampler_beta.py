@@ -215,10 +215,7 @@ def sample_rk_beta(
         state_info                    : Optional[dict[str, Any]] = None,
         state_info_out                : Optional[dict[str, Any]] = None,
         
-        rk_swap_type                  : str                = "",
-        rk_swap_step                  : int                = MAX_STEPS,
-        rk_swap_threshold             : float              = 0.0,
-        rk_swap_print                 : bool               = False,
+        rk_swaps                      : list               = [],
         
         steps_to_run                  : int                = -1,
         start_at_step                 : int                = -1,
@@ -446,7 +443,7 @@ def sample_rk_beta(
     
     INIT_SAMPLE_LOOP = True
     step = start_step
-    sigma, sigma_next, data_prev_ = None, None, None
+    sigma, sigma_next, data_prev_, x_0 = None, None, None, None
     
     if (num_steps-1) == len(sigmas)-2 and sigmas[-1] == 0 and sigmas[-2] == NS.sigma_min:
         progress_bar = trange(current_steps+1, disable=disable)
@@ -624,7 +621,12 @@ def sample_rk_beta(
             step_sched = torch.where(torch.flip(sigmas, dims=[0]) == sigma)[0][0].item()
         else:
             step_sched = step
-        
+
+        rk_type, swapped = RK.swap_rk_type_at_step_or_threshold(x_0, data_prev_, NS, sigmas, step, step_sched, rk_swaps)
+        if swapped:
+            implicit_steps_full = 0
+            implicit_steps_diag = 0
+
         SYNC_GUIDE_ACTIVE = LG.guide_mode.startswith("sync") and (LG.lgw[step_sched] != 0 or LG.lgw_inv[step_sched] != 0 or LG.lgw_sync[step_sched] != 0 or LG.lgw_sync_inv[step_sched] != 0)
         
         if StyleMMDiT is not None:
@@ -760,7 +762,7 @@ def sample_rk_beta(
                 lying_s_ = NS.s_.clone()
         
 
-        rk_swap_stages = 3 if rk_swap_type != "" else 0
+        rk_swap_stages = 3 if rk_swaps else 0
         data_prev_len = len(data_prev_)-1 if data_prev_ is not None else 3
         recycled_stages = max(rk_swap_stages, RK.multistep_stages, RK.hybrid_stages, data_prev_len)
         
@@ -2054,11 +2056,6 @@ def sample_rk_beta(
             for ms in range(recycled_stages):
                 data_prev_y_[recycled_stages - ms] = data_prev_y_[recycled_stages - ms - 1] 
         
-        rk_type = RK.swap_rk_type_at_step_or_threshold(x_0, data_prev_, NS, sigmas, step, rk_swap_step, rk_swap_threshold, rk_swap_type, rk_swap_print)
-        if step > rk_swap_step:
-            implicit_steps_full = 0
-            implicit_steps_diag = 0
-
         if EO("bong2m") or EO("bong3m"):
             denoised_data_prev2 = denoised_data_prev
             denoised_data_prev = data_[0]

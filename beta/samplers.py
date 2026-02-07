@@ -1646,10 +1646,7 @@ class ClownSamplerAdvanced_Beta:
             implicit_type                 : str = "predictor-corrector",
             implicit_type_substeps        : str = "predictor-corrector",
             
-            rk_swap_step                  : int = MAX_STEPS,
-            rk_swap_print                 : bool = False,
-            rk_swap_threshold             : float = 0.0,
-            rk_swap_type                  : str = "",
+            rk_swaps                      : list = [],
             
             steps_to_run                  : int = -1,
             
@@ -1716,10 +1713,12 @@ class ClownSamplerAdvanced_Beta:
             sde_noise         = options_mgr.get('sde_noise'        , sde_noise)
             sde_noise_steps   = options_mgr.get('sde_noise_steps'  , sde_noise_steps)
             
-            rk_swap_step      = options_mgr.get('rk_swap_step'     , rk_swap_step)
-            rk_swap_print     = options_mgr.get('rk_swap_print'    , rk_swap_print)
-            rk_swap_threshold = options_mgr.get('rk_swap_threshold', rk_swap_threshold)
-            rk_swap_type      = options_mgr.get('rk_swap_type'     , rk_swap_type)
+            rk_swaps = options_mgr.get('rk_swaps', rk_swaps)
+            if not rk_swaps:
+                _swap_type = options_mgr.get('rk_swap_type', '')
+                if _swap_type:
+                    rk_swaps = [{'type': _swap_type, 'step': options_mgr.get('rk_swap_step', MAX_STEPS),
+                                 'threshold': options_mgr.get('rk_swap_threshold', 0.0), 'print': options_mgr.get('rk_swap_print', False)}]
 
             steps_to_run      = options_mgr.get('steps_to_run'     , steps_to_run)
             
@@ -1840,10 +1839,7 @@ class ClownSamplerAdvanced_Beta:
                     "implicit_type"                 : implicit_type,
                     "implicit_type_substeps"        : implicit_type_substeps,
                     
-                    "rk_swap_step"                  : rk_swap_step,
-                    "rk_swap_print"                 : rk_swap_print,
-                    "rk_swap_threshold"             : rk_swap_threshold,
-                    "rk_swap_type"                  : rk_swap_type,
+                    "rk_swaps"                      : rk_swaps,
                     
                     "steps_to_run"                  : steps_to_run,
                     
@@ -1989,10 +1985,7 @@ class ClownsharKSampler_Beta:
 
             rescale_floor                 : bool                   = True, 
             
-            rk_swap_step                  : int                    = MAX_STEPS,
-            rk_swap_print                 : bool                   = False,
-            rk_swap_threshold             : float                  = 0.0,
-            rk_swap_type                  : str                    = "",
+            rk_swaps                      : list                   = [],
             
             sde_mask                      : Optional[Tensor]       = None,
 
@@ -2153,10 +2146,12 @@ class ClownsharKSampler_Beta:
         
         sigmas                 = options_mgr.get('sigmas'                , sigmas)
         
-        rk_swap_type           = options_mgr.get('rk_swap_type'          , rk_swap_type)
-        rk_swap_step           = options_mgr.get('rk_swap_step'          , rk_swap_step)
-        rk_swap_threshold      = options_mgr.get('rk_swap_threshold'     , rk_swap_threshold)
-        rk_swap_print          = options_mgr.get('rk_swap_print'         , rk_swap_print)
+        rk_swaps = options_mgr.get('rk_swaps', rk_swaps)
+        if not rk_swaps:
+            _swap_type = options_mgr.get('rk_swap_type', '')
+            if _swap_type:
+                rk_swaps = [{'type': _swap_type, 'step': options_mgr.get('rk_swap_step', MAX_STEPS),
+                             'threshold': options_mgr.get('rk_swap_threshold', 0.0), 'print': options_mgr.get('rk_swap_print', False)}]
         
         sde_mask               = options_mgr.get('sde_mask'              , sde_mask)
 
@@ -2246,10 +2241,7 @@ class ClownsharKSampler_Beta:
             sde_noise                     = sde_noise,
             sde_noise_steps               = sde_noise_steps,
             
-            rk_swap_step                  = rk_swap_step,
-            rk_swap_print                 = rk_swap_print,
-            rk_swap_threshold             = rk_swap_threshold,
-            rk_swap_type                  = rk_swap_type,
+            rk_swaps                      = rk_swaps,
             
             steps_to_run                  = steps_to_run,
             
@@ -2442,10 +2434,7 @@ class ClownSampler_Beta:
 
             rescale_floor                 : bool                   = True, 
             
-            rk_swap_step                  : int                    = MAX_STEPS,
-            rk_swap_print                 : bool                   = False,
-            rk_swap_threshold             : float                  = 0.0,
-            rk_swap_type                  : str                    = "",
+            rk_swaps                      : list                   = [],
             
             sde_mask                      : Optional[Tensor]       = None,
 
@@ -2531,10 +2520,12 @@ class ClownSampler_Beta:
         
         sigmas                 = options_mgr.get('sigmas'                , sigmas)
         
-        rk_swap_type           = options_mgr.get('rk_swap_type'          , rk_swap_type)
-        rk_swap_step           = options_mgr.get('rk_swap_step'          , rk_swap_step)
-        rk_swap_threshold      = options_mgr.get('rk_swap_threshold'     , rk_swap_threshold)
-        rk_swap_print          = options_mgr.get('rk_swap_print'         , rk_swap_print)
+        rk_swaps = options_mgr.get('rk_swaps', rk_swaps)
+        if not rk_swaps:
+            _swap_type = options_mgr.get('rk_swap_type', '')
+            if _swap_type:
+                rk_swaps = [{'type': _swap_type, 'step': options_mgr.get('rk_swap_step', MAX_STEPS),
+                             'threshold': options_mgr.get('rk_swap_threshold', 0.0), 'print': options_mgr.get('rk_swap_print', False)}]
         
         sde_mask               = options_mgr.get('sde_mask'              , sde_mask)
 
@@ -2607,10 +2598,7 @@ class ClownSampler_Beta:
             sde_noise                     = sde_noise,
             sde_noise_steps               = sde_noise_steps,
             
-            rk_swap_step                  = rk_swap_step,
-            rk_swap_print                 = rk_swap_print,
-            rk_swap_threshold             = rk_swap_threshold,
-            rk_swap_type                  = rk_swap_type,
+            rk_swaps                      = rk_swaps,
             
             steps_to_run                  = steps_to_run,
             
@@ -2724,10 +2712,7 @@ class BongSampler:
 
             rescale_floor                 : bool                   = True, 
             
-            rk_swap_step                  : int                    = MAX_STEPS,
-            rk_swap_print                 : bool                   = False,
-            rk_swap_threshold             : float                  = 0.0,
-            rk_swap_type                  : str                    = "",
+            rk_swaps                      : list                   = [],
             
             #start_at_step                 : int                    = 0,
             #stop_at_step                  : int                    = MAX_STEPS,
@@ -2817,10 +2802,12 @@ class BongSampler:
         
         sigmas                 = options_mgr.get('sigmas'                , sigmas)
         
-        rk_swap_type           = options_mgr.get('rk_swap_type'          , rk_swap_type)
-        rk_swap_step           = options_mgr.get('rk_swap_step'          , rk_swap_step)
-        rk_swap_threshold      = options_mgr.get('rk_swap_threshold'     , rk_swap_threshold)
-        rk_swap_print          = options_mgr.get('rk_swap_print'         , rk_swap_print)
+        rk_swaps = options_mgr.get('rk_swaps', rk_swaps)
+        if not rk_swaps:
+            _swap_type = options_mgr.get('rk_swap_type', '')
+            if _swap_type:
+                rk_swaps = [{'type': _swap_type, 'step': options_mgr.get('rk_swap_step', MAX_STEPS),
+                             'threshold': options_mgr.get('rk_swap_threshold', 0.0), 'print': options_mgr.get('rk_swap_print', False)}]
         
         #start_at_step          = options_mgr.get('start_at_step'         , start_at_step)
         #stop_at_ste            = options_mgr.get('stop_at_step'          , stop_at_step)
@@ -2890,10 +2877,7 @@ class BongSampler:
             sde_noise                     = sde_noise,
             sde_noise_steps               = sde_noise_steps,
             
-            rk_swap_step                  = rk_swap_step,
-            rk_swap_print                 = rk_swap_print,
-            rk_swap_threshold             = rk_swap_threshold,
-            rk_swap_type                  = rk_swap_type,
+            rk_swaps                      = rk_swaps,
             
             steps_to_run                  = steps_to_run,
             

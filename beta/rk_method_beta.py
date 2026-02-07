@@ -582,74 +582,63 @@ class RK_Method_Beta:
                                             data_prev_        : Tensor,
                                             NS,
                                             sigmas            : Tensor,
-                                            step              : Tensor,
-                                            rk_swap_step      : int,
-                                            rk_swap_threshold : float,
-                                            rk_swap_type      : str,
-                                            rk_swap_print     : bool,
-                                            ) -> str:
-        if rk_swap_type == "":
-            if self.EXPONENTIAL:
-                rk_swap_type = "res_3m" 
-            else:
-                rk_swap_type = "deis_3m"
-            
-        if step > rk_swap_step and self.rk_type != rk_swap_type:
-            if is_debug_logging_enabled():
-                RESplain("Switching rk_type to:", rk_swap_type, "at step:", step, debug=True)
-            elif rk_swap_print:
-                RESplain("Switching rk_type to:", rk_swap_type, "at step:", step)
+                                            step              : int,
+                                            step_sched        : int,
+                                            rk_swaps          : list,
+                                            ):
+        if not rk_swaps:
+            return self.rk_type, False
 
-            self.rk_type = rk_swap_type
-            
-            if RK_Method_Beta.is_exponential(rk_swap_type):
-                self.__class__ = RK_Method_Exponential
-            else:
-                self.__class__ = RK_Method_Linear
-                
-            if rk_swap_type in get_implicit_sampler_name_list(nameOnly=True):
-                self.IMPLICIT   = True
-                self.row_offset = 0
-                NS.row_offset   = 0
-            else:
-                self.IMPLICIT   = False
-                self.row_offset = 1
-                NS.row_offset   = 1
-            NS.h_fn     = self.h_fn
-            NS.t_fn     = self.t_fn
-            NS.sigma_fn = self.sigma_fn
-            
-            
-            
-        if step > 2 and sigmas[step+1] > 0 and self.rk_type != rk_swap_type and rk_swap_threshold > 0:
-            x_res_2m, denoised_res_2m = self.calculate_res_2m_step(x_0, data_prev_, NS.sigma_down, sigmas, step)
-            x_res_3m, denoised_res_3m = self.calculate_res_3m_step(x_0, data_prev_, NS.sigma_down, sigmas, step)
-            if denoised_res_2m is not None:
-                if rk_swap_print:
-                    RESplain("res_3m - res_2m:", torch.norm(denoised_res_3m - denoised_res_2m).item())
-                if rk_swap_threshold > torch.norm(denoised_res_2m - denoised_res_3m):
-                    if rk_swap_print:
-                        RESplain("Switching rk_type to:", rk_swap_type, "at step:", step)
-                    self.rk_type = rk_swap_type
-            
-                    if RK_Method_Beta.is_exponential(rk_swap_type):
-                        self.__class__ = RK_Method_Exponential
-                    else:
-                        self.__class__ = RK_Method_Linear
-                
-                    if rk_swap_type in get_implicit_sampler_name_list(nameOnly=True):
-                        self.IMPLICIT   = True
-                        self.row_offset = 0
-                        NS.row_offset   = 0
-                    else:
-                        self.IMPLICIT   = False
-                        self.row_offset = 1
-                        NS.row_offset   = 1
-                    NS.h_fn     = self.h_fn
-                    NS.t_fn     = self.t_fn
-                    NS.sigma_fn = self.sigma_fn
-            
-        return self.rk_type
+        swap_at = {swap['step']: swap for swap in rk_swaps}
+
+        target_swap = swap_at.get(step_sched)
+
+        if target_swap is None:
+            for swap in sorted(rk_swaps, key=lambda s: s['step']):
+                if step_sched < swap['step'] and swap['threshold'] > 0:
+                    threshold = swap['threshold']
+                    if x_0 is not None and step > 2 and sigmas[step+1] > 0 and self.rk_type != swap['type']:
+                        x_res_2m, denoised_res_2m = self.calculate_res_2m_step(x_0, data_prev_, NS.sigma_down, sigmas, step)
+                        x_res_3m, denoised_res_3m = self.calculate_res_3m_step(x_0, data_prev_, NS.sigma_down, sigmas, step)
+                        if denoised_res_2m is not None:
+                            if swap['print']:
+                                RESplain("res_3m - res_2m:", torch.norm(denoised_res_3m - denoised_res_2m).item())
+                            if threshold > torch.norm(denoised_res_2m - denoised_res_3m):
+                                target_swap = swap
+                    break
+
+        if target_swap is None:
+            return self.rk_type, False
+
+        swap_type = target_swap['type']
+        if swap_type == "":
+            swap_type = "res_3m" if self.EXPONENTIAL else "deis_3m"
+
+        if self.rk_type == swap_type:
+            return self.rk_type, False
+
+        RESplain("Switching rk_type to:", swap_type, "at step:", step_sched)
+
+        self.rk_type = swap_type
+
+        if RK_Method_Beta.is_exponential(swap_type):
+            self.__class__ = RK_Method_Exponential
+        else:
+            self.__class__ = RK_Method_Linear
+
+        if swap_type in get_implicit_sampler_name_list(nameOnly=True):
+            self.IMPLICIT   = True
+            self.row_offset = 0
+            NS.row_offset   = 0
+        else:
+            self.IMPLICIT   = False
+            self.row_offset = 1
+            NS.row_offset   = 1
+        NS.h_fn     = self.h_fn
+        NS.t_fn     = self.t_fn
+        NS.sigma_fn = self.sigma_fn
+
+        return self.rk_type, True
 
 
     def bong_iter(self,

@@ -994,11 +994,15 @@ class ClownOptions_SwapSampler_Beta:
         sampler_name = sampler_name if implicit_sampler_name == "use_explicit" else implicit_sampler_name
                 
         options = options if options is not None else {}
-            
-        options['rk_swap_type']      = sampler_name
-        options['rk_swap_threshold'] = swap_below_err
-        options['rk_swap_step']      = swap_at_step
-        options['rk_swap_print']     = log_err_to_console
+
+        if 'rk_swaps' not in options:
+            options['rk_swaps'] = []
+        options['rk_swaps'].append({
+            'type':      sampler_name,
+            'step':      swap_at_step,
+            'threshold': swap_below_err,
+            'print':     log_err_to_console,
+        })
 
         return (options,)
     
