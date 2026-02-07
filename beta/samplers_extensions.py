@@ -2421,7 +2421,8 @@ class ClownGuide_SelfRefine:
                 "start_step":           ("INT",                                       {"default": 0,    "min":  0,      "max": 10000}),
                 "end_step":             ("INT",                                       {"default": 15,   "min": -1,      "max": 10000}),
                 "invert_masks":         ("BOOLEAN",                                   {"default": False}),
-                "self_refine_threshold":("FLOAT",                                     {"default": 0.25, "min": 0.0, "max": 1.0, "step":0.01, "round": False, "tooltip": "Self-refine threshold for masking."}),
+                "self_refine_threshold":("FLOAT",                                     {"default": 0.20, "min": 0.0, "max": 1.0, "step":0.01, "round": False, "tooltip": "Self-refine threshold for masking. (Use much lower value for L2 versus L1 metric (eg. 0.05 vs 0.20))"}),
+                "self_refine_cutoff":  ("FLOAT",                                     {"default": 0.99, "min": 0.0, "max": 1.0, "step":0.01, "round": False, "tooltip": "Skip remaining iterations when certain mask coverage exceeds this fraction."}),
                 "self_refine_metric":   (["L1", "L2"],                                {"default": "L1", "tooltip": "Self-refine metric for thresholding."}),
                 },
             "optional":
@@ -2443,6 +2444,7 @@ class ClownGuide_SelfRefine:
             weight                    = 1.0,
             weight_scheduler          = "constant",
             self_refine_threshold     = 0.25,
+            self_refine_cutoff        = 0.99,
             self_refine_metric        = "L1",
             start_step                = 0,
             end_step                  = 15,
@@ -2481,6 +2483,7 @@ class ClownGuide_SelfRefine:
         )
 
         guides["self_refine_threshold"] = self_refine_threshold
+        guides["self_refine_cutoff"]    = self_refine_cutoff
         guides["self_refine_metric"]    = self_refine_metric.lower()
 
         return (guides, )

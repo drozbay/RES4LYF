@@ -2036,7 +2036,10 @@ def sample_rk_beta(
             denoised_prev  = denoised
             
             full_iter += 1
-            
+
+            if getattr(LG, '_self_refine_converged', False):
+                break
+
             if LG.lgw[step_sched] > 0 and step >= EO("guide_cutoff_start_step", 0) and cossim_counter < EO("guide_cutoff_max_iter", 10) and (EO("guide_cutoff") or EO("guide_min")):
                 raise NotImplementedError("guide_cutoff/guide_min requires spatial structure, incompatible with pack-first")
         

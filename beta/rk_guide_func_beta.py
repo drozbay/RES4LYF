@@ -149,7 +149,9 @@ class LatentGuide:
         self.self_refine_epsilon_last_row = -1
         self.self_refine_epsilon_call_count = 0  # Track calls per (step, row)
         self.self_refine_threshold     = 0.25
+        self.self_refine_cutoff        = 0.99
         self.self_refine_metric        = "l1"
+        self._self_refine_converged    = False
         
         self.lgw                       = torch.full_like(sigmas, 0., dtype=dtype) 
         self.lgw_inv                   = torch.full_like(sigmas, 0., dtype=dtype)
@@ -254,6 +256,7 @@ class LatentGuide:
                 self.UNSAMPLE = False
     
             self.self_refine_threshold       = guides.get("self_refine_threshold", self.EO("self_refine_threshold", 0.25))
+            self.self_refine_cutoff          = guides.get("self_refine_cutoff",    self.EO("self_refine_cutoff", 0.99))
             self.self_refine_metric          = guides.get("self_refine_metric",    self.EO("self_refine_metric", "l1")).lower()
 
             latent_guide_weight              = guides.get("weight_masked",           0.)
@@ -1143,6 +1146,7 @@ class LatentGuide:
                     self._self_refine_last_iter = full_iter
                     self._self_refine_certain_mask_accum = None
                     self._self_refine_iter_prediction = None
+                    self._self_refine_converged = False
                     if self.EO("debug_self_refine"):
                         RESplain(f"self_refine_pseudoimplicit step {step}: NEW STEP - initialized reference from denoised_prev")
 
@@ -1163,6 +1167,7 @@ class LatentGuide:
                 if is_new_step:
                     self.self_refine_epsilon_ref = denoised_prev.clone()
                     self.self_refine_epsilon_last_step = step
+                    self._self_refine_converged = False
                     if self.EO("debug_self_refine"):
                         RESplain(f"self_refine_pseudoimplicit step {step}: initialized reference from denoised_prev")
 
@@ -1186,6 +1191,14 @@ class LatentGuide:
                 if self.EO("debug_self_refine"):
                     RESplain(f"self_refine_pseudoimplicit step {step}, row {row}: SKIPPED - no certain regions")
                 return x_0, x_, eps_, None, None
+
+            # Check coverage against cutoff
+            coverage = (lgw_mask > 0).float().mean().item()
+            if coverage >= self.self_refine_cutoff:
+                self._self_refine_converged = True
+                if self.EO("debug_self_refine"):
+                    iter_info = f", iter {full_iter}" if per_iteration_mode else ""
+                    RESplain(f"self_refine_pseudoimplicit step {step}{iter_info}, row {row}: CONVERGED - coverage={coverage:.2%} >= cutoff={self.self_refine_cutoff:.2%}")
 
             # Compute guide epsilon
             eps_substep_guide = RK.get_guide_epsilon(x_0, x_[row], y0, sigma, NS.s_[row], NS.sigma_down, None)
@@ -1755,6 +1768,10 @@ class LatentGuide:
 
         # Handle self_refine_epsilon mode - uses denoised_prev as guide target
         if self.SELF_REFINE_EPSILON_MODE:
+            lgw = self.lgw[step_sched] if step_sched < len(self.lgw) else 0.0
+            if lgw == 0:
+                return eps_, x_
+
             data_row = data_[row]
             eps_row = eps_[row]
             x_row = x_[row]
@@ -1806,6 +1823,7 @@ class LatentGuide:
                     self._self_refine_last_iter = full_iter
                     self._self_refine_certain_mask_accum = None
                     self._self_refine_iter_prediction = None
+                    self._self_refine_converged = False
                     if self.EO("debug_self_refine"):
                         RESplain(f"self_refine_epsilon step {step}: NEW STEP - initialized reference from denoised_prev")
 
@@ -1828,6 +1846,7 @@ class LatentGuide:
                 if is_new_step:
                     self.self_refine_epsilon_ref = denoised_prev.clone()
                     self.self_refine_epsilon_last_step = step
+                    self._self_refine_converged = False
                     if self.EO("debug_self_refine"):
                         RESplain(f"self_refine_epsilon step {step}: initialized reference from denoised_prev")
 
@@ -1852,6 +1871,14 @@ class LatentGuide:
                 if self.EO("debug_self_refine"):
                     RESplain(f"self_refine_epsilon step {step}, iter {full_iter}, row {row}: SKIPPED - no certain regions")
                 return eps_, x_
+
+            # Check coverage against cutoff
+            coverage = (lgw_mask > 0).float().mean().item()
+            if coverage >= self.self_refine_cutoff:
+                self._self_refine_converged = True
+                if self.EO("debug_self_refine"):
+                    iter_info = f", iter {full_iter}" if per_iteration_mode else ""
+                    RESplain(f"self_refine_epsilon step {step}{iter_info}, row {row}: CONVERGED - coverage={coverage:.2%} >= cutoff={self.self_refine_cutoff:.2%}")
 
             # Compute guide epsilon (direction toward reference)
             eps_y0 = RK.get_guide_epsilon(x_0, x_row, y0, sigma, sigma_row, sigma_down, None)
