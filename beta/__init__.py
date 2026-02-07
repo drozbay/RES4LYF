@@ -23,6 +23,7 @@ def add_beta(NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS, extra_samplers):
         "ClownGuides_Sync"                : samplers_extensions.ClownGuides_Sync,
         "ClownGuides_Sync_Advanced"       : samplers_extensions.ClownGuides_Sync_Advanced,
         "ClownGuide_FrequencySeparation"  : samplers_extensions.ClownGuide_FrequencySeparation,
+        "ClownGuide_SelfRefine"           : samplers_extensions.ClownGuide_SelfRefine,
         "ClownGuides_ComponentMask"       : samplers_extensions.ClownGuides_ComponentMask,
 
         
@@ -126,6 +127,7 @@ def add_beta(NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS, extra_samplers):
             "ClownGuide_StyleNorm_Advanced_HiDream" : "ClownGuide_StyleNorm_Advanced_HiDream",
             "ClownGuide_Style_Beta"                 : "ClownGuide Style",
             "ClownGuide_Beta"                       : "ClownGuide",
+            "ClownGuide_SelfRefine"                 : "ClownGuide SelfRefine",
             "ClownGuides_Beta"                      : "ClownGuides",
             "ClownGuides_Sync"                      : "ClownGuides Sync",
             "ClownGuides_Sync_Advanced"             : "ClownGuides Sync_Advanced",

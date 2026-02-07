@@ -14,7 +14,7 @@ from .rk_coefficients_beta   import RK_SAMPLER_NAMES_BETA_FOLDERS, get_default_s
 
 from .noise_classes          import NOISE_GENERATOR_NAMES_SIMPLE
 from .rk_noise_sampler_beta  import NOISE_MODE_NAMES
-from .constants              import IMPLICIT_TYPE_NAMES, GUIDE_MODE_NAMES_BETA_SIMPLE, MAX_STEPS, FRAME_WEIGHTS_CONFIG_NAMES, FRAME_WEIGHTS_DYNAMICS_NAMES, FRAME_WEIGHTS_SCHEDULE_NAMES
+from .constants              import IMPLICIT_TYPE_NAMES, GUIDE_MODE_NAMES_SIMPLE, MAX_STEPS, FRAME_WEIGHTS_CONFIG_NAMES, FRAME_WEIGHTS_DYNAMICS_NAMES, FRAME_WEIGHTS_SCHEDULE_NAMES
 
 
 class ClownSamplerSelector_Beta:
@@ -1439,7 +1439,7 @@ class ClownGuide_Beta:
     def INPUT_TYPES(cls):
         return {"required":
                     {
-                    "guide_mode":           (GUIDE_MODE_NAMES_BETA_SIMPLE,       {"default": 'epsilon',                                                      "tooltip": "Recommended: epsilon or mean/mean_std with sampler_mode = standard, and unsample/resample with sampler_mode = unsample/resample. Epsilon_dynamic_mean, etc. are only used with two latent inputs and a mask. Blend/hard_light/mean/mean_std etc. require low strengths, start with 0.01-0.02."}),
+                    "guide_mode":           (GUIDE_MODE_NAMES_SIMPLE,       {"default": 'epsilon',                                                      "tooltip": "Recommended: epsilon or mean/mean_std with sampler_mode = standard, and unsample/resample with sampler_mode = unsample/resample. Epsilon_dynamic_mean, etc. are only used with two latent inputs and a mask. Blend/hard_light/mean/mean_std etc. require low strengths, start with 0.01-0.02."}),
                     "channelwise_mode":     ("BOOLEAN",                                   {"default": True}),
                     "projection_mode":      ("BOOLEAN",                                   {"default": True}),
                     "weight":               ("FLOAT",                                     {"default": 0.75, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Set the strength of the guide."}),
@@ -1545,7 +1545,7 @@ class ClownGuides_Beta:
     def INPUT_TYPES(cls):
         return {"required":
                     {
-                    "guide_mode":                  (GUIDE_MODE_NAMES_BETA_SIMPLE,                {"default": 'epsilon',                                                      "tooltip": "Recommended: epsilon or mean/mean_std with sampler_mode = standard, and unsample/resample with sampler_mode = unsample/resample. Epsilon_dynamic_mean, etc. are only used with two latent inputs and a mask. Blend/hard_light/mean/mean_std etc. require low strengths, start with 0.01-0.02."}),
+                    "guide_mode":                  (GUIDE_MODE_NAMES_SIMPLE,                {"default": 'epsilon',                                                      "tooltip": "Recommended: epsilon or mean/mean_std with sampler_mode = standard, and unsample/resample with sampler_mode = unsample/resample. Epsilon_dynamic_mean, etc. are only used with two latent inputs and a mask. Blend/hard_light/mean/mean_std etc. require low strengths, start with 0.01-0.02."}),
                     "channelwise_mode":            ("BOOLEAN",                                   {"default": True}),
                     "projection_mode":             ("BOOLEAN",                                   {"default": True}),
                     "weight_masked":               ("FLOAT",                                     {"default": 0.75, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Set the strength of the guide."}),
@@ -1694,7 +1694,7 @@ class ClownGuidesAB_Beta:
     def INPUT_TYPES(cls):
         return {"required":
                     {
-                    "guide_mode":         (GUIDE_MODE_NAMES_BETA_SIMPLE,                {"default": 'epsilon',                                                      "tooltip": "Recommended: epsilon or mean/mean_std with sampler_mode = standard, and unsample/resample with sampler_mode = unsample/resample. Epsilon_dynamic_mean, etc. are only used with two latent inputs and a mask. Blend/hard_light/mean/mean_std etc. require low strengths, start with 0.01-0.02."}),
+                    "guide_mode":         (GUIDE_MODE_NAMES_SIMPLE,                {"default": 'epsilon',                                                      "tooltip": "Recommended: epsilon or mean/mean_std with sampler_mode = standard, and unsample/resample with sampler_mode = unsample/resample. Epsilon_dynamic_mean, etc. are only used with two latent inputs and a mask. Blend/hard_light/mean/mean_std etc. require low strengths, start with 0.01-0.02."}),
                     "channelwise_mode":   ("BOOLEAN",                                   {"default": False}),
                     "projection_mode":    ("BOOLEAN",                                   {"default": False}),
                     "weight_A":           ("FLOAT",                                     {"default": 0.75, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Set the strength of the guide."}),

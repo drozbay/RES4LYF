@@ -148,6 +148,8 @@ class LatentGuide:
         self.self_refine_epsilon_last_step = -1
         self.self_refine_epsilon_last_row = -1
         self.self_refine_epsilon_call_count = 0  # Track calls per (step, row)
+        self.self_refine_threshold     = 0.25
+        self.self_refine_metric        = "l1"
         
         self.lgw                       = torch.full_like(sigmas, 0., dtype=dtype) 
         self.lgw_inv                   = torch.full_like(sigmas, 0., dtype=dtype)
@@ -250,7 +252,10 @@ class LatentGuide:
             else:
                 self.SAMPLE   = True
                 self.UNSAMPLE = False
-            
+    
+            self.self_refine_threshold       = guides.get("self_refine_threshold", self.EO("self_refine_threshold", 0.25))
+            self.self_refine_metric          = guides.get("self_refine_metric",    self.EO("self_refine_metric", "l1")).lower()
+
             latent_guide_weight              = guides.get("weight_masked",           0.)
             latent_guide_weight_inv          = guides.get("weight_unmasked",         0.)
             latent_guide_weight_sync         = guides.get("weight_masked_sync",      0.)
@@ -1018,8 +1023,8 @@ class LatentGuide:
         When invert_mask=False (default): guide CERTAIN (low-diff/stable) regions
         When invert_mask=True: guide UNCERTAIN (high-diff/changing) regions
         """
-        threshold = self.EO("self_refine_epsilon_threshold", 0.2)
-        metric = self.EO("self_refine_epsilon_metric", "l2")  # "l1" or "l2"
+        threshold = self.self_refine_threshold
+        metric = self.self_refine_metric
 
         if metric == "l2":
             # Normalized L2 (Euclidean distance per pixel, normalized by channel count)

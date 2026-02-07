@@ -8,21 +8,20 @@ IMPLICIT_TYPE_NAMES = [
     "predictor-corrector",
 ]
 
-
-
-
-GUIDE_MODE_NAMES_BETA_SIMPLE = [
+GUIDE_MODE_NAMES_SIMPLE = [
     "flow",
     "sync",
     "lure",
     "data",
     "epsilon",
-    "self_refine_epsilon",
-    "self_refine_pseudoimplicit",
     "inversion",
     "pseudoimplicit",
     "fully_pseudoimplicit",
-    "none",
+]
+
+GUIDE_MODE_NAMES_SELF_REFINE = [
+    "self_refine_epsilon",
+    "self_refine_pseudoimplicit",
 ]
 
 FRAME_WEIGHTS_CONFIG_NAMES = [
@@ -40,7 +39,6 @@ FRAME_WEIGHTS_DYNAMICS_NAMES = [
     "trough",
 ]
 
-
 FRAME_WEIGHTS_SCHEDULE_NAMES = [
     "moderate_early",
     "moderate_late",
@@ -49,8 +47,6 @@ FRAME_WEIGHTS_SCHEDULE_NAMES = [
     "slow_early",
     "slow_late",
 ]
-
-
 
 GUIDE_MODE_NAMES_PSEUDOIMPLICIT = [
     "pseudoimplicit",

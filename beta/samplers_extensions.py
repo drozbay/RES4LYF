@@ -15,7 +15,7 @@ from .rk_coefficients_beta   import RK_SAMPLER_NAMES_BETA_FOLDERS, get_default_s
 
 from .noise_classes          import NOISE_GENERATOR_NAMES_SIMPLE
 from .rk_noise_sampler_beta  import NOISE_MODE_NAMES
-from .constants              import IMPLICIT_TYPE_NAMES, GUIDE_MODE_NAMES_BETA_SIMPLE, MAX_STEPS, FRAME_WEIGHTS_CONFIG_NAMES, FRAME_WEIGHTS_DYNAMICS_NAMES, FRAME_WEIGHTS_SCHEDULE_NAMES
+from .constants              import IMPLICIT_TYPE_NAMES, GUIDE_MODE_NAMES_SIMPLE, GUIDE_MODE_NAMES_SELF_REFINE, MAX_STEPS, FRAME_WEIGHTS_CONFIG_NAMES, FRAME_WEIGHTS_DYNAMICS_NAMES, FRAME_WEIGHTS_SCHEDULE_NAMES
 
 
 class ClownSamplerSelector_Beta:
@@ -2161,7 +2161,7 @@ class ClownGuide_Beta:
     def INPUT_TYPES(cls):
         return {"required":
                     {
-                    "guide_mode":           (GUIDE_MODE_NAMES_BETA_SIMPLE,       {"default": 'epsilon',                                                      "tooltip": "Recommended: epsilon or mean/mean_std with sampler_mode = standard, and unsample/resample with sampler_mode = unsample/resample. Epsilon_dynamic_mean, etc. are only used with two latent inputs and a mask. Blend/hard_light/mean/mean_std etc. require low strengths, start with 0.01-0.02."}),
+                    "guide_mode":           (GUIDE_MODE_NAMES_SIMPLE + GUIDE_MODE_NAMES_SELF_REFINE,       {"default": 'epsilon', "tooltip": "Completely undocumented guide mode."}),
                     "channelwise_mode":     ("BOOLEAN",                                   {"default": True}),
                     "projection_mode":      ("BOOLEAN",                                   {"default": True}),
                     "weight":               ("FLOAT",                                     {"default": 0.75, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Set the strength of the guide."}),
@@ -2256,234 +2256,12 @@ class ClownGuide_Beta:
 
         return (guides, )
 
-
-        #return (guides[0], )
-
-
-
-
-class ClownGuides_ComponentMask:
-    """Creates a flat mask for packed/NestedTensor latents to target specific components (video, audio, etc.)."""
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "latent": ("LATENT", {"tooltip": "Latent with latent_shapes (from packed NestedTensor) to determine component boundaries"}),
-                "start_time": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 10000.0, "step": 0.01, "tooltip": "Start time in seconds"}),
-                "end_time": ("FLOAT", {"default": 10.0, "min": 0.0, "max": 10000.0, "step": 0.01, "tooltip": "End time in seconds"}),
-                "video_fps": ("FLOAT", {"default": 24.0, "min": 0.1, "max": 500.0, "step": 0.1, "tooltip": "Video frames per second"}),
-                "audio_samples_per_second": ("FLOAT", {"default": 16000.0, "min": 1.0, "max": 200000.0, "step": 1.0, "tooltip": "Audio sample rate (16000 for LTX-2)"}),
-                "mask_video": ("BOOLEAN", {"default": True, "tooltip": "Apply mask to video component"}),
-                "mask_audio": ("BOOLEAN", {"default": False, "tooltip": "Apply mask to audio component"}),
-                "video_init_value": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Initial mask value for video (outside time range)"}),
-                "audio_init_value": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Initial mask value for audio (outside time range)"}),
-                "video_temporal_compression": ("INT", {"default": 8, "min": 1, "max": 16, "step": 1, "tooltip": "Temporal compression ratio (8 for LTX-2, 4 for Wan)"}),
-                "audio_latent_downsample": ("INT", {"default": 640, "min": 1, "max": 2048, "step": 1, "tooltip": "Audio latent downsampling (640 for LTX-2: mel_hop_length=160 * downsample_factor=4)"}),
-            },
-            "optional": {
-                "spatial_mask": ("MASK", {"tooltip": "Optional spatial mask. Single [H,W] broadcasts to all frames. Batch [T,H,W] applies per-frame with temporal interpolation to match frame count."}),
-            },
-        }
-
-    RETURN_TYPES = ("MASK",)
-    RETURN_NAMES = ("mask",)
-    FUNCTION = "main"
-    CATEGORY = "RES4LYF/sampler_extensions"
-    DESCRIPTION = "Creates a flat mask for packed latents (NestedTensor) to target video/audio components by time range."
-
-    def main(
-        self,
-        latent,
-        start_time,
-        end_time,
-        video_fps,
-        audio_samples_per_second,
-        mask_video,
-        mask_audio,
-        video_init_value,
-        audio_init_value,
-        video_temporal_compression,
-        audio_latent_downsample,
-        spatial_mask=None,
-    ):
-        from comfy.nested_tensor import NestedTensor
-
-        samples = latent["samples"]
-        latent_shapes = latent.get("latent_shapes", None)
-
-        # Handle NestedTensor input
-        flatten_output = False
-        if isinstance(samples, NestedTensor):
-            tensors = samples.tensors
-            video_shape = tuple(tensors[0].shape)
-            audio_shape = tuple(tensors[1].shape) if len(tensors) > 1 else None
-            sample_dtype = tensors[0].dtype
-            sample_device = tensors[0].device
-            flatten_output = True
-        elif latent_shapes is None:
-            if hasattr(samples, 'ndim') and samples.ndim == 3:
-                raise ValueError("Flat latent without latent_shapes - cannot determine component boundaries. Use a NestedTensor latent.")
-            video_shape = tuple(samples.shape)
-            audio_shape = None
-            sample_dtype = samples.dtype
-            sample_device = samples.device
-        else:
-            video_shape = tuple(latent_shapes[0])
-            audio_shape = tuple(latent_shapes[1]) if len(latent_shapes) > 1 else None
-            sample_dtype = samples.dtype
-            sample_device = samples.device
-            flatten_output = True
-
-        video_latent_frames = video_shape[2] if len(video_shape) == 5 else 1
-        video_latents_per_second = video_fps / video_temporal_compression
-        audio_latents_per_second = audio_samples_per_second / audio_latent_downsample if audio_shape is not None else 0
-
-        video_mask = torch.full(video_shape, fill_value=video_init_value, dtype=sample_dtype, device=sample_device)
-
-        if audio_shape is not None:
-            audio_mask = torch.full(audio_shape, fill_value=audio_init_value, dtype=sample_dtype, device=sample_device)
-
-        if mask_video and len(video_shape) == 5:
-            video_pixel_frame_count = (video_latent_frames - 1) * video_temporal_compression + 1
-            xp = [0] + list(range(1, video_pixel_frame_count + video_temporal_compression, video_temporal_compression))
-
-            video_pixel_start = int(round(start_time * video_fps))
-            video_pixel_end = int(round(end_time * video_fps))
-
-            import numpy as np
-            xp_arr = np.array(xp)
-            video_latent_start = int(np.searchsorted(xp_arr, video_pixel_start, side="left"))
-            video_latent_end = int(np.searchsorted(xp_arr, video_pixel_end, side="right") - 1)
-
-            video_latent_start = max(0, min(video_latent_start, video_latent_frames))
-            video_latent_end = max(0, min(video_latent_end, video_latent_frames))
-
-            if spatial_mask is not None:
-                target_frames = video_latent_end - video_latent_start
-                target_h, target_w = video_shape[3], video_shape[4]
-
-                # Determine if mask has temporal dimension
-                if spatial_mask.ndim == 2:
-                    # [H, W] → single mask, broadcast to all frames
-                    spatial_mask = spatial_mask.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
-                    spatial_mask = torch.nn.functional.interpolate(
-                        spatial_mask.to(sample_dtype),
-                        size=(target_h, target_w),
-                        mode="bilinear",
-                        align_corners=False,
-                    ).to(sample_device)
-                    video_mask[:, :, video_latent_start:video_latent_end, :, :] = spatial_mask.unsqueeze(2)
-                elif spatial_mask.ndim == 3:
-                    # [T, H, W] → per-frame masks
-                    mask_frames = spatial_mask.shape[0]
-                    if mask_frames == 1:
-                        # Single frame, broadcast
-                        spatial_mask = spatial_mask.unsqueeze(0)  # [1, 1, H, W]
-                        spatial_mask = torch.nn.functional.interpolate(
-                            spatial_mask.to(sample_dtype),
-                            size=(target_h, target_w),
-                            mode="bilinear",
-                            align_corners=False,
-                        ).to(sample_device)
-                        video_mask[:, :, video_latent_start:video_latent_end, :, :] = spatial_mask.unsqueeze(2)
-                    else:
-                        # Multiple frames - interpolate spatially first, then temporally
-                        # [T, H, W] → [T, 1, H, W] for batch interpolation
-                        spatial_mask = spatial_mask.unsqueeze(1).to(sample_dtype)  # [T, 1, H, W]
-                        spatial_mask = torch.nn.functional.interpolate(
-                            spatial_mask,
-                            size=(target_h, target_w),
-                            mode="bilinear",
-                            align_corners=False,
-                        )  # [T, 1, target_h, target_w]
-                        # Now interpolate temporally: [T, 1, H, W] → [target_frames, 1, H, W]
-                        if mask_frames != target_frames:
-                            # Reshape for temporal interpolation: [1, 1, T, H*W]
-                            spatial_mask = spatial_mask.squeeze(1)  # [T, H, W]
-                            spatial_mask = spatial_mask.reshape(1, 1, mask_frames, -1)  # [1, 1, T, H*W]
-                            spatial_mask = torch.nn.functional.interpolate(
-                                spatial_mask,
-                                size=(target_frames, target_h * target_w),
-                                mode="bilinear",
-                                align_corners=False,
-                            )  # [1, 1, target_frames, H*W]
-                            spatial_mask = spatial_mask.reshape(1, 1, target_frames, target_h, target_w)
-                        else:
-                            spatial_mask = spatial_mask.squeeze(1).unsqueeze(0).unsqueeze(0)  # [1, 1, T, H, W]
-                        video_mask[:, :, video_latent_start:video_latent_end, :, :] = spatial_mask.to(sample_device)
-                else:
-                    # 4D [B, T, H, W] - use first batch
-                    spatial_mask = spatial_mask[0] if spatial_mask.shape[0] > 0 else spatial_mask.squeeze(0)
-                    mask_frames = spatial_mask.shape[0]
-                    spatial_mask = spatial_mask.unsqueeze(1).to(sample_dtype)  # [T, 1, H, W]
-                    spatial_mask = torch.nn.functional.interpolate(
-                        spatial_mask,
-                        size=(target_h, target_w),
-                        mode="bilinear",
-                        align_corners=False,
-                    )
-                    if mask_frames != target_frames:
-                        spatial_mask = spatial_mask.squeeze(1).reshape(1, 1, mask_frames, -1)
-                        spatial_mask = torch.nn.functional.interpolate(
-                            spatial_mask,
-                            size=(target_frames, target_h * target_w),
-                            mode="bilinear",
-                            align_corners=False,
-                        )
-                        spatial_mask = spatial_mask.reshape(1, 1, target_frames, target_h, target_w)
-                    else:
-                        spatial_mask = spatial_mask.squeeze(1).unsqueeze(0).unsqueeze(0)
-                    video_mask[:, :, video_latent_start:video_latent_end, :, :] = spatial_mask.to(sample_device)
-            else:
-                video_mask[:, :, video_latent_start:video_latent_end, :, :] = 1.0
-        elif mask_video:
-            if spatial_mask is not None:
-                if spatial_mask.ndim == 2:
-                    spatial_mask = spatial_mask.unsqueeze(0).unsqueeze(0)
-                elif spatial_mask.ndim == 3:
-                    spatial_mask = spatial_mask.unsqueeze(0)
-                video_mask = torch.nn.functional.interpolate(
-                    spatial_mask.to(sample_dtype),
-                    size=(video_shape[-2], video_shape[-1]),
-                    mode="bilinear",
-                    align_corners=False,
-                ).to(sample_device)
-            else:
-                video_mask.fill_(1.0)
-
-        if mask_audio and audio_shape is not None:
-            audio_latent_frames = audio_shape[2] if len(audio_shape) >= 3 else 1
-            audio_latent_start = int(round(start_time * audio_latents_per_second))
-            audio_latent_end = int(round(end_time * audio_latents_per_second)) + 1
-
-            audio_latent_start = max(0, min(audio_latent_start, audio_latent_frames))
-            audio_latent_end = max(0, min(audio_latent_end, audio_latent_frames))
-
-            if len(audio_shape) >= 3:
-                audio_mask[:, :, audio_latent_start:audio_latent_end] = 1.0
-            else:
-                audio_mask.fill_(1.0)
-
-        if flatten_output:
-            video_flat = video_mask.reshape(1, 1, -1)
-            if audio_shape is not None:
-                audio_flat = audio_mask.reshape(1, 1, -1)
-                mask_out = torch.cat([video_flat, audio_flat], dim=-1)
-            else:
-                mask_out = video_flat
-        else:
-            mask_out = video_mask
-
-        return (mask_out,)
-
-
 class ClownGuides_Beta:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required":
                     {
-                    "guide_mode":                  (GUIDE_MODE_NAMES_BETA_SIMPLE,                {"default": 'epsilon',                                                      "tooltip": "Recommended: epsilon or mean/mean_std with sampler_mode = standard, and unsample/resample with sampler_mode = unsample/resample. Epsilon_dynamic_mean, etc. are only used with two latent inputs and a mask. Blend/hard_light/mean/mean_std etc. require low strengths, start with 0.01-0.02."}),
+                    "guide_mode":                  (GUIDE_MODE_NAMES_SIMPLE + GUIDE_MODE_NAMES_SELF_REFINE, {"default": 'epsilon',                                                      "tooltip": "Completely undocumented guide mode."}),
                     "channelwise_mode":            ("BOOLEAN",                                   {"default": True}),
                     "projection_mode":             ("BOOLEAN",                                   {"default": True}),
                     "weight_masked":               ("FLOAT",                                     {"default": 0.75, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Set the strength of the guide."}),
@@ -2628,8 +2406,84 @@ class ClownGuides_Beta:
         
         
         return (guides, )
+    
 
+class ClownGuide_SelfRefine:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required":
+                {
+                "guide_mode":           (GUIDE_MODE_NAMES_SELF_REFINE,                {"default": 'self_refine_epsilon', "tooltip": "Self-refine guide mode."}),
+                "channelwise_mode":     ("BOOLEAN",                                   {"default": False}),
+                "projection_mode":      ("BOOLEAN",                                   {"default": False}),
+                "weight":               ("FLOAT",                                     {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Set the strength of the guide."}),
+                "weight_scheduler":     (["constant"] + get_res4lyf_scheduler_list(), {"default": "constant"},),
+                "self_refine_threshold":("FLOAT",                                     {"default": 0.25, "min": 0.0, "max": 1.0, "step":0.01, "round": False, "tooltip": "Self-refine threshold for masking."}),
+                "self_refine_metric":   (["L1", "L2"],                                {"default": "L1", "tooltip": "Self-refine metric for thresholding."}),
+                "start_step":           ("INT",                                       {"default": 0,    "min":  0,      "max": 10000}),
+                "end_step":             ("INT",                                       {"default": 15,   "min": -1,      "max": 10000}),
+                "invert_masks":         ("BOOLEAN",                                   {"default": False}),
+                },
+            "optional":
+                {
+                "mask":             ("MASK", ),
+                "weights":          ("SIGMAS", ),
+                }
+        }
 
+    RETURN_TYPES = ("GUIDES",)
+    RETURN_NAMES = ("guides",)
+    FUNCTION = "main"
+    CATEGORY = "RES4LYF/sampler_extensions"
+
+    def main(self,
+            guide_mode                = "self_refine_epsilon",
+            channelwise_mode          = False,
+            projection_mode           = False,
+            weight                    = 1.0,
+            weight_scheduler          = "constant",
+            self_refine_threshold     = 0.25,
+            self_refine_metric        = "L1",
+            start_step                = 0,
+            end_step                  = 15,
+            invert_masks              = False,
+            mask                      = None,
+            weights                   = None,
+            ):
+
+        CG = ClownGuides_Beta()
+
+        if end_step == -1:
+            end_step = MAX_STEPS
+
+        guides, = CG.main(
+            weight_scheduler_masked   = weight_scheduler,
+            weight_scheduler_unmasked = "constant",
+            start_step_masked         = start_step,
+            start_step_unmasked       = 0,
+            end_step_masked           = end_step,
+            end_step_unmasked         = 0,
+            cutoff_masked             = 1.0,
+            cutoff_unmasked           = 1.0,
+            guide_masked              = None,
+            guide_unmasked            = None,
+            weight_masked             = weight,
+            weight_unmasked           = 0.0,
+
+            guide_mode                = guide_mode,
+            channelwise_mode          = channelwise_mode,
+            projection_mode           = projection_mode,
+            weights_masked            = weights,
+            weights_unmasked          = None,
+            mask                      = mask,
+            unmask                    = None,
+            invert_mask               = invert_masks,
+        )
+
+        guides["self_refine_threshold"] = self_refine_threshold
+        guides["self_refine_metric"]    = self_refine_metric.lower()
+
+        return (guides, )
 
 
 class ClownGuidesAB_Beta:
@@ -2637,7 +2491,7 @@ class ClownGuidesAB_Beta:
     def INPUT_TYPES(cls):
         return {"required":
                     {
-                    "guide_mode":         (GUIDE_MODE_NAMES_BETA_SIMPLE,                {"default": 'epsilon',                                                      "tooltip": "Recommended: epsilon or mean/mean_std with sampler_mode = standard, and unsample/resample with sampler_mode = unsample/resample. Epsilon_dynamic_mean, etc. are only used with two latent inputs and a mask. Blend/hard_light/mean/mean_std etc. require low strengths, start with 0.01-0.02."}),
+                    "guide_mode":         (GUIDE_MODE_NAMES_SIMPLE + GUIDE_MODE_NAMES_SELF_REFINE, {"default": 'epsilon', "tooltip": "Completely undocumented guide mode."}),
                     "channelwise_mode":   ("BOOLEAN",                                   {"default": False}),
                     "projection_mode":    ("BOOLEAN",                                   {"default": False}),
                     "weight_A":           ("FLOAT",                                     {"default": 0.75, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Set the strength of the guide."}),
@@ -4908,4 +4762,221 @@ class ClownStyle_TransformerBlock_UNet:
         return (blocks, )
 
 
+
+
+
+class ClownGuides_ComponentMask:
+    """Creates a flat mask for packed/NestedTensor latents to target specific components (video, audio, etc.)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "latent": ("LATENT", {"tooltip": "Latent with latent_shapes (from packed NestedTensor) to determine component boundaries"}),
+                "start_time": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 10000.0, "step": 0.01, "tooltip": "Start time in seconds"}),
+                "end_time": ("FLOAT", {"default": 10.0, "min": 0.0, "max": 10000.0, "step": 0.01, "tooltip": "End time in seconds"}),
+                "video_fps": ("FLOAT", {"default": 24.0, "min": 0.1, "max": 500.0, "step": 0.1, "tooltip": "Video frames per second"}),
+                "audio_samples_per_second": ("FLOAT", {"default": 16000.0, "min": 1.0, "max": 200000.0, "step": 1.0, "tooltip": "Audio sample rate (16000 for LTX-2)"}),
+                "mask_video": ("BOOLEAN", {"default": True, "tooltip": "Apply mask to video component"}),
+                "mask_audio": ("BOOLEAN", {"default": False, "tooltip": "Apply mask to audio component"}),
+                "video_init_value": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Initial mask value for video (outside time range)"}),
+                "audio_init_value": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Initial mask value for audio (outside time range)"}),
+                "video_temporal_compression": ("INT", {"default": 8, "min": 1, "max": 16, "step": 1, "tooltip": "Temporal compression ratio (8 for LTX-2, 4 for Wan)"}),
+                "audio_latent_downsample": ("INT", {"default": 640, "min": 1, "max": 2048, "step": 1, "tooltip": "Audio latent downsampling (640 for LTX-2: mel_hop_length=160 * downsample_factor=4)"}),
+            },
+            "optional": {
+                "spatial_mask": ("MASK", {"tooltip": "Optional spatial mask. Single [H,W] broadcasts to all frames. Batch [T,H,W] applies per-frame with temporal interpolation to match frame count."}),
+            },
+        }
+
+    RETURN_TYPES = ("MASK",)
+    RETURN_NAMES = ("mask",)
+    FUNCTION = "main"
+    CATEGORY = "RES4LYF/sampler_extensions"
+    DESCRIPTION = "Creates a flat mask for packed latents (NestedTensor) to target video/audio components by time range."
+
+    def main(
+        self,
+        latent,
+        start_time,
+        end_time,
+        video_fps,
+        audio_samples_per_second,
+        mask_video,
+        mask_audio,
+        video_init_value,
+        audio_init_value,
+        video_temporal_compression,
+        audio_latent_downsample,
+        spatial_mask=None,
+    ):
+        from comfy.nested_tensor import NestedTensor
+
+        samples = latent["samples"]
+        latent_shapes = latent.get("latent_shapes", None)
+
+        # Handle NestedTensor input
+        flatten_output = False
+        if isinstance(samples, NestedTensor):
+            tensors = samples.tensors
+            video_shape = tuple(tensors[0].shape)
+            audio_shape = tuple(tensors[1].shape) if len(tensors) > 1 else None
+            sample_dtype = tensors[0].dtype
+            sample_device = tensors[0].device
+            flatten_output = True
+        elif latent_shapes is None:
+            if hasattr(samples, 'ndim') and samples.ndim == 3:
+                raise ValueError("Flat latent without latent_shapes - cannot determine component boundaries. Use a NestedTensor latent.")
+            video_shape = tuple(samples.shape)
+            audio_shape = None
+            sample_dtype = samples.dtype
+            sample_device = samples.device
+        else:
+            video_shape = tuple(latent_shapes[0])
+            audio_shape = tuple(latent_shapes[1]) if len(latent_shapes) > 1 else None
+            sample_dtype = samples.dtype
+            sample_device = samples.device
+            flatten_output = True
+
+        video_latent_frames = video_shape[2] if len(video_shape) == 5 else 1
+        video_latents_per_second = video_fps / video_temporal_compression
+        audio_latents_per_second = audio_samples_per_second / audio_latent_downsample if audio_shape is not None else 0
+
+        video_mask = torch.full(video_shape, fill_value=video_init_value, dtype=sample_dtype, device=sample_device)
+
+        if audio_shape is not None:
+            audio_mask = torch.full(audio_shape, fill_value=audio_init_value, dtype=sample_dtype, device=sample_device)
+
+        if mask_video and len(video_shape) == 5:
+            video_pixel_frame_count = (video_latent_frames - 1) * video_temporal_compression + 1
+            xp = [0] + list(range(1, video_pixel_frame_count + video_temporal_compression, video_temporal_compression))
+
+            video_pixel_start = int(round(start_time * video_fps))
+            video_pixel_end = int(round(end_time * video_fps))
+
+            import numpy as np
+            xp_arr = np.array(xp)
+            video_latent_start = int(np.searchsorted(xp_arr, video_pixel_start, side="left"))
+            video_latent_end = int(np.searchsorted(xp_arr, video_pixel_end, side="right") - 1)
+
+            video_latent_start = max(0, min(video_latent_start, video_latent_frames))
+            video_latent_end = max(0, min(video_latent_end, video_latent_frames))
+
+            if spatial_mask is not None:
+                target_frames = video_latent_end - video_latent_start
+                target_h, target_w = video_shape[3], video_shape[4]
+
+                # Determine if mask has temporal dimension
+                if spatial_mask.ndim == 2:
+                    # [H, W] → single mask, broadcast to all frames
+                    spatial_mask = spatial_mask.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
+                    spatial_mask = torch.nn.functional.interpolate(
+                        spatial_mask.to(sample_dtype),
+                        size=(target_h, target_w),
+                        mode="bilinear",
+                        align_corners=False,
+                    ).to(sample_device)
+                    video_mask[:, :, video_latent_start:video_latent_end, :, :] = spatial_mask.unsqueeze(2)
+                elif spatial_mask.ndim == 3:
+                    # [T, H, W] → per-frame masks
+                    mask_frames = spatial_mask.shape[0]
+                    if mask_frames == 1:
+                        # Single frame, broadcast
+                        spatial_mask = spatial_mask.unsqueeze(0)  # [1, 1, H, W]
+                        spatial_mask = torch.nn.functional.interpolate(
+                            spatial_mask.to(sample_dtype),
+                            size=(target_h, target_w),
+                            mode="bilinear",
+                            align_corners=False,
+                        ).to(sample_device)
+                        video_mask[:, :, video_latent_start:video_latent_end, :, :] = spatial_mask.unsqueeze(2)
+                    else:
+                        # Multiple frames - interpolate spatially first, then temporally
+                        # [T, H, W] → [T, 1, H, W] for batch interpolation
+                        spatial_mask = spatial_mask.unsqueeze(1).to(sample_dtype)  # [T, 1, H, W]
+                        spatial_mask = torch.nn.functional.interpolate(
+                            spatial_mask,
+                            size=(target_h, target_w),
+                            mode="bilinear",
+                            align_corners=False,
+                        )  # [T, 1, target_h, target_w]
+                        # Now interpolate temporally: [T, 1, H, W] → [target_frames, 1, H, W]
+                        if mask_frames != target_frames:
+                            # Reshape for temporal interpolation: [1, 1, T, H*W]
+                            spatial_mask = spatial_mask.squeeze(1)  # [T, H, W]
+                            spatial_mask = spatial_mask.reshape(1, 1, mask_frames, -1)  # [1, 1, T, H*W]
+                            spatial_mask = torch.nn.functional.interpolate(
+                                spatial_mask,
+                                size=(target_frames, target_h * target_w),
+                                mode="bilinear",
+                                align_corners=False,
+                            )  # [1, 1, target_frames, H*W]
+                            spatial_mask = spatial_mask.reshape(1, 1, target_frames, target_h, target_w)
+                        else:
+                            spatial_mask = spatial_mask.squeeze(1).unsqueeze(0).unsqueeze(0)  # [1, 1, T, H, W]
+                        video_mask[:, :, video_latent_start:video_latent_end, :, :] = spatial_mask.to(sample_device)
+                else:
+                    # 4D [B, T, H, W] - use first batch
+                    spatial_mask = spatial_mask[0] if spatial_mask.shape[0] > 0 else spatial_mask.squeeze(0)
+                    mask_frames = spatial_mask.shape[0]
+                    spatial_mask = spatial_mask.unsqueeze(1).to(sample_dtype)  # [T, 1, H, W]
+                    spatial_mask = torch.nn.functional.interpolate(
+                        spatial_mask,
+                        size=(target_h, target_w),
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+                    if mask_frames != target_frames:
+                        spatial_mask = spatial_mask.squeeze(1).reshape(1, 1, mask_frames, -1)
+                        spatial_mask = torch.nn.functional.interpolate(
+                            spatial_mask,
+                            size=(target_frames, target_h * target_w),
+                            mode="bilinear",
+                            align_corners=False,
+                        )
+                        spatial_mask = spatial_mask.reshape(1, 1, target_frames, target_h, target_w)
+                    else:
+                        spatial_mask = spatial_mask.squeeze(1).unsqueeze(0).unsqueeze(0)
+                    video_mask[:, :, video_latent_start:video_latent_end, :, :] = spatial_mask.to(sample_device)
+            else:
+                video_mask[:, :, video_latent_start:video_latent_end, :, :] = 1.0
+        elif mask_video:
+            if spatial_mask is not None:
+                if spatial_mask.ndim == 2:
+                    spatial_mask = spatial_mask.unsqueeze(0).unsqueeze(0)
+                elif spatial_mask.ndim == 3:
+                    spatial_mask = spatial_mask.unsqueeze(0)
+                video_mask = torch.nn.functional.interpolate(
+                    spatial_mask.to(sample_dtype),
+                    size=(video_shape[-2], video_shape[-1]),
+                    mode="bilinear",
+                    align_corners=False,
+                ).to(sample_device)
+            else:
+                video_mask.fill_(1.0)
+
+        if mask_audio and audio_shape is not None:
+            audio_latent_frames = audio_shape[2] if len(audio_shape) >= 3 else 1
+            audio_latent_start = int(round(start_time * audio_latents_per_second))
+            audio_latent_end = int(round(end_time * audio_latents_per_second)) + 1
+
+            audio_latent_start = max(0, min(audio_latent_start, audio_latent_frames))
+            audio_latent_end = max(0, min(audio_latent_end, audio_latent_frames))
+
+            if len(audio_shape) >= 3:
+                audio_mask[:, :, audio_latent_start:audio_latent_end] = 1.0
+            else:
+                audio_mask.fill_(1.0)
+
+        if flatten_output:
+            video_flat = video_mask.reshape(1, 1, -1)
+            if audio_shape is not None:
+                audio_flat = audio_mask.reshape(1, 1, -1)
+                mask_out = torch.cat([video_flat, audio_flat], dim=-1)
+            else:
+                mask_out = video_flat
+        else:
+            mask_out = video_mask
+
+        return (mask_out,)
 
