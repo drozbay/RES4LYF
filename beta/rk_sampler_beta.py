@@ -179,9 +179,11 @@ def sample_rk_beta(
 
         implicit_type                 : str                = "predictor-corrector",
         implicit_type_substeps        : str                = "predictor-corrector",
-        
+
         implicit_steps_diag           : int                =  0,
         implicit_steps_full           : int                =  0,
+
+        implicit_schedules            : list               = [],
 
         etas                          : Optional[Tensor]   = None,
         etas_substep                  : Optional[Tensor]   = None,
@@ -623,9 +625,14 @@ def sample_rk_beta(
             step_sched = step
 
         rk_type, swapped = RK.swap_rk_type_at_step_or_threshold(x_0, data_prev_, NS, sigmas, step, step_sched, rk_swaps)
-        if swapped:
-            implicit_steps_full = 0
-            implicit_steps_diag = 0
+
+        for sched in implicit_schedules:
+            end = sched['end']
+            if sched['start'] <= step_sched and (end == -1 or step_sched < end):
+                implicit_steps_full    = sched['steps']
+                implicit_steps_diag    = sched['substeps']
+                implicit_type          = sched['type']
+                implicit_type_substeps = sched['type_sub']
 
         SYNC_GUIDE_ACTIVE = LG.guide_mode.startswith("sync") and (LG.lgw[step_sched] != 0 or LG.lgw_inv[step_sched] != 0 or LG.lgw_sync[step_sched] != 0 or LG.lgw_sync_inv[step_sched] != 0)
         
