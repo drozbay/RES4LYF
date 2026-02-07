@@ -314,7 +314,10 @@ def sample_rk_beta(
     noise_seed_substep          = EO("noise_seed_substep"         , noise_seed + MAX_STEPS)
     
     pseudoimplicit_row_weights  = EO("pseudoimplicit_row_weights" , [1. for _ in range(100)])
-    pseudoimplicit_step_weights = EO("pseudoimplicit_step_weights", [1. for _ in range(max(implicit_steps_diag, implicit_steps_full)+1)])
+    max_implicit = max(implicit_steps_diag, implicit_steps_full)
+    for sched in implicit_schedules:
+        max_implicit = max(max_implicit, sched['steps'], sched['substeps'])
+    pseudoimplicit_step_weights = EO("pseudoimplicit_step_weights", [1. for _ in range(max_implicit+1)])
 
     noise_scaling_cycles = EO("noise_scaling_cycles", 1)
     noise_boost_step     = EO("noise_boost_step",     0.0)
