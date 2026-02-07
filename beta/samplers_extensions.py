@@ -2418,11 +2418,11 @@ class ClownGuide_SelfRefine:
                 "projection_mode":      ("BOOLEAN",                                   {"default": False}),
                 "weight":               ("FLOAT",                                     {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Set the strength of the guide."}),
                 "weight_scheduler":     (["constant"] + get_res4lyf_scheduler_list(), {"default": "constant"},),
-                "self_refine_threshold":("FLOAT",                                     {"default": 0.25, "min": 0.0, "max": 1.0, "step":0.01, "round": False, "tooltip": "Self-refine threshold for masking."}),
-                "self_refine_metric":   (["L1", "L2"],                                {"default": "L1", "tooltip": "Self-refine metric for thresholding."}),
                 "start_step":           ("INT",                                       {"default": 0,    "min":  0,      "max": 10000}),
                 "end_step":             ("INT",                                       {"default": 15,   "min": -1,      "max": 10000}),
                 "invert_masks":         ("BOOLEAN",                                   {"default": False}),
+                "self_refine_threshold":("FLOAT",                                     {"default": 0.25, "min": 0.0, "max": 1.0, "step":0.01, "round": False, "tooltip": "Self-refine threshold for masking."}),
+                "self_refine_metric":   (["L1", "L2"],                                {"default": "L1", "tooltip": "Self-refine metric for thresholding."}),
                 },
             "optional":
                 {
@@ -4765,24 +4765,38 @@ class ClownStyle_TransformerBlock_UNet:
 
 
 
-class ClownGuides_ComponentMask:
-    """Creates a flat mask for packed/NestedTensor latents to target specific components (video, audio, etc.)."""
+class ClownGuides_VideoAudioMask:
+    """Creates a flat mask for packed/NestedTensor latents to target video and audio components."""
+
+    MODEL_PRESETS = {
+        "LTXV": {
+            "video_temporal_compression": 8,
+            "audio_samples_per_second": 16000.0,
+            "audio_latent_downsample": 640,
+        },
+        "Wan": {
+            "video_temporal_compression": 4,
+            "audio_samples_per_second": 0.0,
+            "audio_latent_downsample": 1,
+        },
+    }
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
                 "latent": ("LATENT", {"tooltip": "Latent with latent_shapes (from packed NestedTensor) to determine component boundaries"}),
+                "model_type": (list(cls.MODEL_PRESETS.keys()), {"default": "LTXV", "tooltip": "Model type to set temporal compression and audio parameters"}),
                 "start_time": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 10000.0, "step": 0.01, "tooltip": "Start time in seconds"}),
                 "end_time": ("FLOAT", {"default": 10.0, "min": 0.0, "max": 10000.0, "step": 0.01, "tooltip": "End time in seconds"}),
                 "video_fps": ("FLOAT", {"default": 24.0, "min": 0.1, "max": 500.0, "step": 0.1, "tooltip": "Video frames per second"}),
-                "audio_samples_per_second": ("FLOAT", {"default": 16000.0, "min": 1.0, "max": 200000.0, "step": 1.0, "tooltip": "Audio sample rate (16000 for LTX-2)"}),
                 "mask_video": ("BOOLEAN", {"default": True, "tooltip": "Apply mask to video component"}),
                 "mask_audio": ("BOOLEAN", {"default": False, "tooltip": "Apply mask to audio component"}),
                 "video_init_value": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Initial mask value for video (outside time range)"}),
                 "audio_init_value": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Initial mask value for audio (outside time range)"}),
-                "video_temporal_compression": ("INT", {"default": 8, "min": 1, "max": 16, "step": 1, "tooltip": "Temporal compression ratio (8 for LTX-2, 4 for Wan)"}),
-                "audio_latent_downsample": ("INT", {"default": 640, "min": 1, "max": 2048, "step": 1, "tooltip": "Audio latent downsampling (640 for LTX-2: mel_hop_length=160 * downsample_factor=4)"}),
+                #"audio_samples_per_second": ("FLOAT", {"default": 16000.0, "min": 1.0, "max": 200000.0, "step": 1.0, "tooltip": "Audio sample rate (16000 for LTX-2)"}),
+                #"video_temporal_compression": ("INT", {"default": 8, "min": 1, "max": 16, "step": 1, "tooltip": "Temporal compression ratio (8 for LTX-2, 4 for Wan)"}),
+                #"audio_latent_downsample": ("INT", {"default": 640, "min": 1, "max": 2048, "step": 1, "tooltip": "Audio latent downsampling (640 for LTX-2: mel_hop_length=160 * downsample_factor=4)"}),
             },
             "optional": {
                 "spatial_mask": ("MASK", {"tooltip": "Optional spatial mask. Single [H,W] broadcasts to all frames. Batch [T,H,W] applies per-frame with temporal interpolation to match frame count."}),
@@ -4798,19 +4812,28 @@ class ClownGuides_ComponentMask:
     def main(
         self,
         latent,
+        model_type,
         start_time,
         end_time,
         video_fps,
-        audio_samples_per_second,
         mask_video,
         mask_audio,
         video_init_value,
         audio_init_value,
-        video_temporal_compression,
-        audio_latent_downsample,
+        audio_samples_per_second=None,
+        video_temporal_compression=None,
+        audio_latent_downsample=None,
         spatial_mask=None,
     ):
         from comfy.nested_tensor import NestedTensor
+
+        preset = self.MODEL_PRESETS[model_type]
+        if video_temporal_compression is None:
+            video_temporal_compression = preset["video_temporal_compression"]
+        if audio_samples_per_second is None:
+            audio_samples_per_second = preset["audio_samples_per_second"]
+        if audio_latent_downsample is None:
+            audio_latent_downsample = preset["audio_latent_downsample"]
 
         samples = latent["samples"]
         latent_shapes = latent.get("latent_shapes", None)
