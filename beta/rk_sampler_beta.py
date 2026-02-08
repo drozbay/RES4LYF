@@ -1797,7 +1797,19 @@ def sample_rk_beta(
                             eps_prev_, x_ = LG.process_guides_substep(x_0, x_, eps_prev_, data_, denoised_prev, row, step, step_sched, NS.sigma, NS.sigma_next, NS.sigma_down, NS.s_, epsilon_scale, RK, full_iter)
                         
                         if LG.y0_mean is not None and LG.y0_mean.sum() != 0.0:
-                            raise NotImplementedError("y0_mean guide requires spatial structure, incompatible with pack-first")
+                            if x.ndim == 3:  # packed NestedTensor
+                                raise NotImplementedError("y0_mean guide requires spatial structure, incompatible with packed latents")
+
+                            if EO("guide_mean_scattersort"):
+                                data_row_mean = apply_scattersort_spatial(data_[row], LG.y0_mean)
+                                eps_row_mean  = RK.get_eps(x_0, data_row_mean, s_tmp)
+                            else:
+                                eps_row_mean = eps_[row] - eps_[row].mean(dim=(-2,-1), keepdim=True) + (LG.y0_mean - x_0).mean(dim=(-2,-1), keepdim=True)
+
+                            if LG.mask_mean is not None:
+                                eps_row_mean = LG.mask_mean * eps_row_mean + (1-LG.mask_mean) * eps_[row]
+
+                            eps_[row] = eps_[row] + LG.lgw_mean[step_sched] * (eps_row_mean - eps_[row])
                             
                         if (full_iter == 0 and diag_iter == 0)   or   EO("newton_iter_post_use_on_implicit_steps"):
                             x_, eps_ = RK.newton_iter(x_0, x_, eps_, eps_prev_, data_, NS.s_, row, NS.h, sigmas, step, "post", SYNC_GUIDE_ACTIVE)
@@ -2022,7 +2034,9 @@ def sample_rk_beta(
                 x = x_next
             
             if EO("keep_step_means"):
-                raise NotImplementedError("keep_step_means requires spatial structure, incompatible with pack-first")
+                if x.ndim == 3:  # packed NestedTensor
+                    raise NotImplementedError("keep_step_means requires spatial structure, incompatible with packed latents")
+                x = x - x.mean(dim=(-2,-1), keepdim=True) + x_means_per_step
 
             
             callback_step = len(sigmas)-1 - step if sampler_mode == "unsample" else step
@@ -2041,7 +2055,24 @@ def sample_rk_beta(
                 break
 
             if LG.lgw[step_sched] > 0 and step >= EO("guide_cutoff_start_step", 0) and cossim_counter < EO("guide_cutoff_max_iter", 10) and (EO("guide_cutoff") or EO("guide_min")):
-                raise NotImplementedError("guide_cutoff/guide_min requires spatial structure, incompatible with pack-first")
+                if x.ndim == 3:  # packed NestedTensor
+                    raise NotImplementedError("guide_cutoff/guide_min requires spatial structure, incompatible with packed latents")
+                guide_cutoff = EO("guide_cutoff", 1.0)
+                denoised_norm = data_[0] - data_[0].mean(dim=(-2,-1), keepdim=True)
+                y0_norm       = LG.y0    - LG.y0   .mean(dim=(-2,-1), keepdim=True)
+                y0_cossim     = get_cosine_similarity(denoised_norm, y0_norm)
+                if y0_cossim > guide_cutoff and LG.lgw[step_sched] > EO("guide_cutoff_floor", 0.0):
+                    if not EO("guide_cutoff_fast"):
+                        LG.lgw[step_sched] *= EO("guide_cutoff_factor", 0.9)
+                    else:
+                        LG.lgw *= EO("guide_cutoff_factor", 0.9)
+                    full_iter -= 1
+                if y0_cossim < EO("guide_min", 0.0) and LG.lgw[step_sched] < EO("guide_min_ceiling", 1.0):
+                    if not EO("guide_cutoff_fast"):
+                        LG.lgw[step_sched] *= EO("guide_min_factor", 1.1)
+                    else:
+                        LG.lgw *= EO("guide_min_factor", 1.1)
+                    full_iter -= 1
         
         #if EO("smartnoise"): #TODO: determine if this was useful
         #    z_[0] = z_next
@@ -2107,7 +2138,27 @@ def sample_rk_beta(
                 sigmas = sigmas / NS.sigma_max
         
         if LG.lgw[step_sched] > 0 and step >= EO("guide_step_cutoff_start_step", 0) and cossim_counter < EO("guide_step_cutoff_max_iter", 10) and (EO("guide_step_cutoff") or EO("guide_step_min")):
-            raise NotImplementedError("guide_step_cutoff/guide_step_min requires spatial structure, incompatible with pack-first")
+            if x.ndim == 3:  # packed NestedTensor
+                raise NotImplementedError("guide_step_cutoff/guide_step_min requires spatial structure, incompatible with packed latents")
+            guide_cutoff = EO("guide_step_cutoff", 1.0)
+            eps_trash, data_trash = RK(x, sigma_next, x_0, sigma)
+            denoised_norm = data_trash - data_trash.mean(dim=(-2,-1), keepdim=True)
+            y0_norm       = LG.y0    - LG.y0   .mean(dim=(-2,-1), keepdim=True)
+            y0_cossim     = get_cosine_similarity(denoised_norm, y0_norm)
+            if y0_cossim > guide_cutoff and LG.lgw[step_sched] > EO("guide_step_cutoff_floor", 0.0):
+                if not EO("guide_step_cutoff_fast"):
+                    LG.lgw[step_sched] *= EO("guide_step_cutoff_factor", 0.9)
+                else:
+                    LG.lgw *= EO("guide_step_cutoff_factor", 0.9)
+                step -= 1
+                x_0 = x = x_[0] = x_0_orig.clone()
+            if y0_cossim < EO("guide_step_min", 0.0) and LG.lgw[step_sched] < EO("guide_step_min_ceiling", 1.0):
+                if not EO("guide_step_cutoff_fast"):
+                    LG.lgw[step_sched] *= EO("guide_step_min_factor", 1.1)
+                else:
+                    LG.lgw *= EO("guide_step_min_factor", 1.1)
+                step -= 1
+                x_0 = x = x_[0] = x_0_orig.clone()
         # END SAMPLING LOOP ---------------------------------------------------------------------------------------------------
 
     #progress_bar.close()

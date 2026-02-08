@@ -978,7 +978,18 @@ class LatentGuide:
 
     def get_masks_for_step(self, step:int, lgw_type="default") -> Tuple[Tensor, Tensor]:
         lgw_mask, lgw_mask_inv = self.prepare_weighted_masks(step, lgw_type=lgw_type)
-        # PACK-FIRST: Skip frame_weights - all tensors are flat [1,1,N] internally
+        normalize_frame_weights_per_step = self.EO("normalize_frame_weights_per_step")
+        normalize_frame_weights_per_step_inv = self.EO("normalize_frame_weights_per_step_inv")
+
+        if self.VIDEO and self.frame_weights_mgr and lgw_mask.ndim >= 5:
+            num_frames = lgw_mask.shape[2]
+            if self.HAS_LATENT_GUIDE:
+                frame_weights = self.frame_weights_mgr.get_frame_weights_by_name('frame_weights', num_frames, step)
+                apply_frame_weights(lgw_mask, frame_weights, normalize_frame_weights_per_step)
+            if self.HAS_LATENT_GUIDE_INV:
+                frame_weights_inv = self.frame_weights_mgr.get_frame_weights_by_name('frame_weights_inv', num_frames, step)
+                apply_frame_weights(lgw_mask_inv, frame_weights_inv, normalize_frame_weights_per_step_inv)
+
         return lgw_mask.to(self.device), lgw_mask_inv.to(self.device)
 
 
@@ -997,9 +1008,8 @@ class LatentGuide:
         else:
             y0_inv = torch.zeros_like(data_for_cossim)
 
-        # PACK-FIRST EXPERIMENT: Skip per-step guide selection (requires batch dim > 1)
-        if y0.shape[0] > 1:
-            raise NotImplementedError("Per-step guide selection requires batch structure, incompatible with pack-first experiment")
+        if y0.shape[0] > 1:                                    # this is for changing the guide on a per-step basis
+            y0 = y0[min(step, y0.shape[0]-1)].unsqueeze(0)
 
         lgw_mask, lgw_mask_inv = self.get_masks_for_step(step)
 
@@ -1109,11 +1119,11 @@ class LatentGuide:
         if not is_pseudoimplicit_mode or (self.lgw[step_sched] == 0 and self.lgw_inv[step_sched] == 0):
             return x_0, x_, eps_, None, None
 
-        # PACK-FIRST EXPERIMENT: Block channelwise pseudoimplicit modes
-        BLOCKED_PSEUDOIMPLICIT_MODES = {"pseudoimplicit_cw", "pseudoimplicit_projection_cw",
-                                        "fully_pseudoimplicit_cw", "fully_pseudoimplicit_projection_cw"}
-        if self.guide_mode in BLOCKED_PSEUDOIMPLICIT_MODES:
-            raise NotImplementedError(f"Mode '{self.guide_mode}' requires channel structure, incompatible with pack-first experiment")
+        if x_0.ndim == 3:  # packed NestedTensor
+            BLOCKED_PSEUDOIMPLICIT_MODES = {"pseudoimplicit_cw", "pseudoimplicit_projection_cw",
+                                            "fully_pseudoimplicit_cw", "fully_pseudoimplicit_projection_cw"}
+            if self.guide_mode in BLOCKED_PSEUDOIMPLICIT_MODES:
+                raise NotImplementedError(f"Mode '{self.guide_mode}' requires channel structure, incompatible with packed latents")
 
         sigma = sigmas[step]
 
@@ -1308,7 +1318,7 @@ class LatentGuide:
         if self.HAS_LATENT_GUIDE_INV:
             eps_substep_guide_inv = RK.get_guide_epsilon(x_0, x_[row], y0_inv, sigma, NS.s_[row], NS.sigma_down, None)
 
-        if self.guide_mode in {"pseudoimplicit", "pseudoimplicit_projection"}:
+        if self.guide_mode in {"pseudoimplicit", "pseudoimplicit_cw", "pseudoimplicit_projection", "pseudoimplicit_projection_cw"}:
             maxmin_ratio = (NS.sub_sigma - RK.sigma_min) / NS.sub_sigma
 
             if   self.EO("guide_pseudoimplicit_power_substep_flip_maxmin_scaling"):
@@ -1320,29 +1330,24 @@ class LatentGuide:
 
             eps_tmp_ = eps_.clone()
 
-            eps_row = eps_[row]
-
-            # Elementwise blend (same as epsilon mode)
-            if self.guide_mode == "pseudoimplicit":
-                eps_row = eps_row + lgw_mask * (eps_substep_guide - eps_row) + lgw_mask_inv * (eps_substep_guide_inv - eps_row)
-            elif self.guide_mode == "pseudoimplicit_projection":
-                # Projection mode: blend then project
-                # Only include inverse guide term if we have an inverse guide (otherwise it's zeros which corrupts the projection)
-                if self.HAS_LATENT_GUIDE_INV:
-                    eps_row_lerp = eps_row + self.mask * (eps_substep_guide - eps_row) + (1 - self.mask) * (eps_substep_guide_inv - eps_row)
-                else:
-                    eps_row_lerp = eps_row + self.mask * (eps_substep_guide - eps_row)
-                eps_collinear_eps_lerp = get_collinear(eps_row, eps_row_lerp)
-                eps_lerp_ortho_eps = get_orthogonal(eps_row_lerp, eps_row)
-                eps_sum = eps_collinear_eps_lerp + eps_lerp_ortho_eps
-                eps_row = eps_row + lgw_mask * (eps_sum - eps_row) + lgw_mask_inv * (eps_sum - eps_row)
-
-            eps_[row] = eps_row
+            eps_ = self.process_channelwise(x_0,
+                                            eps_,
+                                            data_,
+                                            row,
+                                            eps_substep_guide,
+                                            eps_substep_guide_inv,
+                                            y0,
+                                            y0_inv,
+                                            lgw_mask,
+                                            lgw_mask_inv,
+                                            use_projection = self.guide_mode in {"pseudoimplicit_projection", "pseudoimplicit_projection_cw"},
+                                            channelwise    = self.guide_mode in {"pseudoimplicit_cw",         "pseudoimplicit_projection_cw"},
+                                            )
 
             if self.EO("debug_pseudoimplicit"):
                 RESplain(
-                    f"Step {step}, Row {row}: eps_row post-blend mean/std="
-                    f"{eps_row.mean().item():.6f}/{eps_row.std().item():.6f}"
+                    f"Step {step}, Row {row}: eps_[row] post-blend mean/std="
+                    f"{eps_[row].mean().item():.6f}/{eps_[row].std().item():.6f}"
                 )
 
             x_row_tmp = x_[row] + RK.h_fn(sub_sigma_2, NS.sub_sigma) * eps_[row]
@@ -1402,9 +1407,10 @@ class LatentGuide:
             return x_0, x_, eps_
 
         # PACK-FIRST EXPERIMENT: Block channelwise fully_pseudoimplicit modes
-        BLOCKED_FULLY_MODES = {"fully_pseudoimplicit_cw", "fully_pseudoimplicit_projection_cw"}
-        if self.guide_mode in BLOCKED_FULLY_MODES:
-            raise NotImplementedError(f"Mode '{self.guide_mode}' requires channel structure, incompatible with pack-first experiment")
+        if x_0.ndim == 3:  # packed NestedTensor
+            BLOCKED_FULLY_MODES = {"fully_pseudoimplicit_cw", "fully_pseudoimplicit_projection_cw"}
+            if self.guide_mode in BLOCKED_FULLY_MODES:
+                raise NotImplementedError(f"Mode '{self.guide_mode}' requires channel structure, incompatible with packed latents")
 
         sigma = sigmas[step]
 
@@ -1415,7 +1421,7 @@ class LatentGuide:
 
 
         # PREPARE FULLY PSEUDOIMPLICIT GUIDES
-        if self.guide_mode in {"fully_pseudoimplicit", "fully_pseudoimplicit_projection"} and (self.lgw[step_sched] > 0 or self.lgw_inv[step_sched] > 0):
+        if self.guide_mode in {"fully_pseudoimplicit", "fully_pseudoimplicit_cw", "fully_pseudoimplicit_projection", "fully_pseudoimplicit_projection_cw"} and (self.lgw[step_sched] > 0 or self.lgw_inv[step_sched] > 0):
             x_lying_   = x_.clone()
             eps_lying_ = eps_.clone()
             s_lying_   = []
@@ -1470,20 +1476,19 @@ class LatentGuide:
                 if self.HAS_LATENT_GUIDE_INV:
                     eps_substep_guide_inv = RK.get_guide_epsilon(x_0, x_[r], y0_inv, sigma, NS.s_[r], NS.sigma_down, None)
 
-                eps_r = eps_[r]
-
-                # Elementwise blend (same as epsilon mode)
-                if self.guide_mode == "fully_pseudoimplicit":
-                    eps_r = eps_r + lgw_mask * (eps_substep_guide - eps_r) + lgw_mask_inv * (eps_substep_guide_inv - eps_r)
-                elif self.guide_mode == "fully_pseudoimplicit_projection":
-                    # Projection mode: blend then project
-                    eps_row_lerp = eps_r + self.mask * (eps_substep_guide - eps_r) + (1 - self.mask) * (eps_substep_guide_inv - eps_r)
-                    eps_collinear_eps_lerp = get_collinear(eps_r, eps_row_lerp)
-                    eps_lerp_ortho_eps = get_orthogonal(eps_row_lerp, eps_r)
-                    eps_sum = eps_collinear_eps_lerp + eps_lerp_ortho_eps
-                    eps_r = eps_r + lgw_mask * (eps_sum - eps_r) + lgw_mask_inv * (eps_sum - eps_r)
-
-                eps_[r] = eps_r
+                eps_ = self.process_channelwise(x_0,
+                                                eps_,
+                                                data_,
+                                                r,
+                                                eps_substep_guide,
+                                                eps_substep_guide_inv,
+                                                y0,
+                                                y0_inv,
+                                                lgw_mask,
+                                                lgw_mask_inv,
+                                                use_projection = self.guide_mode in {"fully_pseudoimplicit_projection", "fully_pseudoimplicit_projection_cw"},
+                                                channelwise    = self.guide_mode in {"fully_pseudoimplicit_cw",         "fully_pseudoimplicit_projection_cw"},
+                                                )
 
                 x_lying_[r]   = x_[r] + RK.h_fn(fully_sub_sigma_2, NS.sub_sigma) * eps_[r]
                 data_lying    = x_[r] + RK.h_fn(0,                 NS.s_[r])     * eps_[r]
@@ -1758,13 +1763,15 @@ class LatentGuide:
         if not self.HAS_LATENT_GUIDE and not self.HAS_LATENT_GUIDE_INV:
             return eps_, x_
 
-        # PACK-FIRST EXPERIMENT: Block modes that require spatial/channel structure
-        BLOCKED_MODES = {"epsilon_cw", "epsilon_projection_cw"}
-        if self.guide_mode in BLOCKED_MODES:
-            raise NotImplementedError(f"Mode '{self.guide_mode}' requires spatial structure, incompatible with packed latents")
+        is_flat = x_0.ndim == 3  # packed NestedTensor: [1,1,N]
 
-        if self.frame_weights_mgr is not None:
-            raise NotImplementedError("Frame weights require temporal structure, incompatible with pack-first experiment")
+        if is_flat:
+            BLOCKED_MODES = {"epsilon_cw", "epsilon_projection_cw"}
+            if self.guide_mode in BLOCKED_MODES:
+                raise NotImplementedError(f"Mode '{self.guide_mode}' requires spatial structure, incompatible with packed latents")
+
+            if self.frame_weights_mgr is not None:
+                raise NotImplementedError("Frame weights require temporal structure, incompatible with pack-first experiment")
 
         # Handle self_refine_epsilon mode - uses denoised_prev as guide target
         if self.SELF_REFINE_EPSILON_MODE:
@@ -1964,12 +1971,26 @@ class LatentGuide:
                 if self.HAS_LATENT_GUIDE_INV:
                     eps_substep_guide_inv = RK.get_guide_epsilon(x_0, x_row, y0_inv, sigma, s_[row], sigma_down, epsilon_scale)
 
-                # Block tolerance mode that iterates over batch/channel
                 tol_value = self.EO("tol", -1.0)
                 if tol_value >= 0:
-                    raise NotImplementedError("Tolerance mode requires batch/channel structure, incompatible with shape-agnostic processing")
+                    if is_flat:
+                        raise NotImplementedError("Tolerance mode requires batch/channel structure, incompatible with packed latents")
+                    for b, c in itertools.product(range(x_0.shape[0]), range(x_0.shape[1])):
+                        current_diff       = torch.norm(data_[row][b][c] - y0    [b][c])
+                        current_diff_inv   = torch.norm(data_[row][b][c] - y0_inv[b][c])
 
-                if self.guide_mode in {"epsilon"}:
+                        lgw_scaled         = torch.nan_to_num(1-(tol_value/current_diff),     0)
+                        lgw_scaled_inv     = torch.nan_to_num(1-(tol_value/current_diff_inv), 0)
+
+                        lgw_tmp            = min(self.lgw[step_sched]    , lgw_scaled)
+                        lgw_tmp_inv        = min(self.lgw_inv[step_sched], lgw_scaled_inv)
+
+                        lgw_mask_clamp     = torch.clamp(lgw_mask,     max=lgw_tmp)
+                        lgw_mask_clamp_inv = torch.clamp(lgw_mask_inv, max=lgw_tmp_inv)
+
+                        eps_[row][b][c]    = eps_[row][b][c] + lgw_mask_clamp[b][0] * (eps_substep_guide[b][c] - eps_[row][b][c]) + lgw_mask_clamp_inv[b][0] * (eps_substep_guide_inv[b][c] - eps_[row][b][c])
+
+                elif self.guide_mode in {"epsilon"}:
                     if self.EO("slerp_epsilon_guide"):
                         if eps_substep_guide.sum() != 0:
                             eps_row = slerp_tensor(lgw_mask, eps_row, eps_substep_guide)
@@ -2002,16 +2023,33 @@ class LatentGuide:
 
                         eps_row                = eps_row + lgw_mask * (eps_sum - eps_row) + lgw_mask_inv * (eps_sum - eps_row)
 
-                # epsilon_cw and epsilon_projection_cw are blocked at function entry
+                elif self.guide_mode in {"epsilon_cw", "epsilon_projection_cw"}:
+                    eps_ = self.process_channelwise(x_0,
+                                                    eps_,
+                                                    data_,
+                                                    row,
+                                                    eps_substep_guide,
+                                                    eps_substep_guide_inv,
+                                                    y0,
+                                                    y0_inv,
+                                                    lgw_mask,
+                                                    lgw_mask_inv,
+                                                    use_projection = self.guide_mode == "epsilon_projection_cw",
+                                                    channelwise    = True
+                                                    )
 
-        # Block temporal smoothing that needs temporal structure
         temporal_smoothing = self.EO("temporal_smoothing", 0.0)
         if temporal_smoothing > 0:
-            raise NotImplementedError("Temporal smoothing requires temporal structure, incompatible with shape-agnostic processing")
+            if is_flat:
+                raise NotImplementedError("Temporal smoothing requires temporal structure, incompatible with packed latents")
+            eps_row = apply_temporal_smoothing(eps_row, temporal_smoothing)
 
-        # Block channelwise normalization that needs structure
-        if self.EO(["substep_eps_ch_mean_std", "substep_eps_ch_mean", "substep_eps_ch_std"]):
-            raise NotImplementedError("Channelwise substep normalization requires channel structure, incompatible with shape-agnostic processing")
+        if self.EO("substep_eps_ch_mean_std"):
+            eps_row = normalize_latent(eps_row, eps_row_orig)
+        if self.EO("substep_eps_ch_mean"):
+            eps_row = normalize_latent(eps_row, eps_row_orig, std=False)
+        if self.EO("substep_eps_ch_std"):
+            eps_row = normalize_latent(eps_row, eps_row_orig, mean=False)
         if self.EO("substep_eps_mean_std"):
             eps_row = normalize_latent(eps_row, eps_row_orig, channelwise=False)
         if self.EO("substep_eps_mean"):
