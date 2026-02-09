@@ -308,7 +308,8 @@ class SharkSampler:
 
             if guider_input is not None:
                 # Explicit guider input takes full precedence - all settings come from guider
-                guider = guider_input
+                guider = copy.copy(guider_input)
+                guider.original_conds = dict(guider.original_conds)
                 work_model = guider.model_patcher
                 RESplain("Shark: Using guider from SharkOptions_GuiderInput: ", work_model.model.diffusion_model.__class__.__name__)
                 RESplain("SharkWarning: \"flow\" guide mode does not work with SharkOptions_GuiderInput")
@@ -326,7 +327,8 @@ class SharkSampler:
                     negative = extracted_negative
                     RESplain("Shark: Using negative cond from SharkOptions_GuiderInput")
             elif guider_from_latent is not None:
-                guider = guider_from_latent
+                guider = copy.copy(guider_from_latent)
+                guider.original_conds = dict(guider.original_conds)
                 if model is not None:
                     work_model = model
                     guider.model_patcher = model
@@ -2030,7 +2032,8 @@ class ClownsharKSampler_Beta:
 
         if guider_input is not None:
             # Explicit guider input takes full precedence - all settings come from guider
-            guider = guider_input
+            guider = copy.copy(guider_input)
+            guider.original_conds = dict(guider.original_conds)
             model = guider.model_patcher
             if has_custom_cfg_handling(guider):
                 RESplain(f"Clown: Guider has custom CFG handling ({guider.__class__.__name__}) - using guider's internal CFG settings")
@@ -2045,7 +2048,8 @@ class ClownsharKSampler_Beta:
                 negative = extracted_negative
         elif guider_from_latent is not None:
             # Chained guider - node inputs can override
-            guider = guider_from_latent
+            guider = copy.copy(guider_from_latent)
+            guider.original_conds = dict(guider.original_conds)
             if model is not None:
                 guider.model_patcher = model
                 guider.model_options = model.model_options
