@@ -2190,7 +2190,7 @@ def sample_rk_beta(
         sigmas = torch.cat((torch.zeros(1, dtype=sigmas.dtype, device=sigmas.device), sigmas.clone()), dim=0)
 
     if INIT_SAMPLE_LOOP:
-        state_info_out = state_info
+        state_info_out.update(state_info)
     else:
         if guides is not None and guides.get('guide_mode', "") == 'inversion':
             guide_inversion_y0     = state_info.get('guide_inversion_y0')
