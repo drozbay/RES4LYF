@@ -143,6 +143,7 @@ NODE_CLASS_MAPPINGS = {
     "Latent Clear State Info"             : nodes_latents.latent_clear_state_info,
     "Latent Replace State Info"           : nodes_latents.latent_replace_state_info,
     "Latent Display State Info"           : nodes_latents.latent_display_state_info,
+    "Latent Extract State Info"           : nodes_latents.latent_extract_state_info,
     "Latent Transfer State Info"          : nodes_latents.latent_transfer_state_info,
     "Latent TrimVideo State Info"         : nodes_latents.TrimVideoLatent_state_info,
     "Latent Upscale State Info"           : nodes_latents.LatentUpscaleBy_state_info,

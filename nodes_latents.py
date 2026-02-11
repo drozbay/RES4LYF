@@ -442,6 +442,48 @@ class latent_display_state_info:
         return {"ui": {"text": text}, "result": (text,)}
 
 
+class latent_extract_state_info:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"latent": ("LATENT",)}}
+
+    RETURN_TYPES  = ("SIGMAS", "SIGMAS", "SIGMAS", "INT", "STRING", "BOOLEAN")
+    RETURN_NAMES  = ("sigmas", "sigmas_remaining", "sigma_next", "end_step", "sampler_mode", "completed")
+    FUNCTION      = "main"
+    CATEGORY      = "RES4LYF/latents"
+
+    @staticmethod
+    def _strip_padding_zeros(sigmas):
+        """Strip leading/trailing zero-padding flags added by samplers.py for unsample/resample modes."""
+        if sigmas.numel() == 0:
+            return sigmas
+        # strip leading zeros
+        first_nonzero = (sigmas != 0).nonzero(as_tuple=True)[0]
+        if first_nonzero.numel() > 0:
+            sigmas = sigmas[first_nonzero[0]:]
+        # strip duplicate trailing zeros (keep at most one)
+        while sigmas.numel() >= 2 and sigmas[-1] == 0 and sigmas[-2] == 0:
+            sigmas = sigmas[:-1]
+        return sigmas
+
+    def main(self, latent):
+        si = latent.get('state_info', {})
+        sigmas_raw = si.get('sigmas', torch.empty(0))
+        sigmas     = self._strip_padding_zeros(sigmas_raw.clone())
+        end_step   = int(si.get('end_step', 0))
+
+        # compute remaining sigmas: from end_step+1 onward in the raw schedule, then strip padding
+        if sigmas_raw.numel() > 0 and end_step + 1 < sigmas_raw.numel():
+            sigmas_remaining = self._strip_padding_zeros(sigmas_raw[end_step + 1:].clone())
+        else:
+            sigmas_remaining = torch.empty(0)
+
+        sigma_next = si.get('sigma_next', torch.empty(0))
+        if sigma_next.dim() == 0:
+            sigma_next = sigma_next.unsqueeze(0)
+        sampler_mode = str(si.get('sampler_mode', ''))
+        completed    = bool(si.get('completed', False))
+        return (sigmas, sigmas_remaining, sigma_next, end_step, sampler_mode, completed)
 
 
 
