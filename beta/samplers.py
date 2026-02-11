@@ -311,21 +311,21 @@ class SharkSampler:
                 guider = copy.copy(guider_input)
                 guider.original_conds = dict(guider.original_conds)
                 work_model = guider.model_patcher
-                RESplain("Shark: Using guider from SharkOptions_GuiderInput: ", work_model.model.diffusion_model.__class__.__name__)
+                RESplain("Using guider from SharkOptions_GuiderInput: ", work_model.model.diffusion_model.__class__.__name__)
                 RESplain("SharkWarning: \"flow\" guide mode does not work with SharkOptions_GuiderInput")
                 if has_custom_cfg_handling(guider):
-                    RESplain(f"Shark: Guider has custom CFG handling ({guider.__class__.__name__}) - using guider's internal CFG settings")
+                    RESplain(f"SharkWarning: Guider has custom CFG handling ({guider.__class__.__name__}) - using guider's internal CFG settings")
                 elif hasattr(guider, 'cfg') and guider.cfg is not None:
                     cfg = guider.cfg
-                    RESplain("Shark: Using cfg from SharkOptions_GuiderInput: ", cfg)
+                    RESplain("Using cfg from SharkOptions_GuiderInput: ", cfg, debug=True)
                 extracted_positive = extract_cond_from_guider(guider, 'positive')
                 if extracted_positive is not None:
                     positive = extracted_positive
-                    RESplain("Shark: Using positive cond from SharkOptions_GuiderInput")
+                    RESplain("Using positive cond from SharkOptions_GuiderInput", debug=True)
                 extracted_negative = extract_cond_from_guider(guider, 'negative')
                 if extracted_negative is not None:
                     negative = extracted_negative
-                    RESplain("Shark: Using negative cond from SharkOptions_GuiderInput")
+                    RESplain("Using negative cond from SharkOptions_GuiderInput", debug=True)
             elif guider_from_latent is not None:
                 guider = copy.copy(guider_from_latent)
                 guider.original_conds = dict(guider.original_conds)
@@ -333,10 +333,10 @@ class SharkSampler:
                     work_model = model
                     guider.model_patcher = model
                     guider.model_options = model.model_options
-                    RESplain("Shark: Overriding chained guider model with provided model input")
+                    RESplain("Overriding chained guider model with provided model input", debug=True)
                 else:
                     work_model = guider.model_patcher
-                RESplain("Shark: Continuing guider from chained latent: ", work_model.model.diffusion_model.__class__.__name__)
+                RESplain("Continuing guider from chained latent: ", work_model.model.diffusion_model.__class__.__name__)
                 RESplain("SharkWarning: \"flow\" guide mode does not work with chained guider")
                 # CFG is set per-node, not inherited from chained guider (will be applied via set_cfg/set_cfgs later)
                 if has_custom_cfg_handling(guider):
@@ -344,15 +344,15 @@ class SharkSampler:
                 else:
                     guider_cfg = guider.cfg if hasattr(guider, 'cfg') else None
                     if guider_cfg is not None and guider_cfg != cfg:
-                        RESplain(f"Shark: Chained guider CFG ({guider_cfg}) will be overridden with node CFG ({cfg})")
+                        RESplain(f"SharkWarning: Chained guider CFG ({guider_cfg}) will be overridden with node CFG ({cfg})")
                 if positive is None:
                     positive = extract_cond_from_guider(guider, 'positive')
                     if positive is not None:
-                        RESplain("Shark: Using positive cond from chained guider")
+                        RESplain("Using positive cond from chained guider", debug=True)
                 if negative is None:
                     negative = extract_cond_from_guider(guider, 'negative')
                     if negative is not None:
-                        RESplain("Shark: Using negative cond from chained guider")
+                        RESplain("Using negative cond from chained guider", debug=True)
                 is_chained = True
             else:
                 guider = None
