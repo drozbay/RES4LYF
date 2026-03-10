@@ -1074,7 +1074,7 @@ class LatentGuide:
         # Apply guide weight schedule
         lgw = self.lgw[step_sched] if step_sched < len(self.lgw) else 0.0
 
-        if self.EO("debug_self_refine"):
+        if self.EO("self_refine_debug"):
             coverage = certain_mask.mean().item()
             mode = "UNCERTAIN (inverted)" if self.invert_mask else "CERTAIN"
             spatial_info = " (with spatial mask)" if self.mask is not None else ""
@@ -1135,12 +1135,12 @@ class LatentGuide:
             # Skip conditions
             if per_iteration_mode:
                 if step == 0 and full_iter == 0:
-                    if self.EO("debug_self_refine"):
+                    if self.EO("self_refine_debug"):
                         RESplain(f"self_refine_pseudoimplicit step {step}, iter {full_iter}, row {row}: SKIPPED - no valid reference")
                     return x_0, x_, eps_, None, None
             else:
                 if step == 0 or denoised_prev.abs().max() == 0:
-                    if self.EO("debug_self_refine"):
+                    if self.EO("self_refine_debug"):
                         RESplain(f"self_refine_pseudoimplicit step {step}, row {row}: SKIPPED - no valid denoised_prev")
                     return x_0, x_, eps_, None, None
 
@@ -1157,14 +1157,14 @@ class LatentGuide:
                     self._self_refine_certain_mask_accum = None
                     self._self_refine_iter_prediction = None
                     self._self_refine_converged = False
-                    if self.EO("debug_self_refine"):
+                    if self.EO("self_refine_debug"):
                         RESplain(f"self_refine_pseudoimplicit step {step}: NEW STEP - initialized reference from denoised_prev")
 
                 elif is_new_iter:
                     # New iteration: update reference to previous iteration's prediction
                     if self._self_refine_iter_prediction is not None:
                         self.self_refine_epsilon_ref = self._self_refine_iter_prediction.clone()
-                        if self.EO("debug_self_refine"):
+                        if self.EO("self_refine_debug"):
                             RESplain(f"self_refine_pseudoimplicit step {step}, iter {full_iter}: updated reference from iter {full_iter-1}")
                     self._self_refine_last_iter = full_iter
                     if self.EO("self_refine_dont_accumulate_certainty"):
@@ -1178,7 +1178,7 @@ class LatentGuide:
                     self.self_refine_epsilon_ref = denoised_prev.clone()
                     self.self_refine_epsilon_last_step = step
                     self._self_refine_converged = False
-                    if self.EO("debug_self_refine"):
+                    if self.EO("self_refine_debug"):
                         RESplain(f"self_refine_pseudoimplicit step {step}: initialized reference from denoised_prev")
 
             # Use reference as guide target
@@ -1198,7 +1198,7 @@ class LatentGuide:
                 self._self_refine_certain_mask_accum = lgw_mask.clone()
 
             if lgw_mask.max() == 0:
-                if self.EO("debug_self_refine"):
+                if self.EO("self_refine_debug"):
                     RESplain(f"self_refine_pseudoimplicit step {step}, row {row}: SKIPPED - no certain regions")
                 return x_0, x_, eps_, None, None
 
@@ -1206,7 +1206,7 @@ class LatentGuide:
             coverage = (lgw_mask > 0).float().mean().item()
             if coverage >= self.self_refine_cutoff:
                 self._self_refine_converged = True
-                if self.EO("debug_self_refine"):
+                if self.EO("self_refine_debug"):
                     iter_info = f", iter {full_iter}" if per_iteration_mode else ""
                     RESplain(f"self_refine_pseudoimplicit step {step}{iter_info}, row {row}: CONVERGED - coverage={coverage:.2%} >= cutoff={self.self_refine_cutoff:.2%}")
 
@@ -1239,7 +1239,7 @@ class LatentGuide:
 
             eps_ = eps_tmp_
 
-            if self.EO("debug_self_refine"):
+            if self.EO("self_refine_debug"):
                 coverage = (lgw_mask > 0).float().mean().item()
                 iter_info = f", iter {full_iter}" if per_iteration_mode else ""
                 RESplain(f"self_refine_pseudoimplicit step {step}{iter_info}, row {row}: APPLIED - certain_coverage={coverage:.2%}")
@@ -1791,13 +1791,13 @@ class LatentGuide:
             if per_iteration_mode:
                 # In per-iteration mode, skip step 0 iter 0 only
                 if step == 0 and full_iter == 0:
-                    if self.EO("debug_self_refine"):
+                    if self.EO("self_refine_debug"):
                         RESplain(f"self_refine_epsilon step {step}, iter {full_iter}, row {row}: SKIPPED - no valid reference")
                     return eps_, x_
             else:
                 # Non-iterative mode: skip entire step 0
                 if step == 0 or denoised_prev.abs().max() == 0:
-                    if self.EO("debug_self_refine"):
+                    if self.EO("self_refine_debug"):
                         RESplain(f"self_refine_epsilon step {step}, row {row}: SKIPPED - no valid denoised_prev")
                     return eps_, x_
 
@@ -1816,7 +1816,7 @@ class LatentGuide:
                 self.self_refine_epsilon_call_count += 1
 
                 if self.EO("self_refine_dont_guide_eps_prev"):
-                    if self.EO("debug_self_refine"):
+                    if self.EO("self_refine_debug"):
                         RESplain(f"self_refine_epsilon step {step}, iter {full_iter}, row {row}: SKIPPED eps_prev_")
                     return eps_, x_
 
@@ -1831,14 +1831,14 @@ class LatentGuide:
                     self._self_refine_certain_mask_accum = None
                     self._self_refine_iter_prediction = None
                     self._self_refine_converged = False
-                    if self.EO("debug_self_refine"):
+                    if self.EO("self_refine_debug"):
                         RESplain(f"self_refine_epsilon step {step}: NEW STEP - initialized reference from denoised_prev")
 
                 elif is_new_iter:
                     # New iteration within same step: update reference to previous iteration's prediction
                     if self._self_refine_iter_prediction is not None:
                         self.self_refine_epsilon_ref = self._self_refine_iter_prediction.clone()
-                        if self.EO("debug_self_refine"):
+                        if self.EO("self_refine_debug"):
                             RESplain(f"self_refine_epsilon step {step}, iter {full_iter}: updated reference from iter {full_iter-1}")
                     self._self_refine_last_iter = full_iter
                     # Reset mask accumulator for new iteration if not using accumulation
@@ -1854,7 +1854,7 @@ class LatentGuide:
                     self.self_refine_epsilon_ref = denoised_prev.clone()
                     self.self_refine_epsilon_last_step = step
                     self._self_refine_converged = False
-                    if self.EO("debug_self_refine"):
+                    if self.EO("self_refine_debug"):
                         RESplain(f"self_refine_epsilon step {step}: initialized reference from denoised_prev")
 
             # Compare current prediction against reference
@@ -1875,7 +1875,7 @@ class LatentGuide:
                 self._self_refine_certain_mask_accum = lgw_mask.clone()
 
             if lgw_mask.max() == 0:
-                if self.EO("debug_self_refine"):
+                if self.EO("self_refine_debug"):
                     RESplain(f"self_refine_epsilon step {step}, iter {full_iter}, row {row}: SKIPPED - no certain regions")
                 return eps_, x_
 
@@ -1883,7 +1883,7 @@ class LatentGuide:
             coverage = (lgw_mask > 0).float().mean().item()
             if coverage >= self.self_refine_cutoff:
                 self._self_refine_converged = True
-                if self.EO("debug_self_refine"):
+                if self.EO("self_refine_debug"):
                     iter_info = f", iter {full_iter}" if per_iteration_mode else ""
                     RESplain(f"self_refine_epsilon step {step}{iter_info}, row {row}: CONVERGED - coverage={coverage:.2%} >= cutoff={self.self_refine_cutoff:.2%}")
 
@@ -1902,7 +1902,7 @@ class LatentGuide:
                 # Standard lerp blending
                 eps_[row] = eps_row + lgw_mask * (eps_y0 - eps_row)
 
-            if self.EO("debug_self_refine"):
+            if self.EO("self_refine_debug"):
                 call_type = "eps_" if self.self_refine_epsilon_call_count == 1 else "eps_prev_"
                 coverage = (lgw_mask > 0).float().mean().item()
                 iter_info = f", iter {full_iter}" if per_iteration_mode else ""
