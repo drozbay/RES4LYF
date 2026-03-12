@@ -634,6 +634,77 @@ class SharkSampler:
                         alpha_init=alpha_init, k_init=k_init, EO=EO
                     )
 
+                # SETUP REGIONAL COND
+                if pos_cond[0][1] is not None:
+                    if 'callback_regional' in pos_cond[0][1]:
+                        pos_cond = pos_cond[0][1]['callback_regional'](work_model)
+
+                    if 'AttnMask' in pos_cond[0][1]:
+                        sampler.extra_options['AttnMask']   = pos_cond[0][1]['AttnMask']
+                        sampler.extra_options['RegContext'] = pos_cond[0][1]['RegContext']
+                        sampler.extra_options['RegParam']   = pos_cond[0][1]['RegParam']
+
+                        if isinstance(model.model.model_config, (comfy.supported_models.SDXL, comfy.supported_models.SD15)):
+                            latent_up_dummy = F.interpolate(latent_image_batch['samples'].to(torch.float16), size=(latent_image_batch['samples'].shape[-2] * 2, latent_image_batch['samples'].shape[-1] * 2), mode="nearest")
+                            sampler.extra_options['AttnMask'].set_latent(latent_up_dummy)
+                            sampler.extra_options['AttnMask'].generate()
+                            sampler.extra_options['AttnMask'].mask_up = sampler.extra_options['AttnMask'].attn_mask.mask
+
+                            latent_down_dummy = F.interpolate(latent_image_batch['samples'].to(torch.float16), size=(latent_image_batch['samples'].shape[-2] // 2, latent_image_batch['samples'].shape[-1] // 2), mode="nearest")
+                            sampler.extra_options['AttnMask'].set_latent(latent_down_dummy)
+                            sampler.extra_options['AttnMask'].generate()
+                            sampler.extra_options['AttnMask'].mask_down = sampler.extra_options['AttnMask'].attn_mask.mask
+
+                            if isinstance(model.model.model_config, comfy.supported_models.SD15):
+                                latent_down_dummy = F.interpolate(latent_image_batch['samples'].to(torch.float16), size=(latent_image_batch['samples'].shape[-2] // 4, latent_image_batch['samples'].shape[-1] // 4), mode="nearest")
+                                sampler.extra_options['AttnMask'].set_latent(latent_down_dummy)
+                                sampler.extra_options['AttnMask'].generate()
+                                sampler.extra_options['AttnMask'].mask_down2 = sampler.extra_options['AttnMask'].attn_mask.mask
+
+                        if isinstance(model.model.model_config, comfy.supported_models.Stable_Cascade_C):
+                            latent_up_dummy = F.interpolate(latent_image_batch['samples'].to(torch.float16), size=(latent_image_batch['samples'].shape[-2] * 2, latent_image_batch['samples'].shape[-1] * 2), mode="nearest")
+                            sampler.extra_options['AttnMask'].set_latent(latent_up_dummy)
+                            sampler.extra_options['AttnMask'].context_lens = [context_len + 8 for context_len in sampler.extra_options['AttnMask'].context_lens]
+                            sampler.extra_options['AttnMask'].text_len = sum(sampler.extra_options['AttnMask'].context_lens)
+                        else:
+                            sampler.extra_options['AttnMask'].set_latent(latent_image_batch['samples'])
+                        sampler.extra_options['AttnMask'].generate()
+
+                if neg_cond[0][1] is not None:
+                    if 'callback_regional' in neg_cond[0][1]:
+                        neg_cond = neg_cond[0][1]['callback_regional'](work_model)
+
+                    if 'AttnMask' in neg_cond[0][1]:
+                        sampler.extra_options['AttnMask_neg']   = neg_cond[0][1]['AttnMask']
+                        sampler.extra_options['RegContext_neg'] = neg_cond[0][1]['RegContext']
+                        sampler.extra_options['RegParam_neg']   = neg_cond[0][1]['RegParam']
+
+                        if isinstance(model.model.model_config, (comfy.supported_models.SDXL, comfy.supported_models.SD15)):
+                            latent_up_dummy = F.interpolate(latent_image_batch['samples'].to(torch.float16), size=(latent_image_batch['samples'].shape[-2] * 2, latent_image_batch['samples'].shape[-1] * 2), mode="nearest")
+                            sampler.extra_options['AttnMask_neg'].set_latent(latent_up_dummy)
+                            sampler.extra_options['AttnMask_neg'].generate()
+                            sampler.extra_options['AttnMask_neg'].mask_up = sampler.extra_options['AttnMask_neg'].attn_mask.mask
+
+                            latent_down_dummy = F.interpolate(latent_image_batch['samples'].to(torch.float16), size=(latent_image_batch['samples'].shape[-2] // 2, latent_image_batch['samples'].shape[-1] // 2), mode="nearest")
+                            sampler.extra_options['AttnMask_neg'].set_latent(latent_down_dummy)
+                            sampler.extra_options['AttnMask_neg'].generate()
+                            sampler.extra_options['AttnMask_neg'].mask_down = sampler.extra_options['AttnMask_neg'].attn_mask.mask
+
+                            if isinstance(model.model.model_config, comfy.supported_models.SD15):
+                                latent_down_dummy = F.interpolate(latent_image_batch['samples'].to(torch.float16), size=(latent_image_batch['samples'].shape[-2] // 4, latent_image_batch['samples'].shape[-1] // 4), mode="nearest")
+                                sampler.extra_options['AttnMask_neg'].set_latent(latent_down_dummy)
+                                sampler.extra_options['AttnMask_neg'].generate()
+                                sampler.extra_options['AttnMask_neg'].mask_down2 = sampler.extra_options['AttnMask_neg'].attn_mask.mask
+
+                        if isinstance(model.model.model_config, comfy.supported_models.Stable_Cascade_C):
+                            latent_up_dummy = F.interpolate(latent_image_batch['samples'].to(torch.float16), size=(latent_image_batch['samples'].shape[-2] * 2, latent_image_batch['samples'].shape[-1] * 2), mode="nearest")
+                            sampler.extra_options['AttnMask_neg'].set_latent(latent_up_dummy)
+                            sampler.extra_options['AttnMask_neg'].context_lens = [context_len + 8 for context_len in sampler.extra_options['AttnMask_neg'].context_lens]
+                            sampler.extra_options['AttnMask_neg'].text_len = sum(sampler.extra_options['AttnMask_neg'].context_lens)
+                        else:
+                            sampler.extra_options['AttnMask_neg'].set_latent(latent_image_batch['samples'])
+                        sampler.extra_options['AttnMask_neg'].generate()
+
                 if guider is None:
                     guider = SharkGuider(work_model)
                     flow_cond = options_mgr.get('flow_cond', {})
