@@ -337,7 +337,6 @@ class SharkSampler:
                 else:
                     work_model = guider.model_patcher
                 RESplain("Continuing guider from chained latent: ", work_model.model.diffusion_model.__class__.__name__)
-                RESplain("SharkWarning: \"flow\" guide mode does not work with chained guider")
                 # CFG is set per-node, not inherited from chained guider (will be applied via set_cfg/set_cfgs later)
                 if has_custom_cfg_handling(guider):
                     RESplain(f"SharkWarning: Guider has custom CFG handling ({guider.__class__.__name__}) - node CFG input will be ignored")
@@ -724,7 +723,8 @@ class SharkSampler:
                         guider.set_cfgs(xt=cfg)
                     guider.set_conds(xt_positive=pos_cond, xt_negative=neg_cond)
                 elif type(guider) == SharkGuider:
-                    guider.set_cfgs(xt=cfg)
+                    guider.cfgs['xt'] = cfg
+                    guider.cfg = cfg
                     guider.set_conds(xt_positive=pos_cond, xt_negative=neg_cond)
                     RESplain(f"Shark: Applied CFG ({cfg}) to SharkGuider", debug=True)
                 else:
