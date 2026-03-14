@@ -488,8 +488,6 @@ class ClownOptions_ImplicitSteps_Beta:
                     "implicit_type_substeps": (IMPLICIT_TYPE_NAMES, {"default": "bongmath"}),
                     "implicit_steps":         ("INT",               {"default": 0, "min": 0, "max": 10000}),
                     "implicit_substeps":      ("INT",               {"default": 0, "min": 0, "max": 10000}),
-                    "start_step":             ("INT",               {"default": 0, "min": 0, "max": 10000}),
-                    "end_step":               ("INT",               {"default": -1, "min": -1, "max": 10000}),
                     },
                 "optional": 
                     {
@@ -507,23 +505,15 @@ class ClownOptions_ImplicitSteps_Beta:
             implicit_type_substeps = "bongmath",
             implicit_steps         = 0,
             implicit_substeps      = 0,
-            start_step             = 0,
-            end_step               = -1,
             options                = None
             ):
 
         options = options if options is not None else {}
 
-        if 'implicit_schedules' not in options:
-            options['implicit_schedules'] = []
-        options['implicit_schedules'].append({
-            'start':    start_step,
-            'end':      end_step,
-            'type':     implicit_type,
-            'type_sub': implicit_type_substeps,
-            'steps':    implicit_steps,
-            'substeps': implicit_substeps,
-        })
+        options['implicit_type']          = implicit_type
+        options['implicit_type_substeps'] = implicit_type_substeps
+        options['implicit_steps']         = implicit_steps
+        options['implicit_substeps']      = implicit_substeps
 
         return (options,)
 

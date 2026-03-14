@@ -1742,12 +1742,6 @@ class ClownSamplerAdvanced_Beta:
             implicit_steps_diag = implicit_substeps
             implicit_steps_full = implicit_steps
 
-            implicit_schedules = options_mgr.get('implicit_schedules', [])
-            if not implicit_schedules:
-                implicit_schedules = [{'start': 0, 'end': -1,
-                                       'type': implicit_type, 'type_sub': implicit_type_substeps,
-                                       'steps': implicit_steps, 'substeps': implicit_substeps}]
-
             if noise_mode_sde == "none":
                 eta = 0.0
                 noise_mode_sde = "hard"
@@ -1917,8 +1911,6 @@ class ClownSamplerAdvanced_Beta:
 
                     "implicit_type"                 : implicit_type,
                     "implicit_type_substeps"        : implicit_type_substeps,
-
-                    "implicit_schedules"            : implicit_schedules,
 
                     "rk_swaps"                      : rk_swaps,
                     

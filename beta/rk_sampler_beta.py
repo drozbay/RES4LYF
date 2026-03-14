@@ -183,8 +183,6 @@ def sample_rk_beta(
         implicit_steps_diag           : int                =  0,
         implicit_steps_full           : int                =  0,
 
-        implicit_schedules            : list               = [],
-
         etas                          : Optional[Tensor]   = None,
         etas_substep                  : Optional[Tensor]   = None,
         s_noises                      : Optional[Tensor]   = None,
@@ -314,10 +312,7 @@ def sample_rk_beta(
     noise_seed_substep          = EO("noise_seed_substep"         , noise_seed + MAX_STEPS)
     
     pseudoimplicit_row_weights  = EO("pseudoimplicit_row_weights" , [1. for _ in range(100)])
-    max_implicit = max(implicit_steps_diag, implicit_steps_full)
-    for sched in implicit_schedules:
-        max_implicit = max(max_implicit, sched['steps'], sched['substeps'])
-    pseudoimplicit_step_weights = EO("pseudoimplicit_step_weights", [1. for _ in range(max_implicit+1)])
+    pseudoimplicit_step_weights = EO("pseudoimplicit_step_weights", [1. for _ in range(max(implicit_steps_diag, implicit_steps_full)+1)])
 
     noise_scaling_cycles = EO("noise_scaling_cycles", 1)
     noise_boost_step     = EO("noise_boost_step",     0.0)
@@ -628,14 +623,9 @@ def sample_rk_beta(
             step_sched = step
 
         rk_type, swapped = RK.swap_rk_type_at_step_or_threshold(x_0, data_prev_, NS, sigmas, step, step_sched, rk_swaps)
-
-        for sched in implicit_schedules:
-            end = sched['end']
-            if sched['start'] <= step_sched and (end == -1 or step_sched < end):
-                implicit_steps_full    = sched['steps']
-                implicit_steps_diag    = sched['substeps']
-                implicit_type          = sched['type']
-                implicit_type_substeps = sched['type_sub']
+        if swapped:
+            implicit_steps_full = 0
+            implicit_steps_diag = 0
 
         SYNC_GUIDE_ACTIVE = LG.guide_mode.startswith("sync") and (LG.lgw[step_sched] != 0 or LG.lgw_inv[step_sched] != 0 or LG.lgw_sync[step_sched] != 0 or LG.lgw_sync_inv[step_sched] != 0)
         
