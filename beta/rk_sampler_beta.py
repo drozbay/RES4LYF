@@ -229,6 +229,8 @@ def sample_rk_beta(
 
         extra_options                 : str                = "",
 
+        outer_sigmas_len              : int                = -1,
+
         latent_shapes                 : Optional[List[tuple]]  = None,
         latent_normalize_idx_0_steps  : Optional[List[float]]  = None,
         latent_normalize_idx_1_steps  : Optional[List[float]]  = None,
@@ -2029,7 +2031,13 @@ def sample_rk_beta(
                 x = x - x.mean(dim=(-2,-1), keepdim=True) + x_means_per_step
 
             
-            callback_step = len(sigmas)-1 - step if sampler_mode == "unsample" else step
+            if sampler_mode == "unsample":
+                callback_step = len(sigmas) - 1 - step
+            elif sampler_mode == "resample" and outer_sigmas_len > len(sigmas):
+                outer_total = outer_sigmas_len - 1
+                callback_step = int(round(step / (len(sigmas) - 1) * outer_total))
+            else:
+                callback_step = step
             self_refine_mask = getattr(LG, '_debug_certainty_mask', None)
             preview_callback(x, eps, denoised, x_, eps_, data_, callback_step, sigma, sigma_next, callback, EO, preview_override=data_cached, FLOW_STOPPED=FLOW_STOPPED, device=model_device, self_refine_mask=self_refine_mask)
             
@@ -2172,7 +2180,13 @@ def sample_rk_beta(
     RESplain("Model calls (total/denoised/epsilon):", state_info_out['model_call_counts'], debug=True)
 
     if not (UNSAMPLE and sigmas[1] > sigmas[0]) and not EO("preview_last_step_always") and sigma is not None   and   not (FLOW_STARTED and not FLOW_STOPPED):
-        callback_step = len(sigmas)-1 - step if sampler_mode == "unsample" else step
+        if sampler_mode == "unsample":
+            callback_step = len(sigmas) - 1 - step
+        elif sampler_mode == "resample" and outer_sigmas_len > len(sigmas):
+            outer_total = outer_sigmas_len - 1
+            callback_step = int(round(step / (len(sigmas) - 1) * outer_total))
+        else:
+            callback_step = step
         self_refine_mask = getattr(LG, '_debug_certainty_mask', None)
         preview_callback(x, eps, denoised, x_, eps_, data_, callback_step, sigma, sigma_next, callback, EO, device=model_device, self_refine_mask=self_refine_mask)
         
@@ -2317,7 +2331,7 @@ def preview_callback(
 
     if device is not None:
         denoised_callback = denoised_callback.to(device)
-        
+
     callback({'x': x, 'i': step, 'sigma': sigma, 'sigma_next': sigma_next, 'denoised': denoised_callback.to(torch.float32)}) if callback is not None else None
     
     return

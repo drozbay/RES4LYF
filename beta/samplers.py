@@ -858,6 +858,7 @@ class SharkSampler:
                         state_info['raw_x'], _ = comfy.utils.pack_latents(tensors)
                         RESplain(f"Latent normalize: applied to raw_x (packed), idx_0={idx_0_factor}, idx_1={idx_1_factor}", debug=True)
 
+                sampler.extra_options['outer_sigmas_len'] = sigmas.shape[-1]
                 samples = guider.sample(noise, x, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
 
                 if rebounds > 0:
@@ -918,6 +919,7 @@ class SharkSampler:
                             else:
                                 sampler.extra_options['steps_to_run'] = steps_to_run_cached
 
+                        sampler.extra_options['outer_sigmas_len'] = sigmas.shape[-1]
                         samples = guider.sample(noise, samples, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=-1)
 
                         eta_substep_decay   *= eta_decay_scale
@@ -1287,6 +1289,7 @@ class SharkSampler:
                         if not has_per_step_factors and (idx_0_factor != 1.0 or idx_1_factor != 1.0):
                             x_input = apply_nested_normalization(x_input, idx_0_factor, idx_1_factor)
 
+                        sampler.extra_options['outer_sigmas_len'] = sigmas.shape[-1]
                         if isinstance(x_input, comfy.nested_tensor.NestedTensor):
                             samples = guider.sample(noise, x_input._copy(), sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
                         else:
@@ -1346,6 +1349,7 @@ class SharkSampler:
                                         sampler.extra_options['steps_to_run'] = steps_to_run_cached
 
 
+                                sampler.extra_options['outer_sigmas_len'] = sigmas.shape[-1]
                                 samples = guider.sample(noise, samples.clone(), sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=-1)
 
                                 eta_substep_decay   *= eta_decay_scale
