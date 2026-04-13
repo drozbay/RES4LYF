@@ -8,15 +8,13 @@ import gc
 
 import comfy.samplers
 import comfy.sample
-import comfy.sampler_helpers
-import comfy.model_sampling
-import comfy.latent_formats
-import comfy.sd
 import comfy.supported_models
 import comfy.utils
 import comfy.nested_tensor
+import comfy.patcher_extension
 from comfy.samplers import CFGGuider, sampling_function
 
+import re
 import latent_preview
 
 from ..helper               import initialize_or_scale, get_res4lyf_scheduler_list, OptionsManager, ExtraOptions
@@ -146,10 +144,10 @@ class SharkGuider(CFGGuider):
 
     def predict_noise(self, x, timestep, model_options={}, seed=None):
         latent_type = model_options['transformer_options'].get('latent_type', 'xt')
-        positive = self.conds.get(f'{latent_type}_positive', self.conds.get('xt_positive'))
-        negative = self.conds.get(f'{latent_type}_negative', self.conds.get('xt_negative'))
-        positive = self.conds.get('xt_positive') if positive is None else positive
-        negative = self.conds.get('xt_negative') if negative is None else negative
+        positive = self.conds.get(f'{latent_type}_positive', self.conds.get('positive'))
+        negative = self.conds.get(f'{latent_type}_negative', self.conds.get('negative'))
+        positive = self.conds.get('positive') if positive is None else positive
+        negative = self.conds.get('negative') if negative is None else negative
         cfg      = self.cfgs.get(latent_type, self.cfg)
         
         model_options['transformer_options']['yt_positive'] = self.conds.get('yt_positive')
@@ -721,11 +719,11 @@ class SharkSampler:
                                            yt_inv=flow_cond.get('yt_inv_cfg'), xt=cfg)
                     else:
                         guider.set_cfgs(xt=cfg)
-                    guider.set_conds(xt_positive=pos_cond, xt_negative=neg_cond)
+                    guider.set_conds(positive=pos_cond, negative=neg_cond)
                 elif type(guider) == SharkGuider:
                     guider.cfgs['xt'] = cfg
                     guider.cfg = cfg
-                    guider.set_conds(xt_positive=pos_cond, xt_negative=neg_cond)
+                    guider.set_conds(positive=pos_cond, negative=neg_cond)
                     RESplain(f"Shark: Applied CFG ({cfg}) to SharkGuider", debug=True)
                 else:
                     if has_custom_cfg_handling(guider):
@@ -1214,11 +1212,11 @@ class SharkSampler:
                             else:
                                 guider.set_cfgs(xt=cfg)
                             
-                            guider.set_conds(xt_positive=pos_cond_tmp, xt_negative=neg_cond)
-                            
+                            guider.set_conds(positive=pos_cond_tmp, negative=neg_cond)
+
                         elif type(guider) == SharkGuider:
                             guider.set_cfgs(xt=cfg)
-                            guider.set_conds(xt_positive=pos_cond_tmp, xt_negative=neg_cond)
+                            guider.set_conds(positive=pos_cond_tmp, negative=neg_cond)
                         else:
                             try:
                                 guider.set_cfg(cfg)
