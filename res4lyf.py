@@ -168,12 +168,15 @@ def init(check_imports=None):
         comfy.samplers.KSampler.SCHEDULERS = comfy.samplers.KSampler.SCHEDULERS + ["beta57"]
 
     # monkey patch IndexListContextHandler.set_step to handle substep sampling
-    try:
-        from comfy.context_windows import IndexListContextHandler
-        IndexListContextHandler.set_step = _patched_context_window_set_step
-        RESplain("Patched IndexListContextHandler.set_step for substep sampling")
-    except ImportError:
-        RESplain("context_windows module not available, skipping set_step patch", debug=True)
+    # DISABLED FOR TESTING: the upstream set_step already handles substeps via
+    # state-keeping (`return` on no-match keeps the previous _step), and the
+    # sample_sigmas sync in sample_rk_beta should make the patch unnecessary.
+    # try:
+    #     from comfy.context_windows import IndexListContextHandler
+    #     IndexListContextHandler.set_step = _patched_context_window_set_step
+    #     RESplain("Patched IndexListContextHandler.set_step for substep sampling")
+    # except ImportError:
+    #     RESplain("context_windows module not available, skipping set_step patch", debug=True)
 
     return True
 

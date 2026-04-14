@@ -287,6 +287,98 @@ class TrimVideoLatent_state_info:
         samples_out = apply_to_state_info_tensors(samples, ref_shape, self._trim_tensor, trim_amount)
         return (samples_out,)
 
+
+class LTXVCropGuides_state_info:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "latent": ("LATENT",),
+            },
+            "optional": {
+                "positive": ("CONDITIONING",),
+                "negative": ("CONDITIONING",),
+            },
+        }
+
+    RETURN_TYPES = ("LATENT", "CONDITIONING", "CONDITIONING")
+    RETURN_NAMES = ("latent", "positive", "negative")
+    FUNCTION = "crop"
+    CATEGORY = "RES4LYF/latents"
+    EXPERIMENTAL = True
+
+    @staticmethod
+    def _extract_cond_from_guider(guider, cond_type):
+        if guider is None or not hasattr(guider, 'original_conds') or guider.original_conds is None:
+            return None
+        for prefix in ('xt_', ''):
+            key = f'{prefix}{cond_type}'
+            if key in guider.original_conds:
+                cond_list = guider.original_conds[key]
+                result = []
+                for cond in cond_list:
+                    tensor = cond.get('cross_attn')
+                    dict_part = {k: v for k, v in cond.items() if k != 'cross_attn'}
+                    result.append([tensor, dict_part])
+                return result
+        return None
+
+    @staticmethod
+    def _crop_temporal(tensor, num_keyframes):
+        if tensor.shape[-3] > num_keyframes:
+            return tensor.narrow(-3, 0, tensor.shape[-3] - num_keyframes).contiguous()
+        return tensor
+
+    def crop(self, latent, positive=None, negative=None):
+        from comfy_extras.nodes_lt import get_keyframe_idxs, get_noise_mask
+        import node_helpers
+
+        guider = latent.get('guider')
+        if positive is None:
+            positive = self._extract_cond_from_guider(guider, 'positive')
+        if negative is None:
+            negative = self._extract_cond_from_guider(guider, 'negative')
+
+        latent_out = latent.copy()
+
+        if positive is None:
+            return (latent_out, positive, negative)
+
+        _, num_keyframes = get_keyframe_idxs(positive)
+
+        latent_image = latent["samples"].clone()
+        noise_mask = get_noise_mask(latent)
+
+        if num_keyframes == 0:
+            latent_out["samples"] = latent_image
+            latent_out["noise_mask"] = noise_mask
+            return (latent_out, positive, negative)
+
+        ref_shape = latent["samples"].shape
+
+        latent_image = latent_image[:, :, :-num_keyframes]
+        noise_mask = noise_mask[:, :, :-num_keyframes]
+        latent_out["samples"] = latent_image
+        latent_out["noise_mask"] = noise_mask
+
+        state_info = latent_out.get("state_info")
+        if state_info:
+            latent_out["state_info"] = apply_to_state_info_tensors(
+                state_info, ref_shape, self._crop_temporal, num_keyframes,
+            )
+
+        positive = node_helpers.conditioning_set_values(positive, {
+            "keyframe_idxs": None,
+            "guide_attention_entries": None,
+        })
+        negative = node_helpers.conditioning_set_values(negative, {
+            "keyframe_idxs": None,
+            "guide_attention_entries": None,
+        })
+
+        return (latent_out, positive, negative)
+
+
 # Adapted from https://github.com/comfyanonymous/ComfyUI/blob/05df2df489f6b237f63c5f7d42a943ae2be417e9/nodes.py
 class LatentUpscaleBy_state_info:
     upscale_methods = ["nearest-exact", "bilinear", "area", "bicubic", "bislerp"]

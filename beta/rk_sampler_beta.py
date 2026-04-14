@@ -303,7 +303,12 @@ def sample_rk_beta(
 
     x      = x     .to(dtype=default_dtype, device=work_device)
     sigmas = sigmas.to(dtype=default_dtype, device=work_device)
-    
+
+    # sync sample_sigmas in model_options to the effective (unpadded) schedule.
+    if 'model_options' in extra_args:
+        transformer_options = extra_args['model_options'].setdefault('transformer_options', {})
+        transformer_options['sample_sigmas'] = sigmas
+
     c1                          = EO("c1"                         , c1)
     c2                          = EO("c2"                         , c2)
     c3                          = EO("c3"                         , c3)

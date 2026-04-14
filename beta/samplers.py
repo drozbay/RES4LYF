@@ -758,9 +758,15 @@ class SharkSampler:
 
                 if noise_mask is not None and sampler_mode in {"resample", "unsample"}:
                     stored_image = state_info.get('image_initial')
-                    x_initial = stored_image if stored_image is not None else x
+                    if stored_image is not None and stored_image.shape == x.shape:
+                        x_initial = stored_image
+                    else:
+                        x_initial = x
                     stored_noise = state_info.get('noise_initial')
-                    noise_initial = stored_noise if stored_noise is not None else noise
+                    if stored_noise is not None and stored_noise.shape == noise.shape:
+                        noise_initial = stored_noise
+                    else:
+                        noise_initial = noise
                 else:
                     x_initial = x
                     noise_initial = noise
@@ -857,7 +863,7 @@ class SharkSampler:
                         RESplain(f"Latent normalize: applied to raw_x (packed), idx_0={idx_0_factor}, idx_1={idx_1_factor}", debug=True)
 
                 sampler.extra_options['outer_sigmas_len'] = sigmas.shape[-1]
-                samples = guider.sample(noise, x, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
+                samples = guider.sample(noise, x_initial, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
 
                 if rebounds > 0:
                     noise_seed_cached   = sampler.extra_options['noise_seed']
@@ -918,7 +924,7 @@ class SharkSampler:
                                 sampler.extra_options['steps_to_run'] = steps_to_run_cached
 
                         sampler.extra_options['outer_sigmas_len'] = sigmas.shape[-1]
-                        samples = guider.sample(noise, samples, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=-1)
+                        samples = guider.sample(noise, x_initial, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=-1)
 
                         eta_substep_decay   *= eta_decay_scale
                         eta_decay           *= eta_decay_scale
