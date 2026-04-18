@@ -15,7 +15,8 @@ from ..helper               import ExtraOptions, FrameWeightsManager
 from ..latents              import lagrange_interpolation, get_collinear, get_orthogonal, get_cosine_similarity, get_pearson_similarity, \
                                    get_slerp_weight_for_cossim, get_slerp_ratio, slerp_tensor, get_edge_mask, normalize_zscore, \
                                    compute_slerp_ratio_for_target, find_slerp_ratio_grid, \
-                                   is_packed_latent, get_latent, apply_per_step_latent_normalization, LatentHandler
+                                   is_packed_latent, get_latent, apply_per_step_latent_normalization, LatentHandler, \
+                                   derive_old_latent_shapes, extract_video_tail, extend_state_info_tensors
 from ..style_transfer       import apply_scattersort_spatial, apply_adain_spatial
 
 from .rk_method_beta        import RK_Method_Beta
@@ -263,12 +264,24 @@ def sample_rk_beta(
     if 'raw_x' in state_info and sampler_mode in {"resample", "unsample"}:
         if x.shape == state_info['raw_x'].shape:
             x = state_info['raw_x'].to(work_device)
+            RESplain("Continuing from raw latent from previous sampler.", debug=False)
         else:
-            x = (LatentHandler(x, latent_shapes)
-                 .map_with(state_info['denoised'], lambda x_t, d_t: comfy.utils.bislerp(d_t, x_t.shape[-1], x_t.shape[-2]).to(x_t))
-                 .tensor)
-            RENOISE = True
-        RESplain("Continuing from raw latent from previous sampler.", debug=False)
+            shapes_new = latent_shapes if latent_shapes is not None else [x.shape]
+            shapes_old = derive_old_latent_shapes(state_info['raw_x'], shapes_new)
+            extra_T = shapes_new[0][-3] - shapes_old[0][-3]
+            spatial_changed = shapes_new[0][-2:] != shapes_old[0][-2:]
+
+            if extra_T > 0 and not spatial_changed:
+                video_tail = extract_video_tail(x, shapes_new, extra_T)
+                state_info = extend_state_info_tensors(state_info, shapes_old, video_tail)
+                x = state_info['raw_x'].to(work_device)
+                RESplain(f"Continuing from raw latent with temporal extension (+{extra_T} video frames).", debug=False)
+            else:
+                x = (LatentHandler(x, latent_shapes)
+                     .map_with(state_info['denoised'], lambda x_t, d_t: comfy.utils.bislerp(d_t, x_t.shape[-1], x_t.shape[-2]).to(x_t))
+                     .tensor)
+                RENOISE = True
+                RESplain("Continuing from raw latent from previous sampler (spatial rescale).", debug=False)
     
     
     

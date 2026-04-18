@@ -324,13 +324,26 @@ class LTXVCropGuides_state_info:
         return None
 
     @staticmethod
+    def _guider_with_keyframes_cleared(guider):
+        if guider is None or not hasattr(guider, 'original_conds') or guider.original_conds is None:
+            return guider
+        STRIP = ('keyframe_idxs', 'guide_attention_entries')
+        new_guider = copy.copy(guider)
+        new_guider.original_conds = {
+            key: [{k: v for k, v in cond.items() if k not in STRIP} for cond in cond_list]
+            for key, cond_list in guider.original_conds.items()
+        }
+        return new_guider
+
+    @staticmethod
     def _crop_temporal(tensor, num_keyframes):
         if tensor.shape[-3] > num_keyframes:
             return tensor.narrow(-3, 0, tensor.shape[-3] - num_keyframes).contiguous()
         return tensor
 
     def crop(self, latent, positive=None, negative=None):
-        from comfy_extras.nodes_lt import get_keyframe_idxs, get_noise_mask
+        from comfy_extras.nodes_lt import get_keyframe_idxs
+        from comfy.nested_tensor import NestedTensor
         import node_helpers
 
         guider = latent.get('guider')
@@ -346,25 +359,54 @@ class LTXVCropGuides_state_info:
 
         _, num_keyframes = get_keyframe_idxs(positive)
 
-        latent_image = latent["samples"].clone()
-        noise_mask = get_noise_mask(latent)
+        samples = latent["samples"]
+        if isinstance(samples, NestedTensor):
+            components = samples.unbind()
+            video_tensor = components[0]
+            latent_shapes = [t.shape for t in components]
+            is_multimodal = True
+        else:
+            video_tensor = samples
+            latent_shapes = [samples.shape]
+            is_multimodal = False
+
+        noise_mask = latent.get("noise_mask", None)
+        if noise_mask is None:
+            B, _, T, _, _ = video_tensor.shape
+            video_mask = torch.ones((B, 1, T, 1, 1), dtype=torch.float32, device=video_tensor.device)
+            if is_multimodal:
+                noise_mask = NestedTensor([video_mask] + [torch.ones_like(c) for c in components[1:]])
+            else:
+                noise_mask = video_mask
+        elif isinstance(noise_mask, NestedTensor):
+            noise_mask = NestedTensor([t.clone() for t in noise_mask.unbind()])
+        else:
+            noise_mask = noise_mask.clone()
 
         if num_keyframes == 0:
-            latent_out["samples"] = latent_image
+            latent_out["samples"] = samples
             latent_out["noise_mask"] = noise_mask
             return (latent_out, positive, negative)
 
-        ref_shape = latent["samples"].shape
+        ref_shape = video_tensor.shape
 
-        latent_image = latent_image[:, :, :-num_keyframes]
-        noise_mask = noise_mask[:, :, :-num_keyframes]
-        latent_out["samples"] = latent_image
-        latent_out["noise_mask"] = noise_mask
+        cropped_video = self._crop_temporal(video_tensor, num_keyframes)
+        if is_multimodal:
+            latent_out["samples"] = NestedTensor([cropped_video] + list(components[1:]))
+        else:
+            latent_out["samples"] = cropped_video
+
+        if isinstance(noise_mask, NestedTensor):
+            mask_components = noise_mask.unbind()
+            latent_out["noise_mask"] = NestedTensor([self._crop_temporal(mask_components[0], num_keyframes)] + list(mask_components[1:]))
+        else:
+            latent_out["noise_mask"] = self._crop_temporal(noise_mask, num_keyframes)
 
         state_info = latent_out.get("state_info")
         if state_info:
             latent_out["state_info"] = apply_to_state_info_tensors(
                 state_info, ref_shape, self._crop_temporal, num_keyframes,
+                latent_shapes=latent_shapes,
             )
 
         positive = node_helpers.conditioning_set_values(positive, {
@@ -375,6 +417,9 @@ class LTXVCropGuides_state_info:
             "keyframe_idxs": None,
             "guide_attention_entries": None,
         })
+
+        if 'guider' in latent_out:
+            latent_out['guider'] = self._guider_with_keyframes_cleared(latent_out['guider'])
 
         return (latent_out, positive, negative)
 
