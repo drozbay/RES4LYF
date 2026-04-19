@@ -268,10 +268,14 @@ def sample_rk_beta(
         else:
             shapes_new = latent_shapes if latent_shapes is not None else [x.shape]
             shapes_old = derive_old_latent_shapes(state_info['raw_x'], shapes_new)
-            extra_T = shapes_new[0][-3] - shapes_old[0][-3]
-            spatial_changed = shapes_new[0][-2:] != shapes_old[0][-2:]
+            can_extend_temporally = (
+                shapes_old is not None
+                and shapes_new[0][-2:] == shapes_old[0][-2:]
+                and shapes_new[0][-3] > shapes_old[0][-3]
+            )
 
-            if extra_T > 0 and not spatial_changed:
+            if can_extend_temporally:
+                extra_T = shapes_new[0][-3] - shapes_old[0][-3]
                 video_tail = extract_video_tail(x, shapes_new, extra_T)
                 state_info = extend_state_info_tensors(state_info, shapes_old, video_tail)
                 x = state_info['raw_x'].to(work_device)

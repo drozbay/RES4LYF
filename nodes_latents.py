@@ -15,7 +15,7 @@ import math
 from nodes import MAX_RESOLUTION
 #MAX_RESOLUTION=8192
 
-from .helper             import ExtraOptions, initialize_or_scale, extra_options_flag, get_extra_options_list
+from .helper             import ExtraOptions, initialize_or_scale, extra_options_flag, get_extra_options_list, extract_cond_from_guider
 from .latents            import latent_meancenter_channels, latent_stdize_channels, get_edge_mask, apply_to_state_info_tensors
 from .beta.noise_classes import NOISE_GENERATOR_NAMES, NOISE_GENERATOR_CLASSES, prepare_noise
 
@@ -308,22 +308,6 @@ class LTXVCropGuides_state_info:
     EXPERIMENTAL = True
 
     @staticmethod
-    def _extract_cond_from_guider(guider, cond_type):
-        if guider is None or not hasattr(guider, 'original_conds') or guider.original_conds is None:
-            return None
-        for prefix in ('xt_', ''):
-            key = f'{prefix}{cond_type}'
-            if key in guider.original_conds:
-                cond_list = guider.original_conds[key]
-                result = []
-                for cond in cond_list:
-                    tensor = cond.get('cross_attn')
-                    dict_part = {k: v for k, v in cond.items() if k != 'cross_attn'}
-                    result.append([tensor, dict_part])
-                return result
-        return None
-
-    @staticmethod
     def _guider_with_keyframes_cleared(guider):
         if guider is None or not hasattr(guider, 'original_conds') or guider.original_conds is None:
             return guider
@@ -348,9 +332,9 @@ class LTXVCropGuides_state_info:
 
         guider = latent.get('guider')
         if positive is None:
-            positive = self._extract_cond_from_guider(guider, 'positive')
+            positive = extract_cond_from_guider(guider, 'positive')
         if negative is None:
-            negative = self._extract_cond_from_guider(guider, 'negative')
+            negative = extract_cond_from_guider(guider, 'negative')
 
         latent_out = latent.copy()
 

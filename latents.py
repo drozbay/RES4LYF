@@ -937,7 +937,8 @@ def derive_old_latent_shapes(raw_x, latent_shapes_new):
     """
     Reconstruct per-modality shapes for a stored raw_x given the current latent_shapes.
     Assumes only the video modality (index 0) changed its temporal length; all other
-    modalities are unchanged.
+    modalities are unchanged. Returns None if shapes can't be cleanly reconstructed
+    under that assumption (e.g. spatial dims also changed, or audio modality changed).
     """
     if raw_x.ndim >= 5:
         # Regular unpacked tensor — single modality
@@ -946,10 +947,8 @@ def derive_old_latent_shapes(raw_x, latent_shapes_new):
     audio_flat = sum(math.prod(s[1:]) for s in latent_shapes_new[1:])
     video_CHW = math.prod(latent_shapes_new[0][1:]) // latent_shapes_new[0][-3]
     video_flat_old = raw_x.shape[-1] - audio_flat
-    assert video_flat_old % video_CHW == 0, (
-        f"Packed raw_x flat length {raw_x.shape[-1]} minus assumed audio_flat {audio_flat} "
-        f"is not divisible by video per-frame size {video_CHW}; audio modality may have changed."
-    )
+    if video_flat_old % video_CHW != 0:
+        return None
     T_old = video_flat_old // video_CHW
     video_shape_old = list(latent_shapes_new[0])
     video_shape_old[-3] = T_old

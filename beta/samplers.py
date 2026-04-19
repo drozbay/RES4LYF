@@ -17,7 +17,7 @@ from comfy.samplers import CFGGuider, sampling_function
 import re
 import latent_preview
 
-from ..helper               import initialize_or_scale, get_res4lyf_scheduler_list, OptionsManager, ExtraOptions
+from ..helper               import initialize_or_scale, get_res4lyf_scheduler_list, OptionsManager, ExtraOptions, extract_cond_from_guider
 from ..res4lyf              import RESplain
 from ..latents              import normalize_zscore, get_orthogonal
 from ..sigmas               import get_sigmas
@@ -54,25 +54,6 @@ def copy_cond(conditioning):
             new_conditioning.append([embedding.clone(), cond_copy])
 
     return new_conditioning
-
-
-def extract_cond_from_guider(guider, cond_type):
-    if not hasattr(guider, 'original_conds') or guider.original_conds is None:
-        return None
-
-    # Try SharkGuider keys first, then CFGGuider keys
-    key_prefixes = ['xt_', '']
-    for prefix in key_prefixes:
-        key = f'{prefix}{cond_type}'
-        if key in guider.original_conds:
-            cond_list = guider.original_conds[key]
-            result = []
-            for cond in cond_list:
-                tensor = cond.get('cross_attn')
-                dict_part = {k: v for k, v in cond.items() if k != 'cross_attn'}
-                result.append([tensor, dict_part])
-            return result
-    return None
 
 
 def has_custom_cfg_handling(guider):

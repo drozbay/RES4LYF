@@ -382,6 +382,24 @@ def conditioning_set_values(conditioning, values={}):
     return c
 
 
+def extract_cond_from_guider(guider, cond_type):
+    """Extract `cond_type` (e.g. 'positive' or 'negative') conditioning from a guider's
+    original_conds, converting from the guider's internal {cross_attn: tensor, ...} per-cond
+    dict format into the standard [[tensor, dict], ...] conditioning list format. Returns
+    None if guider is None / has no original_conds / doesn't contain cond_type."""
+    if guider is None:
+        return None
+    if not hasattr(guider, 'original_conds') or guider.original_conds is None:
+        return None
+    cond_list = guider.original_conds.get(cond_type)
+    if cond_list is None:
+        return None
+    return [
+        [cond.get('cross_attn'), {k: v for k, v in cond.items() if k != 'cross_attn'}]
+        for cond in cond_list
+    ]
+
+
 
 
 
