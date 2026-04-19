@@ -282,7 +282,7 @@ def sample_rk_beta(
                 RESplain(f"Continuing from raw latent with temporal extension (+{extra_T} video frames).", debug=False)
             else:
                 x = (LatentHandler(x, latent_shapes)
-                     .map_with(state_info['denoised'], lambda x_t, d_t: comfy.utils.bislerp(d_t, x_t.shape[-1], x_t.shape[-2]).to(x_t))
+                     .map_with(state_info['denoised'], lambda x_t, d_t: comfy.utils.common_upscale(d_t, x_t.shape[-1], x_t.shape[-2], "bislerp", "disabled").to(x_t))
                      .tensor)
                 RENOISE = True
                 RESplain("Continuing from raw latent from previous sampler (spatial rescale).", debug=False)
@@ -806,7 +806,7 @@ def sample_rk_beta(
                     else:
                         resized_items = [
                             LatentHandler(prev_item, latent_shapes)
-                            .map_with(x, lambda p_t, x_t: comfy.utils.bislerp(p_t, x_t.shape[-1], x_t.shape[-2]).to(x_t))
+                            .map_with(x, lambda p_t, x_t: comfy.utils.common_upscale(p_t, x_t.shape[-1], x_t.shape[-2], "bislerp", "disabled").to(x_t))
                             .tensor
                             for prev_item in state_info['data_prev_']
                         ]
