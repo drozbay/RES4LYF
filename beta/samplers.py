@@ -14,6 +14,8 @@ import comfy.nested_tensor
 import comfy.patcher_extension
 from comfy.samplers import CFGGuider, sampling_function
 
+from comfy_api.latest import io
+
 import re
 import latent_preview
 
@@ -1435,204 +1437,252 @@ class SharkSampler:
 
 
 
-class SharkSampler_Beta:
+class SharkSampler_Beta(io.ComfyNode):
 
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "scheduler":       (get_res4lyf_scheduler_list(), {"default": "beta57"},),
-                "steps":           ("INT",                        {"default": 30,  "min": 1,        "max": 10000.0}),
-                "steps_to_run":    ("INT",                        {"default": -1,  "min": -1,       "max": MAX_STEPS}),
-                "denoise":         ("FLOAT",                      {"default": 1.0, "min": -10000.0, "max": 10000.0, "step":0.01}),
-                "cfg":             ("FLOAT",                      {"default": 5.5, "min": -10000.0, "max": 10000.0, "step":0.01, "round": False, "tooltip": "Negative values use channelwise CFG." }),
-                "seed":            ("INT",                        {"default": 0,   "min": -1,       "max": 0xffffffffffffffff}),
-                "sampler_mode": (['unsample', 'standard', 'resample'], {"default": "standard"}),
-                },
-            "optional": {
-                "model":           ("MODEL",),
-                "positive":        ("CONDITIONING", ),
-                "negative":        ("CONDITIONING", ),
-                "sampler":         ("SAMPLER", ),
-                "sigmas":          ("SIGMAS", ),
-                "latent_image":    ("LATENT", ),     
-                "options":         ("OPTIONS", ),   
-                }
-            }
+    def define_schema(cls):
+        return io.Schema(
+            node_id="SharkSampler_Beta",
+            display_name="SharkSampler",
+            category="RES4LYF/samplers",
+            inputs=[
+                io.Combo.Input("scheduler", options=get_res4lyf_scheduler_list(), default="beta57"),
+                io.Int.Input("steps", default=30, min=1, max=10000),
+                io.Int.Input("steps_to_run", default=-1, min=-1, max=MAX_STEPS),
+                io.Float.Input("denoise", default=1.0, min=-10000.0, max=10000.0, step=0.01),
+                io.Float.Input("cfg", default=5.5, min=-10000.0, max=10000.0, step=0.01, round=False,
+                               tooltip="Negative values use channelwise CFG."),
+                io.Int.Input("seed", default=0, min=-1, max=0xffffffffffffffff),
+                io.Combo.Input("sampler_mode", options=["unsample", "standard", "resample"], default="standard"),
+                io.Model.Input("model", optional=True),
+                io.Conditioning.Input("positive", optional=True),
+                io.Conditioning.Input("negative", optional=True),
+                io.Sampler.Input("sampler", optional=True),
+                io.Sigmas.Input("sigmas", optional=True),
+                io.Latent.Input("latent_image", optional=True),
+                io.Autogrow.Input(
+                    "options_group",
+                    optional=True,
+                    template=io.Autogrow.TemplatePrefix(
+                        io.Custom("OPTIONS").Input("options", optional=True),
+                        prefix="options",
+                        min=1,
+                        max=20,
+                    ),
+                ),
+            ],
+            outputs=[
+                io.Latent.Output(display_name="output"),
+                io.Latent.Output(display_name="denoised"),
+                io.Custom("OPTIONS").Output(display_name="options"),
+            ],
+        )
 
-    RETURN_TYPES = ("LATENT", 
-                    "LATENT", 
-                    "OPTIONS",)
-    
-    RETURN_NAMES = ("output", 
-                    "denoised",
-                    "options",) 
-    
-    FUNCTION     = "main"
-    CATEGORY     = "RES4LYF/samplers"
-    
-    def main(self, 
-            model                                    = None,
-            cfg             : float                  =  5.5, 
-            scheduler       : str                    = "beta57", 
-            steps           : int                    = 30, 
-            steps_to_run    : int                    = -1,
-            sampler_mode    : str                    = "standard",
-            denoise         : float                  =  1.0, 
-            denoise_alt     : float                  =  1.0,
-            noise_type_init : str                    = "gaussian",
-            latent_image    : Optional[dict[Tensor]] = None,
-            
-            positive                                 = None,
-            negative                                 = None,
-            sampler                                  = None,
-            sigmas          : Optional[Tensor]       = None,
-            noise_stdev     : float                  =  1.0,
-            noise_mean      : float                  =  0.0,
-            noise_normalize : bool                   = True,
-            
-            d_noise         : float                  =  1.0,
-            alpha_init      : float                  = -1.0,
-            k_init          : float                  =  1.0,
-            cfgpp           : float                  =  0.0,
-            seed            : int                    = -1,
-            options                                  = None,
-            sde_noise                                = None,
-            sde_noise_steps : int                    =  1,
-        
-            extra_options   : str                    = "", 
-            **kwargs,
-            ): 
-        
+    @classmethod
+    def execute(cls,
+                scheduler="beta57",
+                steps=30,
+                steps_to_run=-1,
+                denoise=1.0,
+                cfg=5.5,
+                seed=0,
+                sampler_mode="standard",
+                model=None,
+                positive=None,
+                negative=None,
+                sampler=None,
+                sigmas=None,
+                latent_image=None,
+                options_group=None,
+                **kwargs):
 
-        options_mgr = OptionsManager(options, **kwargs)
-        
+        options_mgr = OptionsManager(options_group=options_group, **kwargs)
+        first_options = options_mgr.options_list[0] if options_mgr.options_list else None
+
+        denoise_alt = 1.0
         if denoise < 0:
             denoise_alt = -denoise
             denoise = 1.0
-        
-        if 'sampler' in latent_image and sampler is None:
+
+        if latent_image is not None and 'sampler' in latent_image and sampler is None:
             sampler = latent_image['sampler']
 
         output, denoised, sde_noise = SharkSampler().main(
-            model           = model, 
-            cfg             = cfg, 
+            model           = model,
+            cfg             = cfg,
             scheduler       = scheduler,
-            steps           = steps, 
+            steps           = steps,
             steps_to_run    = steps_to_run,
             denoise         = denoise,
-            latent_image    = latent_image, 
+            latent_image    = latent_image,
             positive        = positive,
-            negative        = negative, 
-            sampler         = sampler, 
-            cfgpp           = cfgpp, 
-            noise_seed      = seed, 
-            options         = options, 
-            sde_noise       = sde_noise, 
-            sde_noise_steps = sde_noise_steps, 
-            noise_type_init = noise_type_init,
-            noise_stdev     = noise_stdev,
+            negative        = negative,
+            sampler         = sampler,
+            cfgpp           = 0.0,
+            noise_seed      = seed,
+            options         = first_options,
+            sde_noise       = None,
+            sde_noise_steps = 1,
+            noise_type_init = "gaussian",
+            noise_stdev     = 1.0,
             sampler_mode    = sampler_mode,
             denoise_alt     = denoise_alt,
             sigmas          = sigmas,
+            extra_options   = "",
+        )
 
-            extra_options   = extra_options)
-        
-        return (output, denoised,options_mgr.as_dict())
-
-
+        return io.NodeOutput(output, denoised, options_mgr.as_dict())
 
 
 
-class SharkChainsampler_Beta(SharkSampler_Beta):  
+
+
+class SharkChainsampler_Beta(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "steps_to_run":    ("INT",                        {"default": -1,  "min": -1,       "max": MAX_STEPS}),
-                "cfg":             ("FLOAT",                      {"default": 5.5, "min": -10000.0, "max": 10000.0, "step":0.01, "round": False, "tooltip": "Negative values use channelwise CFG." }),
-                "sampler_mode": (['unsample', 'resample'], {"default": "resample"}),
-                },
-            "optional": {
-                "model":           ("MODEL",),
-                "positive":        ("CONDITIONING", ),
-                "negative":        ("CONDITIONING", ),
-                "sampler":         ("SAMPLER", ),
-                "sigmas":          ("SIGMAS", ),
-                "latent_image":    ("LATENT", ),     
-                "options":         ("OPTIONS", ),   
-                }
-            }
+    def define_schema(cls):
+        return io.Schema(
+            node_id="SharkChainsampler_Beta",
+            display_name="SharkChainsampler",
+            category="RES4LYF/samplers",
+            inputs=[
+                io.Int.Input("steps_to_run", default=-1, min=-1, max=MAX_STEPS),
+                io.Float.Input("cfg", default=5.5, min=-10000.0, max=10000.0, step=0.01, round=False,
+                               tooltip="Negative values use channelwise CFG."),
+                io.Combo.Input("sampler_mode", options=["unsample", "resample"], default="resample"),
+                io.Model.Input("model", optional=True),
+                io.Conditioning.Input("positive", optional=True),
+                io.Conditioning.Input("negative", optional=True),
+                io.Sampler.Input("sampler", optional=True),
+                io.Sigmas.Input("sigmas", optional=True),
+                io.Latent.Input("latent_image", optional=True),
+                io.Autogrow.Input(
+                    "options_group",
+                    optional=True,
+                    template=io.Autogrow.TemplatePrefix(
+                        io.Custom("OPTIONS").Input("options", optional=True),
+                        prefix="options",
+                        min=1,
+                        max=20,
+                    ),
+                ),
+            ],
+            outputs=[
+                io.Latent.Output(display_name="output"),
+                io.Latent.Output(display_name="denoised"),
+                io.Custom("OPTIONS").Output(display_name="options"),
+            ],
+        )
 
-    def main(self, 
-            model                 = None,
-            steps_to_run          = -1, 
-            cfg                   = 5.5, 
-            latent_image          = None,
-            sigmas                = None,
-            sampler_mode          = "",
-            seed            : int = -1, 
-             **kwargs):  
-        
+    @classmethod
+    def execute(cls,
+                steps_to_run=-1,
+                cfg=5.5,
+                sampler_mode="resample",
+                model=None,
+                positive=None,
+                negative=None,
+                sampler=None,
+                sigmas=None,
+                latent_image=None,
+                options_group=None,
+                **kwargs):
+
         steps = latent_image['state_info']['sigmas'].shape[-1] - 3
         sigmas = latent_image['state_info']['sigmas'] if sigmas is None else sigmas
         if len(sigmas) > 2 and sigmas[1] < sigmas[2] and latent_image['state_info']['sampler_mode'] == "unsample" and sampler_mode == "resample":
             sigmas = torch.flip(sigmas, dims=[0])
-        
-        return super().main(model=model, sampler_mode=sampler_mode, steps_to_run=steps_to_run, sigmas=sigmas, steps=steps, cfg=cfg, seed=seed, latent_image=latent_image, **kwargs)
+
+        return SharkSampler_Beta.execute(
+            model=model,
+            sampler_mode=sampler_mode,
+            steps_to_run=steps_to_run,
+            sigmas=sigmas,
+            steps=steps,
+            cfg=cfg,
+            seed=-1,
+            latent_image=latent_image,
+            positive=positive,
+            negative=negative,
+            sampler=sampler,
+            options_group=options_group,
+            **{k: v for k, v in kwargs.items() if isinstance(k, str) and k.startswith('options')},
+        )
 
 
 
 
 
-class ClownSamplerAdvanced_Beta:
+class ClownSamplerAdvanced_Beta(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(cls):
-        return {"required":
-                    {
-                    "noise_type_sde":         (NOISE_GENERATOR_NAMES_SIMPLE, {"default": "gaussian"}),
-                    "noise_type_sde_substep": (NOISE_GENERATOR_NAMES_SIMPLE, {"default": "gaussian"}),
-                    "noise_mode_sde":         (NOISE_MODE_NAMES,             {"default": 'hard',                                                        "tooltip": "How noise scales with the sigma schedule. Hard is the most aggressive, the others start strong and drop rapidly."}),
-                    "noise_mode_sde_substep": (NOISE_MODE_NAMES,             {"default": 'hard',                                                        "tooltip": "How noise scales with the sigma schedule. Hard is the most aggressive, the others start strong and drop rapidly."}),
-                    "overshoot_mode":         (NOISE_MODE_NAMES,             {"default": 'hard',                                                        "tooltip": "How step size overshoot scales with the sigma schedule. Hard is the most aggressive, the others start strong and drop rapidly."}),
-                    "overshoot_mode_substep": (NOISE_MODE_NAMES,             {"default": 'hard',                                                        "tooltip": "How substep size overshoot scales with the sigma schedule. Hard is the most aggressive, the others start strong and drop rapidly."}),
-                    "eta":                    ("FLOAT",                      {"default": 0.5, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Calculated noise amount to be added, then removed, after each step."}),
-                    "eta_substep":            ("FLOAT",                      {"default": 0.5, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Calculated noise amount to be added, then removed, after each step."}),
-                    "overshoot":              ("FLOAT",                      {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Boost the size of each denoising step, then rescale to match the original. Has a softening effect."}),
-                    "overshoot_substep":      ("FLOAT",                      {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Boost the size of each denoising substep, then rescale to match the original. Has a softening effect."}),
-                    "noise_scaling_weight":   ("FLOAT",                      {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Set to positive values to create a sharper, grittier, more detailed image. Set to negative values to soften and deepen the colors."}),
-                    "noise_boost_step":       ("FLOAT",                      {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Set to positive values to create a sharper, grittier, more detailed image. Set to negative values to soften and deepen the colors."}),
-                    "noise_boost_substep":    ("FLOAT",                      {"default": 0.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Set to positive values to create a sharper, grittier, more detailed image. Set to negative values to soften and deepen the colors."}),
-                    "noise_anchor":           ("FLOAT",                      {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False, "tooltip": "Typically set to between 1.0 and 0.0. Lower values cerate a grittier, more detailed image."}),
-                    "s_noise":                ("FLOAT",                      {"default": 1.0, "min": -10000, "max": 10000, "step":0.01,                 "tooltip": "Adds extra SDE noise. Values around 1.03-1.07 can lead to a moderate boost in detail and paint textures."}),
-                    "s_noise_substep":        ("FLOAT",                      {"default": 1.0, "min": -10000, "max": 10000, "step":0.01,                 "tooltip": "Adds extra SDE noise. Values around 1.03-1.07 can lead to a moderate boost in detail and paint textures."}),
-                    "d_noise":                ("FLOAT",                      {"default": 1.0, "min": -10000, "max": 10000, "step":0.01,                 "tooltip": "Downscales the sigma schedule. Values around 0.98-0.95 can lead to a large boost in detail and paint textures."}),
-                    "momentum":               ("FLOAT",                      {"default": 1.0, "min": -10000, "max": 10000, "step":0.01,                 "tooltip": "Accelerate convergence with positive values when sampling, negative values when unsampling."}),
-                    "noise_seed_sde":         ("INT",                        {"default": -1, "min": -1, "max": 0xffffffffffffffff}),
-                    "sampler_name":           (get_sampler_name_list(),      {"default": get_default_sampler_name()}), 
+    def define_schema(cls):
+        return io.Schema(
+            node_id="ClownSamplerAdvanced_Beta",
+            display_name="ClownSamplerAdvanced",
+            category="RES4LYF/samplers",
+            is_experimental=True,
+            inputs=[
+                io.Combo.Input("noise_type_sde", options=NOISE_GENERATOR_NAMES_SIMPLE, default="gaussian"),
+                io.Combo.Input("noise_type_sde_substep", options=NOISE_GENERATOR_NAMES_SIMPLE, default="gaussian"),
+                io.Combo.Input("noise_mode_sde", options=NOISE_MODE_NAMES, default="hard",
+                               tooltip="How noise scales with the sigma schedule. Hard is the most aggressive, the others start strong and drop rapidly."),
+                io.Combo.Input("noise_mode_sde_substep", options=NOISE_MODE_NAMES, default="hard",
+                               tooltip="How noise scales with the sigma schedule. Hard is the most aggressive, the others start strong and drop rapidly."),
+                io.Combo.Input("overshoot_mode", options=NOISE_MODE_NAMES, default="hard",
+                               tooltip="How step size overshoot scales with the sigma schedule. Hard is the most aggressive, the others start strong and drop rapidly."),
+                io.Combo.Input("overshoot_mode_substep", options=NOISE_MODE_NAMES, default="hard",
+                               tooltip="How substep size overshoot scales with the sigma schedule. Hard is the most aggressive, the others start strong and drop rapidly."),
+                io.Float.Input("eta", default=0.5, min=-100.0, max=100.0, step=0.01, round=False,
+                               tooltip="Calculated noise amount to be added, then removed, after each step."),
+                io.Float.Input("eta_substep", default=0.5, min=-100.0, max=100.0, step=0.01, round=False,
+                               tooltip="Calculated noise amount to be added, then removed, after each step."),
+                io.Float.Input("overshoot", default=0.0, min=-100.0, max=100.0, step=0.01, round=False,
+                               tooltip="Boost the size of each denoising step, then rescale to match the original. Has a softening effect."),
+                io.Float.Input("overshoot_substep", default=0.0, min=-100.0, max=100.0, step=0.01, round=False,
+                               tooltip="Boost the size of each denoising substep, then rescale to match the original. Has a softening effect."),
+                io.Float.Input("noise_scaling_weight", default=0.0, min=-100.0, max=100.0, step=0.01, round=False,
+                               tooltip="Set to positive values to create a sharper, grittier, more detailed image. Set to negative values to soften and deepen the colors."),
+                io.Float.Input("noise_boost_step", default=0.0, min=-100.0, max=100.0, step=0.01, round=False,
+                               tooltip="Set to positive values to create a sharper, grittier, more detailed image. Set to negative values to soften and deepen the colors."),
+                io.Float.Input("noise_boost_substep", default=0.0, min=-100.0, max=100.0, step=0.01, round=False,
+                               tooltip="Set to positive values to create a sharper, grittier, more detailed image. Set to negative values to soften and deepen the colors."),
+                io.Float.Input("noise_anchor", default=1.0, min=-100.0, max=100.0, step=0.01, round=False,
+                               tooltip="Typically set to between 1.0 and 0.0. Lower values cerate a grittier, more detailed image."),
+                io.Float.Input("s_noise", default=1.0, min=-10000.0, max=10000.0, step=0.01,
+                               tooltip="Adds extra SDE noise. Values around 1.03-1.07 can lead to a moderate boost in detail and paint textures."),
+                io.Float.Input("s_noise_substep", default=1.0, min=-10000.0, max=10000.0, step=0.01,
+                               tooltip="Adds extra SDE noise. Values around 1.03-1.07 can lead to a moderate boost in detail and paint textures."),
+                io.Float.Input("d_noise", default=1.0, min=-10000.0, max=10000.0, step=0.01,
+                               tooltip="Downscales the sigma schedule. Values around 0.98-0.95 can lead to a large boost in detail and paint textures."),
+                io.Float.Input("momentum", default=1.0, min=-10000.0, max=10000.0, step=0.01,
+                               tooltip="Accelerate convergence with positive values when sampling, negative values when unsampling."),
+                io.Int.Input("noise_seed_sde", default=-1, min=-1, max=0xffffffffffffffff),
+                io.Combo.Input("sampler_name", options=get_sampler_name_list(), default=get_default_sampler_name()),
+                io.Combo.Input("implicit_type", options=IMPLICIT_TYPE_NAMES, default="predictor-corrector"),
+                io.Combo.Input("implicit_type_substeps", options=IMPLICIT_TYPE_NAMES, default="predictor-corrector"),
+                io.Int.Input("implicit_steps", default=0, min=0, max=10000),
+                io.Int.Input("implicit_substeps", default=0, min=0, max=10000),
+                io.Boolean.Input("bongmath", default=True),
+                io.Custom("GUIDES").Input("guides", optional=True),
+                io.Custom("AUTOMATION").Input("automation", optional=True),
+                io.String.Input("extra_options", optional=True, multiline=True, default=""),
+                io.Autogrow.Input(
+                    "options_group",
+                    optional=True,
+                    template=io.Autogrow.TemplatePrefix(
+                        io.Custom("OPTIONS").Input("options", optional=True),
+                        prefix="options",
+                        min=1,
+                        max=20,
+                    ),
+                ),
+            ],
+            outputs=[
+                io.Sampler.Output(display_name="sampler"),
+            ],
+        )
 
-                    "implicit_type":          (IMPLICIT_TYPE_NAMES,          {"default": "predictor-corrector"}), 
-                    "implicit_type_substeps": (IMPLICIT_TYPE_NAMES,          {"default": "predictor-corrector"}), 
-                    "implicit_steps":         ("INT",                        {"default": 0, "min": 0, "max": 10000}),
-                    "implicit_substeps":      ("INT",                        {"default": 0, "min": 0, "max": 10000}),
-                    "bongmath":               ("BOOLEAN",                    {"default": True}),
-                    },
-                "optional": 
-                    {
-                    "guides":                 ("GUIDES", ),     
-                    "automation":             ("AUTOMATION", ),
-                    "extra_options":          ("STRING",                     {"default": "", "multiline": True}),   
-                    "options":                ("OPTIONS", ),   
-                    }
-                }
-
-    RETURN_TYPES = ("SAMPLER",)
-    RETURN_NAMES = ("sampler", ) 
-    FUNCTION     = "main"
-    CATEGORY     = "RES4LYF/samplers"
-    EXPERIMENTAL = True
-    
-    def main(self, 
+    @classmethod
+    def execute(cls,
             noise_type_sde                : str = "gaussian",
             noise_type_sde_substep        : str = "gaussian",
             noise_mode_sde                : str = "hard",
@@ -1683,9 +1733,9 @@ class ClownSamplerAdvanced_Beta:
             
             rescale_floor                 : bool = True,
             sigmas_override               : Optional[Tensor] = None,
-            
+
             guides                        = None,
-            options                       = None,
+            options_group                 = None,
             sde_noise                     = None,
             sde_noise_steps               : int = 1,
             
@@ -1715,11 +1765,9 @@ class ClownSamplerAdvanced_Beta:
             sde_mask                      : Optional[Tensor] = None,
             
             **kwargs,
-            ): 
-        
-        
-        
-            options_mgr = OptionsManager(options, **kwargs)
+            ):
+
+            options_mgr = OptionsManager(options_group=options_group, **kwargs)
             extra_options    += "\n" + options_mgr.get('extra_options', "")
             EO = ExtraOptions(extra_options)
             default_dtype = EO("default_dtype", torch.float64)
@@ -1911,7 +1959,7 @@ class ClownSamplerAdvanced_Beta:
                 })
 
 
-            return (sampler, )
+            return io.NodeOutput(sampler)
 
 
 
@@ -1919,50 +1967,51 @@ class ClownSamplerAdvanced_Beta:
 
 
 
-class ClownsharKSampler_Beta:
+class ClownsharKSampler_Beta(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(cls):
-        inputs = {"required":
-                    {
-                    "eta":          ("FLOAT",                      {"default": 0.5, "min": -100.0, "max": 100.0,     "step":0.01, "round": False, "tooltip": "Calculated noise amount to be added, then removed, after each step."}),
-                    "sampler_name": (get_sampler_name_list     (), {"default": get_default_sampler_name()}), 
-                    "scheduler":    (get_res4lyf_scheduler_list(), {"default": "beta57"},),
-                    "steps":        ("INT",                        {"default": 30,  "min":  1,     "max": MAX_STEPS}),
-                    "steps_to_run": ("INT",                        {"default": -1,  "min": -1,     "max": MAX_STEPS}),
-                    "denoise":      ("FLOAT",                      {"default": 1.0, "min": -10000, "max": MAX_STEPS, "step":0.01}),
-                    "cfg":          ("FLOAT",                      {"default": 5.5, "min": -100.0, "max": 100.0,     "step":0.01, "round": False, }),
-                    "seed":         ("INT",                        {"default": 0,   "min": -1,     "max": 0xffffffffffffffff}),
-                    "sampler_mode": (['unsample', 'standard', 'resample'], {"default": "standard"}),
-                    "bongmath":     ("BOOLEAN",                    {"default": True}),
-                    },
-                "optional": 
-                    {
-                    "model":        ("MODEL",),
-                    "positive":     ("CONDITIONING",),
-                    "negative":     ("CONDITIONING",),
-                    "latent_image": ("LATENT",),
-                    "sigmas":       ("SIGMAS",), 
-                    "guides":       ("GUIDES",), 
-                    "options":      ("OPTIONS", {}),   
-                    }
-                }
-        
-        return inputs
+    def define_schema(cls):
+        return io.Schema(
+            node_id="ClownsharKSampler_Beta",
+            display_name="ClownsharKSampler",
+            category="RES4LYF/samplers",
+            inputs=[
+                io.Float.Input("eta", default=0.5, min=-100.0, max=100.0, step=0.01, round=False,
+                               tooltip="Calculated noise amount to be added, then removed, after each step."),
+                io.Combo.Input("sampler_name", options=get_sampler_name_list(), default=get_default_sampler_name()),
+                io.Combo.Input("scheduler", options=get_res4lyf_scheduler_list(), default="beta57"),
+                io.Int.Input("steps", default=30, min=1, max=MAX_STEPS),
+                io.Int.Input("steps_to_run", default=-1, min=-1, max=MAX_STEPS),
+                io.Float.Input("denoise", default=1.0, min=-10000.0, max=float(MAX_STEPS), step=0.01),
+                io.Float.Input("cfg", default=5.5, min=-100.0, max=100.0, step=0.01, round=False),
+                io.Int.Input("seed", default=0, min=-1, max=0xffffffffffffffff),
+                io.Combo.Input("sampler_mode", options=["unsample", "standard", "resample"], default="standard"),
+                io.Boolean.Input("bongmath", default=True),
+                io.Model.Input("model", optional=True),
+                io.Conditioning.Input("positive", optional=True),
+                io.Conditioning.Input("negative", optional=True),
+                io.Latent.Input("latent_image", optional=True),
+                io.Sigmas.Input("sigmas", optional=True),
+                io.Custom("GUIDES").Input("guides", optional=True),
+                io.Autogrow.Input(
+                    "options_group",
+                    optional=True,
+                    template=io.Autogrow.TemplatePrefix(
+                        io.Custom("OPTIONS").Input("options", optional=True),
+                        prefix="options",
+                        min=1,
+                        max=20,
+                    ),
+                ),
+            ],
+            outputs=[
+                io.Latent.Output(display_name="output"),
+                io.Latent.Output(display_name="denoised"),
+                io.Custom("OPTIONS").Output(display_name="options"),
+            ],
+        )
 
-    RETURN_TYPES = ("LATENT", 
-                    "LATENT",
-                    "OPTIONS",
-                    )
-    
-    RETURN_NAMES = ("output", 
-                    "denoised",
-                    "options",
-                    ) 
-    
-    FUNCTION = "main"
-    CATEGORY = "RES4LYF/samplers"
-    
-    def main(self, 
+    @classmethod
+    def execute(cls,
             model                                                  = None,
             denoise                       : float                  = 1.0, 
             scheduler                     : str                    = "beta57", 
@@ -2032,9 +2081,9 @@ class ClownsharKSampler_Beta:
             implicit_substeps             : int                    = 0, 
 
             sigmas                        : Optional[Tensor]       = None,
-            sigmas_override               : Optional[Tensor]       = None, 
-            guides                                                 = None, 
-            options                                                = None, 
+            sigmas_override               : Optional[Tensor]       = None,
+            guides                                                 = None,
+            options_group                                          = None,
             sde_noise                                              = None,
             sde_noise_steps               : int                    = 1, 
             extra_options                 : str                    = "", 
@@ -2057,7 +2106,7 @@ class ClownsharKSampler_Beta:
             **kwargs
             ): 
         
-        options_mgr = OptionsManager(options, **kwargs)
+        options_mgr = OptionsManager(options_group=options_group, **kwargs)
         extra_options    += "\n" + options_mgr.get('extra_options', "")
 
         #if model is None:
@@ -2229,7 +2278,7 @@ class ClownsharKSampler_Beta:
 
 
 
-        sampler, = ClownSamplerAdvanced_Beta().main(
+        _advanced_out = ClownSamplerAdvanced_Beta.execute(
             noise_type_sde                = noise_type_sde,
             noise_type_sde_substep        = noise_type_sde_substep,
             noise_mode_sde                = noise_mode_sde,
@@ -2269,7 +2318,7 @@ class ClownsharKSampler_Beta:
             noise_seed_sde                = noise_seed_sde,
             
             guides                        = guides,
-            options                       = options_mgr.as_dict(),
+            options_group                 = {"options0": options_mgr.as_dict()},
 
             extra_options                 = extra_options,
             automation                    = automation,
@@ -2310,14 +2359,15 @@ class ClownsharKSampler_Beta:
             steps_to_run                  = steps_to_run,
             
             sde_mask                      = sde_mask,
-            
+
             bongmath                      = bongmath,
             )
-            
-        
+        sampler = _advanced_out[0]
+
+
         output, denoised, sde_noise = SharkSampler().main(
-            model           = model, 
-            cfg             = cfg, 
+            model           = model,
+            cfg             = cfg,
             scheduler       = scheduler,
             steps           = steps, 
             steps_to_run    = steps_to_run,
@@ -2339,7 +2389,7 @@ class ClownsharKSampler_Beta:
 
             extra_options   = extra_options)
         
-        return (output, denoised, options_mgr.as_dict(),) # {'model':model,},)
+        return io.NodeOutput(output, denoised, options_mgr.as_dict())
 
 
 
@@ -2351,82 +2401,124 @@ class ClownsharKSampler_Beta:
 
 
 
-class ClownsharkChainsampler_Beta(ClownsharKSampler_Beta):  
+class ClownsharkChainsampler_Beta(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "eta":          ("FLOAT",                 {"default": 0.5, "min": -100.0, "max": 100.0,     "step":0.01, "round": False, "tooltip": "Calculated noise amount to be added, then removed, after each step."}),
-                "sampler_name": (get_sampler_name_list(), {"default": get_default_sampler_name()}), 
-                "steps_to_run": ("INT",                   {"default": -1,  "min": -1,       "max": MAX_STEPS}),
-                "cfg":          ("FLOAT",                 {"default": 5.5, "min": -10000.0, "max": 10000.0, "step":0.01, "round": False, "tooltip": "Negative values use channelwise CFG." }),
-                "sampler_mode": (['unsample', 'resample'],{"default": "resample"}),
-                "bongmath":     ("BOOLEAN",               {"default": True}),
-                },
-            "optional": {
-                "model":        ("MODEL",),
-                "positive":     ("CONDITIONING", ),
-                "negative":     ("CONDITIONING", ),
-                #"sampler":      ("SAMPLER", ),
-                "sigmas":       ("SIGMAS", ),
-                "latent_image": ("LATENT", ),     
-                "guides":       ("GUIDES", ),   
-                "options":      ("OPTIONS", ),   
-                }
-            }
+    def define_schema(cls):
+        return io.Schema(
+            node_id="ClownsharkChainsampler_Beta",
+            display_name="ClownsharkChainsampler",
+            category="RES4LYF/samplers",
+            inputs=[
+                io.Float.Input("eta", default=0.5, min=-100.0, max=100.0, step=0.01, round=False,
+                               tooltip="Calculated noise amount to be added, then removed, after each step."),
+                io.Combo.Input("sampler_name", options=get_sampler_name_list(), default=get_default_sampler_name()),
+                io.Int.Input("steps_to_run", default=-1, min=-1, max=MAX_STEPS),
+                io.Float.Input("cfg", default=5.5, min=-10000.0, max=10000.0, step=0.01, round=False,
+                               tooltip="Negative values use channelwise CFG."),
+                io.Combo.Input("sampler_mode", options=["unsample", "resample"], default="resample"),
+                io.Boolean.Input("bongmath", default=True),
+                io.Model.Input("model", optional=True),
+                io.Conditioning.Input("positive", optional=True),
+                io.Conditioning.Input("negative", optional=True),
+                io.Sigmas.Input("sigmas", optional=True),
+                io.Latent.Input("latent_image", optional=True),
+                io.Custom("GUIDES").Input("guides", optional=True),
+                io.Autogrow.Input(
+                    "options_group",
+                    optional=True,
+                    template=io.Autogrow.TemplatePrefix(
+                        io.Custom("OPTIONS").Input("options", optional=True),
+                        prefix="options",
+                        min=1,
+                        max=20,
+                    ),
+                ),
+            ],
+            outputs=[
+                io.Latent.Output(display_name="output"),
+                io.Latent.Output(display_name="denoised"),
+                io.Custom("OPTIONS").Output(display_name="options"),
+            ],
+        )
 
-    def main(self, 
-            eta                   =  0.5,
-            sampler_name          = "res_2m",
-            steps_to_run          = -1, 
-            cfg                   =  5.5, 
-            bongmath              = True,
-            seed            : int = -1, 
-            latent_image          = None,
-            sigmas                = None,
-            sampler_mode          = "",
-            
-             **kwargs):  
-        
+    @classmethod
+    def execute(cls,
+                eta=0.5,
+                sampler_name="res_2m",
+                steps_to_run=-1,
+                cfg=5.5,
+                sampler_mode="resample",
+                bongmath=True,
+                model=None,
+                positive=None,
+                negative=None,
+                sigmas=None,
+                latent_image=None,
+                guides=None,
+                options_group=None,
+                **kwargs):
+
         steps = latent_image['state_info']['sigmas'].shape[-1] - 3
         sigmas = latent_image['state_info']['sigmas'] if sigmas is None else sigmas
         if len(sigmas) > 2 and sigmas[1] < sigmas[2] and latent_image['state_info']['sampler_mode'] == "unsample" and sampler_mode == "resample":
             sigmas = torch.flip(sigmas, dims=[0])
-        
-        return super().main(eta=eta, sampler_name=sampler_name, sampler_mode=sampler_mode, sigmas=sigmas, steps_to_run=steps_to_run, steps=steps, cfg=cfg, bongmath=bongmath, seed=seed, latent_image=latent_image, **kwargs)
+
+        return ClownsharKSampler_Beta.execute(
+            eta=eta,
+            sampler_name=sampler_name,
+            sampler_mode=sampler_mode,
+            sigmas=sigmas,
+            steps_to_run=steps_to_run,
+            steps=steps,
+            cfg=cfg,
+            bongmath=bongmath,
+            seed=-1,
+            model=model,
+            positive=positive,
+            negative=negative,
+            latent_image=latent_image,
+            guides=guides,
+            options_group=options_group,
+            **{k: v for k, v in kwargs.items() if isinstance(k, str) and k.startswith('options')},
+        )
 
 
 
 
 
 
-class ClownSampler_Beta:
+class ClownSampler_Beta(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(cls):
-        inputs = {"required":
-                    {
-                    "eta":          ("FLOAT",                      {"default": 0.5, "min": -100.0, "max": 100.0,     "step":0.01, "round": False, "tooltip": "Calculated noise amount to be added, then removed, after each step."}),
-                    "sampler_name": (get_sampler_name_list     (), {"default": get_default_sampler_name()}), 
-                    "seed":         ("INT",                        {"default": -1,   "min": -1,     "max": 0xffffffffffffffff}),
-                    "bongmath":     ("BOOLEAN",                    {"default": True}),
-                    },
-                "optional": 
-                    {
-                    "guides":       ("GUIDES",), 
-                    "options":      ("OPTIONS", {}),   
-                    }
-                }
-        
-        return inputs
+    def define_schema(cls):
+        return io.Schema(
+            node_id="ClownSampler_Beta",
+            display_name="ClownSampler",
+            category="RES4LYF/samplers",
+            inputs=[
+                io.Float.Input("eta", default=0.5, min=-100.0, max=100.0, step=0.01, round=False,
+                               tooltip="Calculated noise amount to be added, then removed, after each step."),
+                io.Combo.Input("sampler_name", options=get_sampler_name_list(), default=get_default_sampler_name()),
+                io.Int.Input("seed", default=-1, min=-1, max=0xffffffffffffffff),
+                io.Boolean.Input("bongmath", default=True),
+                io.Custom("GUIDES").Input("guides", optional=True),
+                io.Autogrow.Input(
+                    "options_group",
+                    optional=True,
+                    template=io.Autogrow.TemplatePrefix(
+                        io.Custom("OPTIONS").Input("options", optional=True),
+                        prefix="options",
+                        min=1,
+                        max=20,
+                    ),
+                ),
+            ],
+            outputs=[
+                io.Sampler.Output(display_name="sampler"),
+            ],
+        )
 
-    RETURN_TYPES = ("SAMPLER",)
-    
-    RETURN_NAMES = ("sampler",) 
-    
-    FUNCTION = "main"
-    CATEGORY = "RES4LYF/samplers"
-    
-    def main(self, 
+    @classmethod
+    def execute(cls,
             model                                                  = None,
             denoise                       : float                  = 1.0, 
             scheduler                     : str                    = "beta57", 
@@ -2483,9 +2575,9 @@ class ClownSampler_Beta:
             implicit_substeps             : int                    = 0, 
 
             sigmas                        : Optional[Tensor]       = None,
-            sigmas_override               : Optional[Tensor]       = None, 
-            guides                                                 = None, 
-            options                                                = None, 
+            sigmas_override               : Optional[Tensor]       = None,
+            guides                                                 = None,
+            options_group                                          = None,
             sde_noise                                              = None,
             sde_noise_steps               : int                    = 1, 
             extra_options                 : str                    = "", 
@@ -2505,14 +2597,14 @@ class ClownSampler_Beta:
             
             #start_at_step                 : int                    = 0,
             #stop_at_step                  : int                    = MAX_STEPS,
-                        
+
             **kwargs
-            ): 
-        
-        options_mgr = OptionsManager(options, **kwargs)
+            ):
+
+        options_mgr = OptionsManager(options_group=options_group, **kwargs)
         extra_options    += "\n" + options_mgr.get('extra_options', "")
-        
-        
+
+
         # defaults for ClownSampler
         eta_substep = eta
         
@@ -2603,24 +2695,24 @@ class ClownSampler_Beta:
         noise_seed_sde = seed
 
 
-        sampler, = ClownSamplerAdvanced_Beta().main(
+        _advanced_out = ClownSamplerAdvanced_Beta.execute(
             noise_type_sde                = noise_type_sde,
             noise_type_sde_substep        = noise_type_sde_substep,
             noise_mode_sde                = noise_mode_sde,
             noise_mode_sde_substep        = noise_mode_sde_substep,
-            
+
             eta                           = eta,
             eta_substep                   = eta_substep,
-            
+
             s_noise                       = s_noise,
             s_noise_substep               = s_noise_substep,
-            
+
             overshoot                     = overshoot,
             overshoot_substep             = overshoot_substep,
-            
+
             overshoot_mode                = overshoot_mode,
             overshoot_mode_substep        = overshoot_mode_substep,
-            
+
             d_noise                       = d_noise,
             d_noise_start_step            = d_noise_start_step,
             d_noise_inv                   = d_noise_inv,
@@ -2642,11 +2734,11 @@ class ClownSampler_Beta:
 
             rescale_floor                 = rescale_floor,
             sigmas_override               = sigmas_override,
-            
+
             noise_seed_sde                = noise_seed_sde,
-            
+
             guides                        = guides,
-            options                       = options_mgr.as_dict(),
+            options_group                 = {"options0": options_mgr.as_dict()},
 
             extra_options                 = extra_options,
             automation                    = automation,
@@ -2654,24 +2746,24 @@ class ClownSampler_Beta:
             noise_scaling_weight          = noise_scaling_weight,
             noise_boost_step              = noise_boost_step,
             noise_boost_substep           = noise_boost_substep,
-            
+
             epsilon_scales                = epsilon_scales,
             regional_conditioning_weights = regional_conditioning_weights,
             frame_weights_mgr             = frame_weights_mgr,
-            
+
             sde_noise                     = sde_noise,
             sde_noise_steps               = sde_noise_steps,
-            
+
             rk_swaps                      = rk_swaps,
-            
+
             steps_to_run                  = steps_to_run,
-            
+
             sde_mask                      = sde_mask,
-            
+
             bongmath                      = bongmath,
-            )
-            
-        return (sampler,)
+        )
+
+        return io.NodeOutput(_advanced_out[0])
     
 
 
@@ -2758,9 +2850,9 @@ class BongSampler:
             implicit_substeps             : int                    = 0, 
 
             sigmas                        : Optional[Tensor]       = None,
-            sigmas_override               : Optional[Tensor]       = None, 
-            guides                                                 = None, 
-            options                                                = None, 
+            sigmas_override               : Optional[Tensor]       = None,
+            guides                                                 = None,
+            options_group                                          = None,
             sde_noise                                              = None,
             sde_noise_steps               : int                    = 1, 
             extra_options                 : str                    = "", 
@@ -2882,7 +2974,7 @@ class BongSampler:
 
 
 
-        sampler, = ClownSamplerAdvanced_Beta().main(
+        _advanced_out = ClownSamplerAdvanced_Beta.execute(
             noise_type_sde                = noise_type_sde,
             noise_type_sde_substep        = noise_type_sde_substep,
             noise_mode_sde                = noise_mode_sde,
@@ -2925,7 +3017,7 @@ class BongSampler:
             noise_seed_sde                = noise_seed_sde,
             
             guides                        = guides,
-            options                       = options_mgr.as_dict(),
+            options_group                 = {"options0": options_mgr.as_dict()},
 
             extra_options                 = extra_options,
             automation                    = automation,
@@ -2944,14 +3036,15 @@ class BongSampler:
             rk_swaps                      = rk_swaps,
             
             steps_to_run                  = steps_to_run,
-            
+
             bongmath                      = bongmath,
             )
-            
-        
+        sampler = _advanced_out[0]
+
+
         output, denoised, sde_noise = SharkSampler().main(
-            model           = model, 
-            cfg             = cfg, 
+            model           = model,
+            cfg             = cfg,
             scheduler       = scheduler,
             steps           = steps, 
             steps_to_run    = steps_to_run,

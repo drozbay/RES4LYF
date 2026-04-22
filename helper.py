@@ -130,11 +130,16 @@ def get_extra_options_list(key, default, extra_options, ret_type=None):
 class OptionsManager:
     APPEND_OPTIONS = {"extra_options"}
 
-    def __init__(self, options, **kwargs):
+    def __init__(self, options=None, options_group=None, **kwargs):
         self.options_list = []
         if options is not None:
             self.options_list.append(options)
-
+        # v3 Autogrow delivers chained options as {"options0": dict, "options1": dict, ...}.
+        if options_group:
+            self.options_list.extend(
+                v for v in options_group.values() if v is not None
+            )
+        # Legacy-named chain inputs ("options", "options 2", ...) land here via **kwargs.
         for key, value in kwargs.items():
             if key.startswith('options') and value is not None:
                 self.options_list.append(value)
