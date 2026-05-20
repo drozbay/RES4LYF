@@ -90,6 +90,11 @@ def generate_init_noise(x, seed, noise_type_init, noise_stdev, noise_mean, noise
     if noise_type_init == "none" or noise_stdev == 0.0:
         return torch.zeros_like(x)
 
+    if EO is not None and EO("bypass_noise_norm") and noise_type_init == "gaussian":
+        noise = comfy.sample.prepare_noise(x, seed).to(device=x.device, dtype=x.dtype)
+        RESplain("bypass_noise_norm: init noise from comfy.sample.prepare_noise (bypassing RES4LYF normalization)", debug=False)
+        return noise
+
     noise_sampler_init = NOISE_GENERATOR_CLASSES_SIMPLE.get(noise_type_init)(
         x=x, seed=seed, sigma_max=sigma_max, sigma_min=sigma_min
     )
