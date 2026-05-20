@@ -866,57 +866,135 @@ def median_blur_2d(img: torch.Tensor, kernel_size: int = 3) -> torch.Tensor:
     median = patches.median(dim=-1).values
     return median
 
-def apply_to_state_info_tensors(obj, ref_shape, modify_func, *args, **kwargs):
+def walk_state_info(obj, tensor_handler):
     """
-    Recursively traverse obj and apply modify_func to tensors whose last 5 dimensions
-    match ref_shape's last 5 dimensions.
-    Used to apply function to all relevant tensors in latent state_info.
-    
-    Args:
-        obj: The object to traverse (dict, list, tuple, tensor, etc.)
-        ref_shape: Reference tensor shape to match against
-        modify_func: Function to apply to matching tensors. Should accept (tensor, *args, **kwargs)
-        *args, **kwargs: Additional arguments passed to modify_func
-    
-    Returns:
-        Modified structure with applicable tensors transformed
+    Recurse through dict/list/tuple containers; call tensor_handler on every non-container
+    leaf (torch.Tensor, NestedTensor, or anything else). The handler is responsible for
+    deciding whether to transform or return the leaf unchanged.
     """
-    import torch
-
-    if isinstance(obj, torch.Tensor):
-        if obj.ndim >= 5:
-            # Check if last 5 dims match reference
-            obj_last5 = obj.shape[-5:]
-            ref_last5 = ref_shape[-5:] if len(ref_shape) >= 5 else ref_shape
-            if obj_last5 == ref_last5:
-                return modify_func(obj, *args, **kwargs)
-        return obj
-
     if isinstance(obj, dict):
         changed = False
         out = {}
         for k, v in obj.items():
-            nv = apply_to_state_info_tensors(v, ref_shape, modify_func, *args, **kwargs)
+            nv = walk_state_info(v, tensor_handler)
             changed |= (nv is not v)
             out[k] = nv
         return out if changed else obj
-
     if isinstance(obj, list):
         changed = False
         out = []
         for v in obj:
-            nv = apply_to_state_info_tensors(v, ref_shape, modify_func, *args, **kwargs)
+            nv = walk_state_info(v, tensor_handler)
             changed |= (nv is not v)
             out.append(nv)
         return out if changed else obj
-
     if isinstance(obj, tuple):
-        new_t = tuple(apply_to_state_info_tensors(v, ref_shape, modify_func, *args, **kwargs) for v in obj)
+        new_t = tuple(walk_state_info(v, tensor_handler) for v in obj)
         if all(ov is nv for ov, nv in zip(obj, new_t)):
             return obj
         return new_t
+    return tensor_handler(obj)
 
-    return obj
+
+def _is_packed_match(tensor, latent_shapes):
+    if not is_packed_latent(latent_shapes):
+        return False
+    if tensor.ndim < 3 or tensor.shape[-2] != 1:
+        return False
+    expected_flat = sum(math.prod(s[1:]) for s in latent_shapes)
+    return tensor.shape[-1] == expected_flat
+
+
+def apply_to_state_info_tensors(obj, ref_shape, modify_func, *args, latent_shapes=None, **kwargs):
+    """
+    Apply modify_func to every video-sized tensor in obj. Handles:
+      - NestedTensor: modify_func applied to modality 0 (video); others pass through.
+      - Packed 3D+ tensor (requires latent_shapes with len > 1): unpack, modify video, repack.
+      - Regular tensor with last 5 dims matching ref_shape[-5:]: modify_func applied directly.
+
+    latent_shapes defaults to [ref_shape] (single-modality, no packing).
+    """
+    from comfy.nested_tensor import NestedTensor
+    ref_last5 = ref_shape[-5:] if len(ref_shape) >= 5 else ref_shape
+    ls = latent_shapes if latent_shapes is not None else [ref_shape]
+
+    def handler(t):
+        if isinstance(t, NestedTensor):
+            c = t.unbind()
+            if c[0].ndim >= 5 and c[0].shape[-5:] == ref_last5:
+                return NestedTensor([modify_func(c[0], *args, **kwargs)] + list(c[1:]))
+            return t
+        if isinstance(t, torch.Tensor):
+            if _is_packed_match(t, ls):
+                return LatentHandler(t, ls).map_first(lambda v: modify_func(v, *args, **kwargs)).tensor
+            if t.ndim >= 5 and t.shape[-5:] == ref_last5:
+                return modify_func(t, *args, **kwargs)
+        return t
+    return walk_state_info(obj, handler)
+
+
+def derive_old_latent_shapes(raw_x, latent_shapes_new):
+    """
+    Reconstruct per-modality shapes for a stored raw_x given the current latent_shapes.
+    Assumes only the video modality (index 0) changed its temporal length; all other
+    modalities are unchanged. Returns None if shapes can't be cleanly reconstructed
+    under that assumption (e.g. spatial dims also changed, or audio modality changed).
+    """
+    if raw_x.ndim >= 5:
+        # Regular unpacked tensor — single modality
+        return [tuple(raw_x.shape)]
+    # Packed flat 3D [B, 1, flat_total]
+    audio_flat = sum(math.prod(s[1:]) for s in latent_shapes_new[1:])
+    video_CHW = math.prod(latent_shapes_new[0][1:]) // latent_shapes_new[0][-3]
+    video_flat_old = raw_x.shape[-1] - audio_flat
+    if video_flat_old % video_CHW != 0:
+        return None
+    T_old = video_flat_old // video_CHW
+    video_shape_old = list(latent_shapes_new[0])
+    video_shape_old[-3] = T_old
+    return [tuple(video_shape_old)] + list(latent_shapes_new[1:])
+
+
+def extract_video_tail(x, latent_shapes_new, extra_T):
+    """
+    Extract the last `extra_T` video-temporal frames from x as a 5D tensor
+    [B, C, extra_T, H, W]. Handles NestedTensor, packed flat 3D, and regular 5D.
+    """
+    from comfy.nested_tensor import NestedTensor
+    video = x.unbind()[0] if isinstance(x, NestedTensor) else get_latent(x, latent_shapes_new, 0)
+    return video[..., -extra_T:, :, :]
+
+
+def extend_state_info_tensors(obj, latent_shapes_old, x_video_tail):
+    """
+    For any tensor whose video dims match latent_shapes_old[0], extend along dim -3
+    by concatenating a broadcast-adjusted copy of x_video_tail. Handles NestedTensor,
+    packed (3D+), and regular 5D/6D.
+    """
+    from comfy.nested_tensor import NestedTensor
+    old_video_shape = latent_shapes_old[0]
+
+    def _cat_tail(tensor):
+        tail = x_video_tail.to(device=tensor.device, dtype=tensor.dtype)
+        while tail.ndim < tensor.ndim:
+            tail = tail.unsqueeze(0)
+        expand_shape = list(tensor.shape[:-3]) + list(tail.shape[-3:])
+        tail = tail.expand(expand_shape)
+        return torch.cat([tensor, tail], dim=-3)
+
+    def handler(t):
+        if isinstance(t, NestedTensor):
+            c = t.unbind()
+            if c[0].shape[-3] == old_video_shape[-3] and c[0].shape[-5:] == old_video_shape[-5:]:
+                return NestedTensor([_cat_tail(c[0])] + list(c[1:]))
+            return t
+        if isinstance(t, torch.Tensor):
+            if _is_packed_match(t, latent_shapes_old):
+                return LatentHandler(t, latent_shapes_old).map_first(_cat_tail).tensor
+            if t.ndim >= 5 and t.shape[-5:] == old_video_shape[-5:]:
+                return _cat_tail(t)
+        return t
+    return walk_state_info(obj, handler)
 
 
 # LATENT PACKING HELPERS
@@ -982,13 +1060,22 @@ class LatentHandler:
         return self
 
     def map_first(self, func):
-        """Apply func only to first component (video), keep others unchanged, repack."""
+        """Apply func only to first component (video), keep others unchanged, repack.
+        Handles 3D [B, 1, flat] and higher-dim [..., B, 1, flat] (e.g. stacked data_prev_)."""
         if not self.is_packed:
             self.x = func(self.x)
-        else:
-            tensors = comfy.utils.unpack_latents(self.x, self.latent_shapes)
-            tensors[0] = func(tensors[0])
-            self.x, _ = comfy.utils.pack_latents(tensors)
+            return self
+        leading_shape = self.x.shape[:-3]
+        flat_leading = int(math.prod(leading_shape))
+        tensor_flat = self.x.reshape(flat_leading, *self.x.shape[-3:])
+        results = []
+        for i in range(flat_leading):
+            unpacked = comfy.utils.unpack_latents(tensor_flat[i], self.latent_shapes)
+            unpacked[0] = func(unpacked[0])
+            repacked, _ = comfy.utils.pack_latents(unpacked)
+            results.append(repacked)
+        out = torch.stack(results, dim=0)
+        self.x = out.reshape(*leading_shape, *out.shape[-3:])
         return self
 
     def map_with(self, other, func):

@@ -8,6 +8,8 @@ import copy
 
 from nodes import MAX_RESOLUTION
 
+from comfy_api.latest import io
+
 from ..latents               import get_edge_mask
 from ..helper                import OptionsManager, FrameWeightsManager, initialize_or_scale, get_res4lyf_scheduler_list, parse_range_string, parse_tile_sizes, parse_range_string_int
 
@@ -2625,23 +2627,30 @@ class ClownGuidesAB_Beta:
     
 
 
-class ClownOptions_Combine:
+class ClownOptions_Combine(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "options": ("OPTIONS",),
-            },
-        }
+    def define_schema(cls):
+        return io.Schema(
+            node_id="ClownOptions_Combine",
+            display_name="ClownOptions Combine",
+            category="RES4LYF/sampler_options",
+            inputs=[
+                io.Autogrow.Input(
+                    "options_group",
+                    template=io.Autogrow.TemplatePrefix(
+                        io.Custom("OPTIONS").Input("options"),
+                        prefix="options",
+                        min=1,
+                        max=20,
+                    ),
+                ),
+            ],
+            outputs=[io.Custom("OPTIONS").Output(display_name="options")],
+        )
 
-    RETURN_TYPES = ("OPTIONS",)
-    RETURN_NAMES = ("options",)
-    FUNCTION = "main"
-    CATEGORY = "RES4LYF/sampler_options"
-
-    def main(self, options, **kwargs):
-        options_mgr = OptionsManager(options, **kwargs)
-        return (options_mgr.as_dict(),)
+    @classmethod
+    def execute(cls, options_group=None, **kwargs):
+        return io.NodeOutput(OptionsManager(options_group=options_group, **kwargs).as_dict())
 
 
 

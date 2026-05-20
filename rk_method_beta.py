@@ -198,7 +198,7 @@ class RK_Method_Beta:
             if positive_control is not None and hasattr(positive_control, 'cond_hint_original'):
                 positive_cond_hint_init = positive_control.cond_hint.clone() if positive_control.cond_hint is not None else None
                 if positive_control.cond_hint_original.shape[-1] != x.shape[-2] * self.latent_compression_ratio or positive_control.cond_hint_original.shape[-2] != x.shape[-1] * self.latent_compression_ratio:
-                    positive_control_pretile = comfy.utils.bislerp(positive_control.cond_hint_original.clone().to(torch.float16).to('cuda'), x.shape[-1] * self.latent_compression_ratio, x.shape[-2] * self.latent_compression_ratio)
+                    positive_control_pretile = comfy.utils.common_upscale(positive_control.cond_hint_original.clone().to(torch.float16).to('cuda'), x.shape[-1] * self.latent_compression_ratio, x.shape[-2] * self.latent_compression_ratio, "bislerp", "disabled")
                     positive_control.cond_hint_original = positive_control_pretile.to(positive_control.cond_hint_original)
                 positive_control_pretile = positive_control.cond_hint_original.clone().to(torch.float16).to('cuda')
                 control_tiles, control_orig_shape, control_grid, control_strides = tile_latent(positive_control_pretile, tile_size=(tile_h_full,tile_w_full))
