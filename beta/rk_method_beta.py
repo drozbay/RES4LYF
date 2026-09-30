@@ -8,7 +8,7 @@ import comfy.supported_models
 import itertools 
 
 from .phi_functions        import Phi
-from .rk_coefficients_beta import get_implicit_sampler_name_list, get_rk_methods_beta
+from .rk_coefficients_beta import get_implicit_sampler_name_list, get_rk_methods_beta, count_history
 from ..helper              import ExtraOptions
 from ..latents             import get_orthogonal, get_collinear, get_cosine_similarity, tile_latent, untile_latent
 
@@ -322,6 +322,8 @@ class RK_Method_Beta:
                 step       : int    = 0,
                 sigmas     : Optional[Tensor] = None,
                 sigma_down : Optional[Tensor] = None,
+                history_steps : int = 0,
+                prev_sigmas : Optional[Tensor] = None,
                 ) -> None:
 
         self.rk_type     = rk_type
@@ -339,6 +341,8 @@ class RK_Method_Beta:
                                                                                     c3,
                                                                                     h_prev,
                                                                                     step,
+                                                                                    history_steps,
+                                                                                    prev_sigmas,
                                                                                     sigmas,
                                                                                     sigma,
                                                                                     sigma_next,
@@ -506,18 +510,14 @@ class RK_Method_Beta:
 
     @staticmethod
     def calculate_res_2m_step(
-                            x_0        : Tensor,
-                            denoised_  : Tensor,
-                            sigma_down : Tensor,
-                            sigmas     : Tensor,
-                            step       : int,
+                            x_0         : Tensor,
+                            denoised_   : Tensor,
+                            sigma_down  : Tensor,
+                            sigma       : Tensor,
+                            prev_sigmas : Tensor,
                             ) -> Tuple[Tensor, Tensor]:
         
-        if denoised_[2].sum() == 0:
-            return None, None
-        
-        sigma      = sigmas[step]
-        sigma_prev = sigmas[step-1]
+        sigma_prev = prev_sigmas[1]
         
         h_prev = -torch.log(sigma/sigma_prev)
         h      = -torch.log(sigma_down/sigma)
@@ -545,19 +545,15 @@ class RK_Method_Beta:
 
     @staticmethod
     def calculate_res_3m_step(
-                            x_0        : Tensor,
-                            denoised_  : Tensor,
-                            sigma_down : Tensor,
-                            sigmas     : Tensor,
-                            step       : int,
+                            x_0         : Tensor,
+                            denoised_   : Tensor,
+                            sigma_down  : Tensor,
+                            sigma       : Tensor,
+                            prev_sigmas : Tensor,
                             ) -> Tuple[Tensor, Tensor]:
         
-        if denoised_[3].sum() == 0:
-            return None, None
-        
-        sigma       = sigmas[step]
-        sigma_prev  = sigmas[step-1]
-        sigma_prev2 = sigmas[step-2]
+        sigma_prev  = prev_sigmas[1]
+        sigma_prev2 = prev_sigmas[2]
 
         h       = -torch.log(sigma_down/sigma)
         h_prev  = -torch.log(sigma/sigma_prev)
@@ -591,6 +587,8 @@ class RK_Method_Beta:
     def swap_rk_type_at_step_or_threshold(self,
                                             x_0               : Tensor,
                                             data_prev_        : Tensor,
+                                            data_prev_sigmas_ : Tensor,
+                                            history_steps     : int,
                                             NS,
                                             sigmas            : Tensor,
                                             step              : int,
@@ -608,14 +606,13 @@ class RK_Method_Beta:
             for swap in sorted(rk_swaps, key=lambda s: s['step']):
                 if step_sched < swap['step'] and swap['threshold'] > 0:
                     threshold = swap['threshold']
-                    if x_0 is not None and step > 2 and sigmas[step+1] > 0 and self.rk_type != swap['type']:
-                        x_res_2m, denoised_res_2m = self.calculate_res_2m_step(x_0, data_prev_, NS.sigma_down, sigmas, step)
-                        x_res_3m, denoised_res_3m = self.calculate_res_3m_step(x_0, data_prev_, NS.sigma_down, sigmas, step)
-                        if denoised_res_2m is not None:
-                            if swap['print']:
-                                RESplain("res_3m - res_2m:", torch.norm(denoised_res_3m - denoised_res_2m).item())
-                            if threshold > torch.norm(denoised_res_2m - denoised_res_3m):
-                                target_swap = swap
+                    if x_0 is not None and history_steps >= 3 and count_history(data_prev_sigmas_, sigmas[step]) >= 2 and sigmas[step+1] > 0 and self.rk_type != swap['type']:
+                        x_res_2m, denoised_res_2m = self.calculate_res_2m_step(x_0, data_prev_, NS.sigma_down, sigmas[step], data_prev_sigmas_)
+                        x_res_3m, denoised_res_3m = self.calculate_res_3m_step(x_0, data_prev_, NS.sigma_down, sigmas[step], data_prev_sigmas_)
+                        if swap['print']:
+                            RESplain("res_3m - res_2m:", torch.norm(denoised_res_3m - denoised_res_2m).item())
+                        if threshold > torch.norm(denoised_res_2m - denoised_res_3m):
+                            target_swap = swap
                     break
 
         if target_swap is None:
