@@ -39,6 +39,7 @@ def init_implicit_sampling(
         denoised_prev2 : Tensor,
         step           : int,
         sigmas         : Tensor,
+        prev_sigmas    : Tensor,
         h              : Tensor,
         s_             : Tensor,
         EO             : ExtraOptions,
@@ -72,7 +73,7 @@ def init_implicit_sampling(
             data_[0] = denoised.clone()
             eps_ [0] = RK.get_epsilon_anchored(x_0, denoised, sigma)   
         else:
-            sigma_prev    = sigmas[step-1]
+            sigma_prev    = prev_sigmas[1]
             h_prev        = sigma - sigma_prev
             w             = h / h_prev
             substeps_prev = len(RK.C[:-1])
@@ -89,7 +90,7 @@ def init_implicit_sampling(
 
 
     elif EO("implicit_lagrange_init") and denoised.sum() + eps.sum() != 0:
-        sigma_prev    = sigmas[step-1]
+        sigma_prev    = prev_sigmas[1]
         h_prev        = sigma - sigma_prev
         w             = h / h_prev
         substeps_prev = len(RK.C[:-1])
@@ -489,7 +490,7 @@ def sample_rk_beta(
     
     INIT_SAMPLE_LOOP = True
     step = start_step
-    sigma, sigma_next, data_prev_, x_0 = None, None, None, None
+    sigma, sigma_next, x_0 = None, None, None
     
     if (num_steps-1) == len(sigmas)-2 and sigmas[-1] == 0 and sigmas[-2] == NS.sigma_min:
         progress_bar = trange(current_steps+1, disable=disable)
@@ -650,6 +651,25 @@ def sample_rk_beta(
                     x = (1 - sigmas[0]) * image_initial_shock.to(x) + sigmas[0] * noise_initial.to(x)
 
     RK.update_transformer_options({"model_sampling": model.inner_model.inner_model.model_sampling})
+
+    data_prev_sigmas_ = torch.zeros(4, dtype=default_dtype, device=work_device)
+    history_steps     = 0
+    if sampler_mode in {"unsample", "resample"} and state_info.get('data_prev_') is not None:
+        if x.shape == state_info['data_prev_'].shape[1:]:
+            data_prev_ = state_info['data_prev_'].clone().to(dtype=work_dtype, device=work_device)
+        else:
+            resized_items = [
+                LatentHandler(prev_item, latent_shapes)
+                .map_with(x, lambda p_t, x_t: comfy.utils.common_upscale(p_t, x_t.shape[-1], x_t.shape[-2], "bislerp", "disabled").to(x_t))
+                .tensor
+                for prev_item in state_info['data_prev_']
+            ]
+            data_prev_ = torch.stack(resized_items).to(x)
+        data_prev_sigmas_ = state_info['data_prev_sigmas_'].clone().to(dtype=default_dtype, device=work_device)
+        history_steps     = state_info['history_steps']
+    else:
+        data_prev_ = torch.zeros(4, *x.shape, dtype=work_dtype, device=work_device) # multistep max is 4m... so 4 needed
+
     # BEGIN SAMPLING LOOP
     
     while step < num_steps:
@@ -668,7 +688,7 @@ def sample_rk_beta(
         else:
             step_sched = step
 
-        rk_type, swapped = RK.swap_rk_type_at_step_or_threshold(x_0, data_prev_, NS, sigmas, step, step_sched, rk_swaps)
+        rk_type, swapped = RK.swap_rk_type_at_step_or_threshold(x_0, data_prev_, data_prev_sigmas_, history_steps, NS, sigmas, step, step_sched, rk_swaps)
         if swapped:
             implicit_steps_full = 0
             implicit_steps_diag = 0
@@ -781,7 +801,7 @@ def sample_rk_beta(
         noise_scaling_weight = noise_scaling_weights[step_sched].to(x)  if noise_scaling_weights is not None else noise_scaling_weight
         
         NS.set_sde_step(sigma, sigma_next, eta, overshoot, s_noise)
-        RK.set_coeff(rk_type, NS.h, c1, c2, c3, step, sigmas, NS.sigma_down)
+        RK.set_coeff(rk_type, NS.h, c1, c2, c3, step, sigmas, NS.sigma_down, history_steps, data_prev_sigmas_)
         NS.set_substep_list(RK)
 
         if (noise_scaling_eta > 0 or noise_scaling_weight != 0) and noise_scaling_type != "model_d":
@@ -809,7 +829,7 @@ def sample_rk_beta(
         
 
         rk_swap_stages = 3 if rk_swaps else 0
-        data_prev_len = len(data_prev_)-1 if data_prev_ is not None else 3
+        data_prev_len = len(data_prev_)-1
         recycled_stages = max(rk_swap_stages, RK.multistep_stages, RK.hybrid_stages, data_prev_len)
         
         if INIT_SAMPLE_LOOP:
@@ -819,26 +839,6 @@ def sample_rk_beta(
                 z_ = torch.zeros(RK.rows+2, *x.shape, dtype=work_dtype, device=work_device)
                 z_[0] = noise_initial.clone()
                 RK.update_transformer_options({'z_' : z_})
-            
-            if sampler_mode in {"unsample", "resample"}:
-                data_prev_ = state_info.get('data_prev_')
-                if data_prev_ is not None:
-                    if x.shape == data_prev_.shape[1:]:
-                        data_prev_ = state_info['data_prev_'].clone().to(dtype=work_dtype, device=work_device)
-                    else:
-                        resized_items = [
-                            LatentHandler(prev_item, latent_shapes)
-                            .map_with(x, lambda p_t, x_t: comfy.utils.common_upscale(p_t, x_t.shape[-1], x_t.shape[-2], "bislerp", "disabled").to(x_t))
-                            .tensor
-                            for prev_item in state_info['data_prev_']
-                        ]
-                        data_prev_ = torch.stack(resized_items).to(x)
-                else:
-                    data_prev_ =  torch.zeros(4, *x.shape, dtype=work_dtype, device=work_device) # multistep max is 4m... so 4 needed
-            else:
-                data_prev_ =  torch.zeros(4, *x.shape, dtype=work_dtype, device=work_device) # multistep max is 4m... so 4 needed
-            
-            recycled_stages = len(data_prev_)-1
         
         if RK.rows+2 > x_.shape[0]:
             row_gap = RK.rows+2 - x_.shape[0]
@@ -929,7 +929,7 @@ def sample_rk_beta(
 
         # INITIALIZE IMPLICIT SAMPLING
         if RK.IMPLICIT:
-            x_, eps_, data_ = init_implicit_sampling(RK, x_0, x_, eps_, eps_prev_, data_, eps, denoised, denoised_prev2, step, sigmas, NS.h, NS.s_, EO, SYNC_GUIDE_ACTIVE)
+            x_, eps_, data_ = init_implicit_sampling(RK, x_0, x_, eps_, eps_prev_, data_, eps, denoised, denoised_prev2, step, sigmas, data_prev_sigmas_, NS.h, NS.s_, EO, SYNC_GUIDE_ACTIVE)
 
         implicit_steps_total = (implicit_steps_full + 1) * (implicit_steps_diag + 1)
 
@@ -1810,7 +1810,7 @@ def sample_rk_beta(
                                 x_tmp = LG.process_guides_data_substep(x_tmp, data_[row], step_sched, s_tmp)
                                 eps_[row], data_[row] = RK(x_tmp, s_tmp, x_0, sigma, transformer_options={'latent_type': 'xt'})
 
-                            if momentum != 0.0:
+                            if momentum != 0.0 and history_steps >= 1:
                                 data_[row] = data_[row] - momentum * (data_prev_[0] - data_[row])  #negative!
                                 eps_[row]  = RK.get_epsilon(x_0, x_tmp, data_[row], sigma, s_tmp)    # ... why was this here??? for momentum maybe?
 
@@ -2126,6 +2126,10 @@ def sample_rk_beta(
         data_prev_[0] = data_[0]                # with flow mode, this will be the differentiated guide/"denoised"
         for ms in range(recycled_stages):
             data_prev_[recycled_stages - ms] = data_prev_[recycled_stages - ms - 1]   # TODO: verify that this does not run on every substep...
+        data_prev_sigmas_[0] = sigma
+        for ms in range(recycled_stages):
+            data_prev_sigmas_[recycled_stages - ms] = data_prev_sigmas_[recycled_stages - ms - 1]
+        history_steps += 1
 
         if SYNC_GUIDE_ACTIVE:
             data_prev_x_[0] = data_x      
@@ -2253,6 +2257,8 @@ def sample_rk_beta(
         state_info_out['raw_x']             = x.to('cpu')
         state_info_out['denoised']          = denoised.to('cpu')
         state_info_out['data_prev_']        = data_prev_.to('cpu')
+        state_info_out['data_prev_sigmas_'] = data_prev_sigmas_.to('cpu')
+        state_info_out['history_steps']     = history_steps
         state_info_out['end_step']          = step
         state_info_out['sigma_next']        = sigma_next.clone()
         state_info_out['sigmas']            = sigmas_scheduled.clone()

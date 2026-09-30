@@ -1314,6 +1314,18 @@ rk_coeff = {
 
 
 
+def count_history(prev_sigmas: Tensor, sigma: Tensor) -> int:
+    distinct_slots = 0
+    for slot in range(1, len(prev_sigmas)):
+        slot_sigma = prev_sigmas[slot]
+        if slot_sigma == sigma:
+            break
+        if (prev_sigmas[1:slot] == slot_sigma).any():
+            break
+        distinct_slots += 1
+    return distinct_slots
+
+
 def get_rk_methods_beta(rk_type       : str,
                         h             : Tensor,
                         c1            : float            = 0.0,
@@ -1321,6 +1333,8 @@ def get_rk_methods_beta(rk_type       : str,
                         c3            : float            = 1.0,
                         h_prev        : Optional[Tensor] = None,
                         step          : int              = 0,
+                        history_steps : int              = 0,
+                        prev_sigmas   : Optional[Tensor] = None,
                         sigmas        : Optional[Tensor] = None,
                         sigma         : Optional[Tensor] = None,
                         sigma_next    : Optional[Tensor] = None,
@@ -1341,21 +1355,20 @@ def get_rk_methods_beta(rk_type       : str,
     multistep_initial_sampler     = EO("multistep_initial_sampler", "", debugMode=1)
     multistep_fallback_sampler    = EO("multistep_fallback_sampler", "", debugMode=1)
     multistep_extra_initial_steps = EO("multistep_extra_initial_steps", 1, debugMode=1)
+    distinct_slots                = count_history(prev_sigmas, sigma) if prev_sigmas is not None else 0
 
     #if RK_Method_Beta.is_exponential(rk_type): 
     if rk_type.startswith(("res", "dpmpp", "ddim", "pec", "etdrk", "lawson")): 
         h_no_eta = -torch.log(sigma_next/sigma)
-        h_prev1_no_eta = -torch.log(sigmas[step]/sigmas[step-1]) if step >= 1 else None
-        h_prev2_no_eta = -torch.log(sigmas[step]/sigmas[step-2]) if step >= 2 else None
-        h_prev3_no_eta = -torch.log(sigmas[step]/sigmas[step-3]) if step >= 3 else None
-        h_prev4_no_eta = -torch.log(sigmas[step]/sigmas[step-4]) if step >= 4 else None
+        h_prev1_no_eta = -torch.log(sigma/prev_sigmas[1]) if history_steps >= 1 else None
+        h_prev2_no_eta = -torch.log(sigma/prev_sigmas[2]) if history_steps >= 2 else None
+        h_prev3_no_eta = -torch.log(sigma/prev_sigmas[3]) if history_steps >= 3 else None
 
     else:
         h_no_eta = sigma_next - sigma
-        h_prev1_no_eta = sigmas[step] - sigmas[step-1] if step >= 1 else None
-        h_prev2_no_eta = sigmas[step] - sigmas[step-2] if step >= 2 else None
-        h_prev3_no_eta = sigmas[step] - sigmas[step-3] if step >= 3 else None
-        h_prev4_no_eta = sigmas[step] - sigmas[step-4] if step >= 4 else None
+        h_prev1_no_eta = sigma - prev_sigmas[1] if history_steps >= 1 else None
+        h_prev2_no_eta = sigma - prev_sigmas[2] if history_steps >= 2 else None
+        h_prev3_no_eta = sigma - prev_sigmas[3] if history_steps >= 3 else None
         
     if type(c1) == torch.Tensor:
         c1 = c1.item()
@@ -1373,7 +1386,7 @@ def get_rk_methods_beta(rk_type       : str,
         
     if rk_type[:4] == "deis":
         order = int(rk_type[-2])
-        if step < order + multistep_extra_initial_steps:
+        if history_steps < order + multistep_extra_initial_steps or distinct_slots < order - 1:
             sampler_change_reason = "initial"
             if order == 4:
                 #rk_type = "res_4s_strehmel_weiner"
@@ -1396,7 +1409,7 @@ def get_rk_methods_beta(rk_type       : str,
         rk_type = rk_type[:-2] + "2s"
         #if h_prev is not None and step >= 1:
         if h_no_eta < 1.0:
-            if step >= 1 + multistep_extra_initial_steps:
+            if history_steps >= 1 + multistep_extra_initial_steps and distinct_slots >= 1:
                 multistep_stages = 1
                 c2 = (-h_prev1_no_eta / h_no_eta).item()
             else:
@@ -1415,7 +1428,7 @@ def get_rk_methods_beta(rk_type       : str,
         rk_type = rk_type[:-2] + "3s"
         #if h_prev2 is not None and step >= 2:
         if h_no_eta < 1.0:
-            if step >= 2 + multistep_extra_initial_steps:
+            if history_steps >= 2 + multistep_extra_initial_steps and distinct_slots >= 2:
                 multistep_stages = 2
                 c2 = (-h_prev1_no_eta / h_no_eta).item()
                 c3 = (-h_prev2_no_eta / h_no_eta).item()
@@ -1435,7 +1448,7 @@ def get_rk_methods_beta(rk_type       : str,
         rk_type = rk_type[:-2] + "4s"
         #if h_prev2 is not None and step >= 2:
         if h_no_eta < 1.0:
-            if step >= 3 + multistep_extra_initial_steps:
+            if history_steps >= 3 + multistep_extra_initial_steps and distinct_slots >= 3:
                 multistep_stages = 3
                 c2 = (-h_prev1_no_eta / h_no_eta).item()
                 c3 = (-h_prev2_no_eta / h_no_eta).item()
@@ -1457,7 +1470,7 @@ def get_rk_methods_beta(rk_type       : str,
 
     if rk_type[-3] == "h" and rk_type[-1] == "s": #hybrid method
         hybrid_order = int(rk_type[-4])
-        if step < hybrid_order + multistep_extra_initial_steps:
+        if history_steps < hybrid_order + multistep_extra_initial_steps or distinct_slots < hybrid_order:
             sampler_change_reason = "initial"
             rk_type = "res_" + rk_type[-2:]
             rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
@@ -1477,10 +1490,11 @@ def get_rk_methods_beta(rk_type       : str,
 
     match rk_type:
         case "deis": 
-            coeff_list = get_deis_coeff_list(sigmas, multistep_stages+1, deis_mode="rhoab")
+            local_sigmas = torch.cat((prev_sigmas[1:multistep_stages+1].flip(0), sigma.unsqueeze(0), sigma_next.unsqueeze(0)))
+            coeff_list = get_deis_coeff_list(local_sigmas, multistep_stages+1, deis_mode="rhoab")
             coeff_list = [[elem / h for elem in inner_list] for inner_list in coeff_list]
             if multistep_stages == 1:
-                b1, b2 = coeff_list[step]
+                b1, b2 = coeff_list[-1]
                 a = [
                         [0, 0],
                         [0, 0],
@@ -1490,7 +1504,7 @@ def get_rk_methods_beta(rk_type       : str,
                 ]
                 ci = [0, 0]
             if multistep_stages == 2:
-                b1, b2, b3 = coeff_list[step]
+                b1, b2, b3 = coeff_list[-1]
                 a = [
                         [0, 0, 0],
                         [0, 0, 0],
@@ -1501,7 +1515,7 @@ def get_rk_methods_beta(rk_type       : str,
                 ]
                 ci = [0, 0, 0]
             if multistep_stages == 3:
-                b1, b2, b3, b4 = coeff_list[step]
+                b1, b2, b3, b4 = coeff_list[-1]
                 a = [
                         [0, 0, 0, 0],
                         [0, 0, 0, 0],
