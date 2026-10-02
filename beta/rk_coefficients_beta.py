@@ -1352,10 +1352,11 @@ def get_rk_methods_beta(rk_type       : str,
 
     EO                            = ExtraOptions(extra_options)
     use_analytic_solution         = not EO("disable_analytic_solution", debugMode=1)
+    multistep_classic             = EO(("multistep_classic", "classic_multistep", "multistep_legacy", "legacy_multistep"))
     multistep_initial_sampler     = EO("multistep_initial_sampler", "", debugMode=1)
     multistep_fallback_sampler    = EO("multistep_fallback_sampler", "", debugMode=1)
     multistep_final_sampler       = EO("multistep_final_sampler", "", debugMode=1)
-    multistep_extra_initial_steps = EO("multistep_extra_initial_steps", 0, debugMode=1)
+    multistep_extra_initial_steps = EO("multistep_extra_initial_steps", 1 if multistep_classic else 0, debugMode=1)
     distinct_slots                = count_history(prev_sigmas, sigma) if prev_sigmas is not None else 0
     usable_history                = history_steps - multistep_extra_initial_steps
     final_step                    = sigmas[-1] == 0 and sigma_next == sigmas[-2]
@@ -1396,7 +1397,7 @@ def get_rk_methods_beta(rk_type       : str,
         elif stages == requested_stages:
             rk_type = "deis"
             multistep_stages = stages
-        elif stages == 0:
+        elif multistep_classic or stages == 0:
             sampler_change_reason = "initial"
             rk_type = f"ralston_{requested_stages + 1}s"
             rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
@@ -1415,12 +1416,12 @@ def get_rk_methods_beta(rk_type       : str,
             rk_type = multistep_final_sampler if multistep_final_sampler else "ddim"
         elif h_no_eta >= 1.0:
             sampler_change_reason = "fallback"
-            rk_type = "ddim"
+            rk_type = substep_names[requested_stages] if multistep_classic else "ddim"
             rk_type = multistep_fallback_sampler if multistep_fallback_sampler else rk_type
         elif stages == requested_stages:
             rk_type = substep_names[requested_stages]
             multistep_stages = requested_stages
-        elif stages == 0:
+        elif multistep_classic or stages == 0:
             sampler_change_reason = "initial"
             rk_type = substep_names[requested_stages]
             rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
