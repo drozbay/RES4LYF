@@ -1354,8 +1354,9 @@ def get_rk_methods_beta(rk_type       : str,
     use_analytic_solution         = not EO("disable_analytic_solution", debugMode=1)
     multistep_initial_sampler     = EO("multistep_initial_sampler", "", debugMode=1)
     multistep_fallback_sampler    = EO("multistep_fallback_sampler", "", debugMode=1)
-    multistep_extra_initial_steps = EO("multistep_extra_initial_steps", 1, debugMode=1)
+    multistep_extra_initial_steps = EO("multistep_extra_initial_steps", 0, debugMode=1)
     distinct_slots                = count_history(prev_sigmas, sigma) if prev_sigmas is not None else 0
+    usable_history                = history_steps - multistep_extra_initial_steps
 
     #if RK_Method_Beta.is_exponential(rk_type): 
     if rk_type.startswith(("res", "dpmpp", "ddim", "pec", "etdrk", "lawson")): 
@@ -1385,92 +1386,48 @@ def get_rk_methods_beta(rk_type       : str,
         c3 = random.uniform(0, 1)
         
     if rk_type[:4] == "deis":
-        order = int(rk_type[-2])
-        if history_steps < order + multistep_extra_initial_steps or distinct_slots < order - 1:
-            sampler_change_reason = "initial"
-            if order == 4:
-                #rk_type = "res_4s_strehmel_weiner"
-                rk_type = "ralston_4s"
-                rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-                order = 3
-            elif order == 3:
-                #rk_type = "res_3s"
-                rk_type = "ralston_3s"
-                rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-            elif order == 2:
-                #rk_type = "res_2s"
-                rk_type = "ralston_2s"
-                rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-        else:
+        requested_stages = int(rk_type[-2]) - 1
+        stages = max(0, min(requested_stages, usable_history, distinct_slots))
+        if stages == requested_stages:
             rk_type = "deis"
-            multistep_stages = order-1
-    
-    if rk_type[-2:] == "2m": #multistep method
-        rk_type = rk_type[:-2] + "2s"
-        #if h_prev is not None and step >= 1:
-        if h_no_eta < 1.0:
-            if history_steps >= 1 + multistep_extra_initial_steps and distinct_slots >= 1:
-                multistep_stages = 1
-                c2 = (-h_prev1_no_eta / h_no_eta).item()
-            else:
-                sampler_change_reason = "initial"
-                rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-            if rk_type.startswith("abnorsett"):
-                rk_type = "res_2s"
-                rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
+            multistep_stages = stages
+        elif stages == 0:
+            sampler_change_reason = "initial"
+            rk_type = f"ralston_{requested_stages + 1}s"
+            rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
         else:
+            sampler_change_reason = "ramp"
+            rk_type = "deis"
+            multistep_stages = stages
+
+    if rk_type[-2:] in ("2m", "3m", "4m"): #multistep method
+        requested_stages = int(rk_type[-2]) - 1
+        family = "res" if rk_type.startswith("abnorsett") else rk_type[:-3]
+        substep_names = {1: f"{family}_2s", 2: f"{family}_3s", 3: "res_4s_strehmel_weiner"}
+        stages = max(0, min(requested_stages, usable_history, distinct_slots))
+        if h_no_eta >= 1.0:
             sampler_change_reason = "fallback"
-            #rk_type = "res_2s"
-            rk_type = "ddim" if sigma < 0.1 else "res_2s"
+            rk_type = "ddim" if sigma < 0.1 else substep_names[requested_stages]
             rk_type = multistep_fallback_sampler if multistep_fallback_sampler else rk_type
-            
-    if rk_type[-2:] == "3m": #multistep method
-        rk_type = rk_type[:-2] + "3s"
-        #if h_prev2 is not None and step >= 2:
-        if h_no_eta < 1.0:
-            if history_steps >= 2 + multistep_extra_initial_steps and distinct_slots >= 2:
-                multistep_stages = 2
-                c2 = (-h_prev1_no_eta / h_no_eta).item()
-                c3 = (-h_prev2_no_eta / h_no_eta).item()
-            else:
-                sampler_change_reason = "initial"
-                rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-            if rk_type.startswith("abnorsett"):
-                rk_type = "res_3s"
-                rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
+        elif stages == requested_stages:
+            rk_type = substep_names[requested_stages]
+            multistep_stages = requested_stages
+        elif stages == 0:
+            sampler_change_reason = "initial"
+            rk_type = substep_names[requested_stages]
+            rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
         else:
-            sampler_change_reason = "fallback"
-            #rk_type = "res_3s"
-            rk_type = "ddim" if sigma < 0.1 else "res_3s"
-            rk_type = multistep_fallback_sampler if multistep_fallback_sampler else rk_type
-            
-    if rk_type[-2:] == "4m": #multistep method
-        rk_type = rk_type[:-2] + "4s"
-        #if h_prev2 is not None and step >= 2:
-        if h_no_eta < 1.0:
-            if history_steps >= 3 + multistep_extra_initial_steps and distinct_slots >= 3:
-                multistep_stages = 3
-                c2 = (-h_prev1_no_eta / h_no_eta).item()
-                c3 = (-h_prev2_no_eta / h_no_eta).item()
-                # WOULD NEED A C4 (POW) TO IMPLEMENT RES_4M IF IT EXISTED
-            else:
-                sampler_change_reason = "initial"
-                rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-            if rk_type == "res_4s":
-                rk_type = "res_4s_strehmel_weiner"
-                rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-            if rk_type.startswith("abnorsett"):
-                rk_type = "res_4s_strehmel_weiner"
-                rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-        else:
-            sampler_change_reason = "fallback"
-            #rk_type = "res_4s_strehmel_weiner"
-            rk_type = "ddim" if sigma < 0.1 else "res_4s_strehmel_weiner"
-            rk_type = multistep_fallback_sampler if multistep_fallback_sampler else rk_type
+            sampler_change_reason = "ramp"
+            rk_type = substep_names[stages]
+            multistep_stages = stages
+        if multistep_stages >= 1:
+            c2 = (-h_prev1_no_eta / h_no_eta).item()
+        if multistep_stages >= 2:
+            c3 = (-h_prev2_no_eta / h_no_eta).item()
 
     if rk_type[-3] == "h" and rk_type[-1] == "s": #hybrid method
         hybrid_order = int(rk_type[-4])
-        if history_steps < hybrid_order + multistep_extra_initial_steps or distinct_slots < hybrid_order:
+        if usable_history < hybrid_order or distinct_slots < hybrid_order:
             sampler_change_reason = "initial"
             rk_type = "res_" + rk_type[-2:]
             rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
@@ -3213,7 +3170,7 @@ def get_rk_methods_beta(rk_type       : str,
         (primary_rk_type.endswith("2m") and rk_type.endswith("2s") and multistep_stages >= 1) or
         (primary_rk_type.endswith("3m") and rk_type.endswith("3s") and multistep_stages >= 2) or
         (primary_rk_type.endswith("4m") and rk_type.endswith("4s") and multistep_stages >= 3) or
-        (primary_rk_type.startswith("deis") and rk_type == "deis" and multistep_stages >= 1)
+        (primary_rk_type.startswith("deis") and rk_type == "deis" and multistep_stages >= int(primary_rk_type[-2]) - 1)
     )
     if rk_type != primary_rk_type and not is_normal_multistep:
         if sampler_change_reason == "fallback":
@@ -3221,6 +3178,8 @@ def get_rk_methods_beta(rk_type       : str,
             reason_str = f" (fallback, h={h_val:.4f})"
         elif sampler_change_reason == "initial":
             reason_str = " (initial warmup step)"
+        elif sampler_change_reason == "ramp":
+            reason_str = f" (order ramp, {multistep_stages + 1}m)"
         else:
             reason_str = ""
         RESplain(f"step {step}: {primary_rk_type} -> {rk_type}{reason_str}", debug='debug')
