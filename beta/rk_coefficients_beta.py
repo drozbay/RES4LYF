@@ -1354,9 +1354,11 @@ def get_rk_methods_beta(rk_type       : str,
     use_analytic_solution         = not EO("disable_analytic_solution", debugMode=1)
     multistep_initial_sampler     = EO("multistep_initial_sampler", "", debugMode=1)
     multistep_fallback_sampler    = EO("multistep_fallback_sampler", "", debugMode=1)
+    multistep_final_sampler       = EO("multistep_final_sampler", "", debugMode=1)
     multistep_extra_initial_steps = EO("multistep_extra_initial_steps", 0, debugMode=1)
     distinct_slots                = count_history(prev_sigmas, sigma) if prev_sigmas is not None else 0
     usable_history                = history_steps - multistep_extra_initial_steps
+    final_step                    = sigmas[-1] == 0 and sigma_next == sigmas[-2]
 
     #if RK_Method_Beta.is_exponential(rk_type): 
     if rk_type.startswith(("res", "dpmpp", "ddim", "pec", "etdrk", "lawson")): 
@@ -1388,7 +1390,10 @@ def get_rk_methods_beta(rk_type       : str,
     if rk_type[:4] == "deis":
         requested_stages = int(rk_type[-2]) - 1
         stages = max(0, min(requested_stages, usable_history, distinct_slots))
-        if stages == requested_stages:
+        if final_step:
+            sampler_change_reason = "final"
+            rk_type = multistep_final_sampler if multistep_final_sampler else "euler"
+        elif stages == requested_stages:
             rk_type = "deis"
             multistep_stages = stages
         elif stages == 0:
@@ -1405,9 +1410,12 @@ def get_rk_methods_beta(rk_type       : str,
         family = "res" if rk_type.startswith("abnorsett") else rk_type[:-3]
         substep_names = {1: f"{family}_2s", 2: f"{family}_3s", 3: "res_4s_strehmel_weiner"}
         stages = max(0, min(requested_stages, usable_history, distinct_slots))
-        if h_no_eta >= 1.0:
+        if final_step:
+            sampler_change_reason = "final"
+            rk_type = multistep_final_sampler if multistep_final_sampler else "ddim"
+        elif h_no_eta >= 1.0:
             sampler_change_reason = "fallback"
-            rk_type = "ddim" if sigma < 0.1 else substep_names[requested_stages]
+            rk_type = "ddim"
             rk_type = multistep_fallback_sampler if multistep_fallback_sampler else rk_type
         elif stages == requested_stages:
             rk_type = substep_names[requested_stages]
@@ -3180,6 +3188,8 @@ def get_rk_methods_beta(rk_type       : str,
             reason_str = " (initial warmup step)"
         elif sampler_change_reason == "ramp":
             reason_str = f" (order ramp, {multistep_stages + 1}m)"
+        elif sampler_change_reason == "final":
+            reason_str = " (final step)"
         else:
             reason_str = ""
         RESplain(f"step {step}: {primary_rk_type} -> {rk_type}{reason_str}", debug='debug')
