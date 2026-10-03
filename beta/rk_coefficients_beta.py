@@ -1361,8 +1361,7 @@ def get_rk_methods_beta(rk_type       : str,
     usable_history                = history_steps - multistep_extra_initial_steps
     final_step                    = sigmas[-1] == 0 and sigma_next == sigmas[-2]
 
-    #if RK_Method_Beta.is_exponential(rk_type): 
-    if rk_type.startswith(("res", "dpmpp", "ddim", "pec", "etdrk", "lawson")): 
+    if is_exponential(rk_type):
         h_no_eta = -torch.log(sigma_next/sigma)
         h_prev1_no_eta = -torch.log(sigma/prev_sigmas[1]) if history_steps >= 1 else None
         h_prev2_no_eta = -torch.log(sigma/prev_sigmas[2]) if history_steps >= 2 else None
@@ -1704,6 +1703,51 @@ def get_rk_methods_beta(rk_type       : str,
             gen_first_col_exp_uv(a, b, ci, u, v, φ)
             
 
+
+        case "abnorsett4_3h2s":
+
+            c1, c2 = 0, 1
+            ci = [c1, c2]
+            φ = Phi(h, ci, use_analytic_solution)
+
+            a = [
+                    [0, 0],
+                    [0, 0],
+            ]
+            b = [
+                    [0, 0],
+            ]
+
+            if extra_options_flag("h_prev_h_h_no_eta", extra_options):
+                φ1 = Phi(h_prev1_no_eta * h/h_no_eta, ci)
+                φ2 = Phi(h_prev2_no_eta * h/h_no_eta, ci)
+                φ3 = Phi(h_prev3_no_eta * h/h_no_eta, ci)
+            elif extra_options_flag("h_only", extra_options):
+                φ1 = Phi(h, ci, use_analytic_solution)
+                φ2 = Phi(h, ci, use_analytic_solution)
+                φ3 = Phi(h, ci, use_analytic_solution)
+            else:
+                φ1 = Phi(h_prev1_no_eta, ci)
+                φ2 = Phi(h_prev2_no_eta, ci)
+                φ3 = Phi(h_prev3_no_eta, ci)
+
+            u2_1 = -3*φ1(2) - 5*φ1(3) - 3*φ1(4)
+            u2_2 = (3/2)*φ2(2) + 4*φ2(3) + 3*φ2(4)
+            u2_3 = (-1/3)*φ3(2) - φ3(3) - φ3(4)
+
+            v1 = u2_1
+            v2 = u2_2
+            v3 = u2_3
+
+            u = [
+                    [   0,    0,    0],
+                    [u2_1, u2_2, u2_3],
+            ]
+            v = [
+                    [v1, v2, v3],
+            ]
+
+            gen_first_col_exp_uv(a, b, ci, u, v, φ)
 
         case "pec423_2h2s": #https://ora.ox.ac.uk/objects/uuid:cc001282-4285-4ca2-ad06-31787b540c61/files/m611df1a355ca243beb09824b70e5e774
             
