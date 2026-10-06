@@ -128,6 +128,9 @@ class Phi:
 
         return result
 
+    def psi(self, j, i):
+        return self.c[i - 1] ** j * self(j, i)
+
 
 
 from mpmath import mp, mpf, gamma, gammainc
