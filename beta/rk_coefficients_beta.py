@@ -1578,15 +1578,9 @@ def get_rk_methods_beta(rk_type       : str,
                     [0, 0],
             ]
 
-            if extra_options_flag("h_prev_h_h_no_eta", extra_options):
-                φ1 = Phi(h_prev1_no_eta * h/h_no_eta, ci)
-            elif extra_options_flag("h_only", extra_options):
-                φ1 = Phi(h, ci, use_analytic_solution)
-            else:
-                φ1 = Phi(h_prev1_no_eta, ci)
 
-            u1 = -φ1(2)
-            v1 = -φ1(2)
+            u1 = -φ(2)
+            v1 = -φ(2)
 
             u = [
                     [0, 0],
@@ -1675,21 +1669,11 @@ def get_rk_methods_beta(rk_type       : str,
                     [0, 0],
             ]
             
-            if extra_options_flag("h_prev_h_h_no_eta", extra_options):
-                φ1 = Phi(h_prev1_no_eta * h/h_no_eta, ci)
-                φ2 = Phi(h_prev2_no_eta * h/h_no_eta, ci)
-            elif extra_options_flag("h_only", extra_options):
-                φ1 = Phi(h, ci, use_analytic_solution)
-                φ2 = Phi(h, ci, use_analytic_solution)
-            else:
-                φ1 = Phi(h_prev1_no_eta, ci)
-                φ2 = Phi(h_prev2_no_eta, ci)
-                
-            u2_1 = -2*φ1(2) - 2*φ1(3)
-            u2_2 = (1/2)*φ2(2) + φ2(3)
+            u2_1 = -2*φ(2) - 2*φ(3)
+            u2_2 = (1/2)*φ(2) + φ(3)
             
-            v1 = u2_1 # -φ1(2) + φ1(3) + 3*φ1(4)
-            v2 = u2_2 # (1/6)*φ2(2) - φ2(4)
+            v1 = u2_1
+            v2 = u2_2
             
             u = [
                     [   0,    0],
@@ -1717,22 +1701,10 @@ def get_rk_methods_beta(rk_type       : str,
                     [0, 0],
             ]
 
-            if extra_options_flag("h_prev_h_h_no_eta", extra_options):
-                φ1 = Phi(h_prev1_no_eta * h/h_no_eta, ci)
-                φ2 = Phi(h_prev2_no_eta * h/h_no_eta, ci)
-                φ3 = Phi(h_prev3_no_eta * h/h_no_eta, ci)
-            elif extra_options_flag("h_only", extra_options):
-                φ1 = Phi(h, ci, use_analytic_solution)
-                φ2 = Phi(h, ci, use_analytic_solution)
-                φ3 = Phi(h, ci, use_analytic_solution)
-            else:
-                φ1 = Phi(h_prev1_no_eta, ci)
-                φ2 = Phi(h_prev2_no_eta, ci)
-                φ3 = Phi(h_prev3_no_eta, ci)
 
-            u2_1 = -3*φ1(2) - 5*φ1(3) - 3*φ1(4)
-            u2_2 = (3/2)*φ2(2) + 4*φ2(3) + 3*φ2(4)
-            u2_3 = (-1/3)*φ3(2) - φ3(3) - φ3(4)
+            u2_1 = -3*φ(2) - 5*φ(3) - 3*φ(4)
+            u2_2 = (3/2)*φ(2) + 4*φ(3) + 3*φ(4)
+            u2_3 = (-1/3)*φ(2) - φ(3) - φ(4)
 
             v1 = u2_1
             v2 = u2_2
@@ -1764,21 +1736,11 @@ def get_rk_methods_beta(rk_type       : str,
                     [0, b2],
             ]
             
-            if extra_options_flag("h_prev_h_h_no_eta", extra_options):
-                φ1 = Phi(h_prev1_no_eta * h/h_no_eta, ci)
-                φ2 = Phi(h_prev2_no_eta * h/h_no_eta, ci)
-            elif extra_options_flag("h_only", extra_options):
-                φ1 = Phi(h, ci, use_analytic_solution)
-                φ2 = Phi(h, ci, use_analytic_solution)
-            else:
-                φ1 = Phi(h_prev1_no_eta, ci)
-                φ2 = Phi(h_prev2_no_eta, ci)
-                
-            u2_1 = -2*φ1(2) - 2*φ1(3)
-            u2_2 = (1/2)*φ2(2) + φ2(3)
+            u2_1 = -2*φ(2) - 2*φ(3)
+            u2_2 = (1/2)*φ(2) + φ(3)
             
-            v1 = -φ1(2) + φ1(3) + 3*φ1(4)
-            v2 = (1/6)*φ2(2) - φ2(4)
+            v1 = -φ(2) + φ(3) + 3*φ(4)
+            v2 = (1/6)*φ(2) - φ(4)
             
             u = [
                     [   0,    0],
@@ -1813,23 +1775,13 @@ def get_rk_methods_beta(rk_type       : str,
                     [0, b2, b3],
             ]
             
-            if extra_options_flag("h_prev_h_h_no_eta", extra_options):
-                φ1 = Phi(h_prev1_no_eta * h/h_no_eta, ci)
-                φ2 = Phi(h_prev2_no_eta * h/h_no_eta, ci)
-            elif extra_options_flag("h_only", extra_options):
-                φ1 = Phi(h, ci, use_analytic_solution)
-                φ2 = Phi(h, ci, use_analytic_solution)
-            else:
-                φ1 = Phi(h_prev1_no_eta, ci)
-                φ2 = Phi(h_prev2_no_eta, ci)
-                
-            u2_1 = -2*φ1(2) - 2*φ1(3)
-            u3_1 =   -φ1(2) +   φ1(3) + 3*φ1(4)
-            v1   =   -φ1(2) +   φ1(3) + 3*φ1(4)
+            u2_1 = -2*φ(2) - 2*φ(3)
+            u3_1 =   -φ(2) +   φ(3) + 3*φ(4)
+            v1   =   -φ(2) +   φ(3) + 3*φ(4)
             
-            u2_2 = (1/2)*φ2(2) + φ2(3)
-            u3_2 = (1/6)*φ2(2) - φ2(4)
-            v2   = (1/6)*φ2(2) - φ2(4)
+            u2_2 = (1/2)*φ(2) + φ(3)
+            u3_2 = (1/6)*φ(2) - φ(4)
+            v2   = (1/6)*φ(2) - φ(4)
 
             
             u = [
@@ -2351,18 +2303,11 @@ def get_rk_methods_beta(rk_type       : str,
                     [0, b2, b3, b4,],
             ]
 
-            if extra_options_flag("h_prev_h_h_no_eta", extra_options):
-                φ1 = Phi(h_prev1_no_eta * h/h_no_eta, ci, use_analytic_solution)
-            elif extra_options_flag("h_only", extra_options):
-                φ1 = Phi(h, ci, use_analytic_solution)
-            else:
-                φ1 = Phi(h_prev1_no_eta, ci, use_analytic_solution)
 
-            ψ1 = φ1.psi
-            u2_1 = -ψ1(2,2)
+            u2_1 = -ψ(2,2)
             u3_1 = u2_1 + 1/4
-            u4_1 = -φ1(2) + (1/2)*ψ1(0,2)
-            v1 = -(1/2)*φ1(2) + φ1(3) + (1/12)*ψ1(0,2)
+            u4_1 = -φ(2) + (1/2)*ψ(0,2)
+            v1 = -(1/2)*φ(2) + φ(3) + (1/12)*ψ(0,2)
 
             u = [
                     [   0, 0, 0, 0],
@@ -2400,27 +2345,16 @@ def get_rk_methods_beta(rk_type       : str,
                     [0, b2, b3, b4,],
             ]
 
-            if extra_options_flag("h_prev_h_h_no_eta", extra_options):
-                φ1 = Phi(h_prev1_no_eta * h/h_no_eta, ci, use_analytic_solution)
-                φ2 = Phi(h_prev2_no_eta * h/h_no_eta, ci, use_analytic_solution)
-            elif extra_options_flag("h_only", extra_options):
-                φ1 = Phi(h, ci, use_analytic_solution)
-                φ2 = Phi(h, ci, use_analytic_solution)
-            else:
-                φ1 = Phi(h_prev1_no_eta, ci, use_analytic_solution)
-                φ2 = Phi(h_prev2_no_eta, ci, use_analytic_solution)
 
-            ψ1 = φ1.psi
-            ψ2 = φ2.psi
-            u2_1 = -2*ψ1(2,2) - 2*ψ1(3,2)
+            u2_1 = -2*ψ(2,2) - 2*ψ(3,2)
             u3_1 = u2_1 + 5/8
-            u4_1 = -2*φ1(2) - 2*φ1(3) + (5/4)*ψ1(0,2)
-            v1 = -φ1(2) + φ1(3) + 3*φ1(4) + (5/24)*ψ1(0,2)
+            u4_1 = -2*φ(2) - 2*φ(3) + (5/4)*ψ(0,2)
+            v1 = -φ(2) + φ(3) + 3*φ(4) + (5/24)*ψ(0,2)
             
-            u2_2 = (1/2)*ψ2(2,2) + ψ2(3,2)
+            u2_2 = (1/2)*ψ(2,2) + ψ(3,2)
             u3_2 = u2_2 - 3/16
-            u4_2 = (1/2)*φ2(2) + φ2(3) - (3/8)*ψ2(0,2)
-            v2 = (1/6)*φ2(2) - φ2(4) - (1/24)*ψ2(0,2)
+            u4_2 = (1/2)*φ(2) + φ(3) - (3/8)*ψ(0,2)
+            v2 = (1/6)*φ(2) - φ(4) - (1/24)*ψ(0,2)
             
             u = [
                     [   0,    0, 0, 0],
@@ -2457,36 +2391,20 @@ def get_rk_methods_beta(rk_type       : str,
                     [0, b2, b3, b4,],
             ]
 
-            if extra_options_flag("h_prev_h_h_no_eta", extra_options):
-                φ1 = Phi(h_prev1_no_eta * h/h_no_eta, ci, use_analytic_solution)
-                φ2 = Phi(h_prev2_no_eta * h/h_no_eta, ci, use_analytic_solution)
-                φ3 = Phi(h_prev3_no_eta * h/h_no_eta, ci, use_analytic_solution)
-            elif extra_options_flag("h_only", extra_options):
-                φ1 = Phi(h, ci, use_analytic_solution)
-                φ2 = Phi(h, ci, use_analytic_solution)
-                φ3 = Phi(h, ci, use_analytic_solution)
-            else:
-                φ1 = Phi(h_prev1_no_eta, ci, use_analytic_solution)
-                φ2 = Phi(h_prev2_no_eta, ci, use_analytic_solution)
-                φ3 = Phi(h_prev3_no_eta, ci, use_analytic_solution)
-                
-            ψ1 = φ1.psi
-            ψ2 = φ2.psi
-            ψ3 = φ3.psi
-            u2_1 = -3*ψ1(2,2) - 5*ψ1(3,2) - 3*ψ1(4,2)
+            u2_1 = -3*ψ(2,2) - 5*ψ(3,2) - 3*ψ(4,2)
             u3_1 = u2_1 + 35/32
-            u4_1 = -3*φ1(2) - 5*φ1(3) - 3*φ1(4) + (35/16)*ψ1(0,2)
-            v1 = -(3/2)*φ1(2) + (1/2)*φ1(3) + 6*φ1(4) + 6*φ1(5) + (35/96)*ψ1(0,2)
+            u4_1 = -3*φ(2) - 5*φ(3) - 3*φ(4) + (35/16)*ψ(0,2)
+            v1 = -(3/2)*φ(2) + (1/2)*φ(3) + 6*φ(4) + 6*φ(5) + (35/96)*ψ(0,2)
             
-            u2_2 = (3/2)*ψ2(2,2) + 4*ψ2(3,2) + 3*ψ2(4,2)
+            u2_2 = (3/2)*ψ(2,2) + 4*ψ(3,2) + 3*ψ(4,2)
             u3_2 = u2_2 - 21/32
-            u4_2 = (3/2)*φ2(2) + 4*φ2(3) + 3*φ2(4) - (21/16)*ψ2(0,2)
-            v2 = (1/2)*φ2(2) + (1/3)*φ2(3) - 3*φ2(4) - 4*φ2(5) - (7/48)*ψ2(0,2)
+            u4_2 = (3/2)*φ(2) + 4*φ(3) + 3*φ(4) - (21/16)*ψ(0,2)
+            v2 = (1/2)*φ(2) + (1/3)*φ(3) - 3*φ(4) - 4*φ(5) - (7/48)*ψ(0,2)
             
-            u2_3 = (-1/3)*ψ3(2,2) - ψ3(3,2) - ψ3(4,2)
+            u2_3 = (-1/3)*ψ(2,2) - ψ(3,2) - ψ(4,2)
             u3_3 = u2_3 + 5/32
-            u4_3 = -(1/3)*φ3(2) - φ3(3) - φ3(4) + (5/16)*ψ3(0,2)
-            v3 = -(1/12)*φ3(2) - (1/12)*φ3(3) + (1/2)*φ3(4) + φ3(5) + (5/192)*ψ3(0,2)
+            u4_3 = -(1/3)*φ(2) - φ(3) - φ(4) + (5/16)*ψ(0,2)
+            v3 = -(1/12)*φ(2) - (1/12)*φ(3) + (1/2)*φ(4) + φ(5) + (5/192)*ψ(0,2)
             
             u = [
                     [   0,    0,    0, 0],
@@ -2525,45 +2443,25 @@ def get_rk_methods_beta(rk_type       : str,
                     [0, b2, b3, b4,],
             ]
 
-            if extra_options_flag("h_prev_h_h_no_eta", extra_options):
-                φ1 = Phi(h_prev1_no_eta * h/h_no_eta, ci, use_analytic_solution)
-                φ2 = Phi(h_prev2_no_eta * h/h_no_eta, ci, use_analytic_solution)
-                φ3 = Phi(h_prev3_no_eta * h/h_no_eta, ci, use_analytic_solution)
-                φ4 = Phi(h_prev4_no_eta * h/h_no_eta, ci, use_analytic_solution)
-            elif extra_options_flag("h_only", extra_options):
-                φ1 = Phi(h, ci, use_analytic_solution)
-                φ2 = Phi(h, ci, use_analytic_solution)
-                φ3 = Phi(h, ci, use_analytic_solution)
-                φ4 = Phi(h, ci, use_analytic_solution)
-            else:
-                φ1 = Phi(h_prev1_no_eta, ci, use_analytic_solution)
-                φ2 = Phi(h_prev2_no_eta, ci, use_analytic_solution)
-                φ3 = Phi(h_prev3_no_eta, ci, use_analytic_solution)
-                φ4 = Phi(h_prev4_no_eta, ci, use_analytic_solution)
-                
-            ψ1 = φ1.psi
-            ψ2 = φ2.psi
-            ψ3 = φ3.psi
-            ψ4 = φ4.psi
-            u2_1 = -4*ψ1(2,2) - (26/3)*ψ1(3,2) - 9*ψ1(4,2) - 4*ψ1(5,2)
+            u2_1 = -4*ψ(2,2) - (26/3)*ψ(3,2) - 9*ψ(4,2) - 4*ψ(5,2)
             u3_1 = u2_1 + 105/64
-            u4_1 = -4*φ1(2) - (26/3)*φ1(3) - 9*φ1(4) - 4*φ1(5) + (105/32)*ψ1(0,2)
-            v1 = -(116/59)*φ1(2) -  (34/177)*φ1(3) + (519/59)*φ1(4) + (964/59)*φ1(5) - (600/59)*φ1(6) +   (495/944)*ψ1(0,2)
+            u4_1 = -4*φ(2) - (26/3)*φ(3) - 9*φ(4) - 4*φ(5) + (105/32)*ψ(0,2)
+            v1 = -(116/59)*φ(2) -  (34/177)*φ(3) + (519/59)*φ(4) + (964/59)*φ(5) - (600/59)*φ(6) +   (495/944)*ψ(0,2)
             
-            u2_2 = 3*ψ2(2,2) + (19/2)*ψ2(3,2) + 12*ψ2(4,2) + 6*ψ2(5,2)
+            u2_2 = 3*ψ(2,2) + (19/2)*ψ(3,2) + 12*ψ(4,2) + 6*ψ(5,2)
             u3_2 = u2_2 - 189/128
-            u4_2 = 3*φ2(2) + (19/2)*φ2(3) + 12*φ2(4) + 6*φ2(5) - (189/64)*ψ2(0,2)
-            v2 =  (57/59)*φ2(2) + (121/118)*φ2(3) - (342/59)*φ2(4) - (846/59)*φ2(5) + (600/59)*φ2(6) -  (577/1888)*ψ2(0,2)
+            u4_2 = 3*φ(2) + (19/2)*φ(3) + 12*φ(4) + 6*φ(5) - (189/64)*ψ(0,2)
+            v2 =  (57/59)*φ(2) + (121/118)*φ(3) - (342/59)*φ(4) - (846/59)*φ(5) + (600/59)*φ(6) -  (577/1888)*ψ(0,2)
             
-            u2_3 = -(4/3)*ψ3(2,2) - (14/3)*ψ3(3,2) - 7*ψ3(4,2) - 4*ψ3(5,2)
+            u2_3 = -(4/3)*ψ(2,2) - (14/3)*ψ(3,2) - 7*ψ(4,2) - 4*ψ(5,2)
             u3_3 = u2_3 + 45/64
-            u4_3 = -(4/3)*φ3(2) - (14/3)*φ3(3) - 7*φ3(4) - 4*φ3(5) +(45/32)*ψ3(0,2)
-            v3 = -(56/177)*φ3(2) -  (76/177)*φ3(3) + (112/59)*φ3(4) + (364/59)*φ3(5) - (300/59)*φ3(6) +    (25/236)*ψ3(0,2)
+            u4_3 = -(4/3)*φ(2) - (14/3)*φ(3) - 7*φ(4) - 4*φ(5) +(45/32)*ψ(0,2)
+            v3 = -(56/177)*φ(2) -  (76/177)*φ(3) + (112/59)*φ(4) + (364/59)*φ(5) - (300/59)*φ(6) +    (25/236)*ψ(0,2)
             
-            u2_4 = (1/4)*ψ4(2,2) + (88/96)*ψ4(3,2) + (3/2)*ψ4(4,2) + ψ4(5,2)
+            u2_4 = (1/4)*ψ(2,2) + (88/96)*ψ(3,2) + (3/2)*ψ(4,2) + ψ(5,2)
             u3_4 = u2_4 - 35/256
-            u4_4 = (1/4)*φ4(2) + (11/12)*φ4(3) + (3/2)*φ4(4) + φ4(5) - (35/128)*ψ4(0,2)
-            v4 =  (11/236)*φ4(2) +  (49/708)*φ4(3) - (33/118)*φ4(4) -  (61/59)*φ4(5) + ( 60/59)*φ4(6) - (181/11328)*ψ4(0,2)
+            u4_4 = (1/4)*φ(2) + (11/12)*φ(3) + (3/2)*φ(4) + φ(5) - (35/128)*ψ(0,2)
+            v4 =  (11/236)*φ(2) +  (49/708)*φ(3) - (33/118)*φ(4) -  (61/59)*φ(5) + ( 60/59)*φ(6) - (181/11328)*ψ(0,2)
 
             u = [
                     [   0,    0,    0,    0],
