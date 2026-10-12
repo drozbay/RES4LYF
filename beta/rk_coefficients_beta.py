@@ -1313,6 +1313,19 @@ rk_coeff = {
 
 
 
+HYBRID_LADDERS = (
+    ("abnorsett2_1h2s", "abnorsett3_2h2s", "abnorsett4_3h2s"),
+    ("lawson42-gen-mod_1h4s", "lawson43-gen-mod_2h4s", "lawson44-gen-mod_3h4s", "lawson45-gen-mod_4h4s"),
+)
+
+
+def hybrid_rung(rk_type: str, stages: int) -> Optional[str]:
+    for ladder in HYBRID_LADDERS:
+        if rk_type in ladder:
+            return ladder[stages - 1]
+    return None
+
+
 def count_history(prev_sigmas: Tensor, sigma: Tensor) -> int:
     distinct_slots = 0
     for slot in range(1, len(prev_sigmas)):
@@ -1434,18 +1447,21 @@ def get_rk_methods_beta(rk_type       : str,
 
     if rk_type[-3] == "h" and rk_type[-1] == "s": #hybrid method
         hybrid_order = int(rk_type[-4])
-        if usable_history < hybrid_order or distinct_slots < hybrid_order:
+        substep_name = "res_4s_strehmel_weiner" if rk_type.endswith("4s") else "res_" + rk_type[-2:]
+        stages = max(0, min(hybrid_order, usable_history, distinct_slots))
+        # No step size guard here: on the hybrids the final step rule alone removed the large step grain, the guard changed little.
+        if final_step:
+            sampler_change_reason = "final"
+            rk_type = multistep_final_sampler if multistep_final_sampler else substep_name
+        elif stages == hybrid_order:
+            hybrid_stages = hybrid_order
+        elif multistep_classic or stages == 0 or hybrid_rung(rk_type, stages) is None:
             sampler_change_reason = "initial"
-            rk_type = "res_" + rk_type[-2:]
-            rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
+            rk_type = multistep_initial_sampler if multistep_initial_sampler else substep_name
         else:
-            hybrid_stages = hybrid_order  #+1 adjustment needed?
-        if rk_type == "res_4s":
-            rk_type = "res_4s_strehmel_weiner"
-            rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
-        if rk_type == "res_1s":
-            rk_type = "res_2s"
-            rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
+            sampler_change_reason = "ramp"
+            rk_type = hybrid_rung(rk_type, stages)
+            hybrid_stages = stages
 
     if rk_type in rk_coeff:
         a, b, ci = copy.deepcopy(rk_coeff[rk_type])
@@ -3092,6 +3108,8 @@ def get_rk_methods_beta(rk_type       : str,
             reason_str = f" (fallback, h={h_val:.4f})"
         elif sampler_change_reason == "initial":
             reason_str = " (initial warmup step)"
+        elif sampler_change_reason == "ramp" and hybrid_stages:
+            reason_str = f" (order ramp, {hybrid_stages}h)"
         elif sampler_change_reason == "ramp":
             reason_str = f" (order ramp, {multistep_stages + 1}m)"
         elif sampler_change_reason == "final":
