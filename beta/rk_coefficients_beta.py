@@ -117,7 +117,6 @@ RK_SAMPLER_NAMES_BETA_FOLDERS = ["none",
                     "hybrid/lawson42-gen-mod_1h4s",
                     "hybrid/lawson43-gen-mod_2h4s",
                     "hybrid/lawson44-gen-mod_3h4s",
-                    "hybrid/lawson45-gen-mod_4h4s",
                     
                     "linear/ralston_2s",
                     "linear/ralston_3s",
@@ -2435,7 +2434,8 @@ def get_rk_methods_beta(rk_type       : str,
             a, b = gen_first_col_exp_uv(a,b,ci,u,v,φ)
 
 
-
+        # !! Lawson45 is disabled !!
+        # because the current implementation of multistep buffer doesn't have the four slots needed
         case "lawson45-gen-mod_4h4s": # GenLawson4 https://ora.ox.ac.uk/objects/uuid:cc001282-4285-4ca2-ad06-31787b540c61/files/m611df1a355ca243beb09824b70e5e774
             c1,c2,c3,c4 = 0, 1/2, 1/2, 1
             ci = [c1,c2,c3,c4]
