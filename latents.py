@@ -2,7 +2,9 @@ import torch
 import torch.nn.functional as F
 from typing import Tuple, List, Union
 import math
+import hashlib
 from .res4lyf import RESplain
+from comfy.nested_tensor import NestedTensor
 
 import comfy.utils
 
@@ -931,6 +933,78 @@ def apply_to_state_info_tensors(obj, ref_shape, modify_func, *args, latent_shape
                 return modify_func(t, *args, **kwargs)
         return t
     return walk_state_info(obj, handler)
+
+
+PER_ITEM_STATE_KEYS = (
+    "denoised", "data_prev_", "data_prev_sigmas_", "data_prev_x_", "data_prev_y_", "data_x_prev_",
+    "y0", "data_cached", "image_initial", "noise_initial",
+    "y0_bongflow", "y0_bongflow_orig", "noise_bongflow",
+    "y0_standard_guide", "y0_inv_standard_guide",
+    "guide_inversion_y0", "guide_inversion_y0_inv",
+)
+
+
+def hash_latent_items(samples):
+    components = samples.unbind() if isinstance(samples, NestedTensor) else [samples]
+    item_ids = []
+    for index in range(components[0].shape[0]):
+        digest = hashlib.blake2b(digest_size=16)
+        for component in components:
+            item = component[index].to(device="cpu", dtype=torch.float32).contiguous()
+            digest.update(",".join(str(size) for size in item.shape).encode())
+            digest.update(item.numpy().tobytes())
+        item_ids.append(digest.hexdigest())
+    return item_ids
+
+
+def gather_state_info_items(state_info, reference_shape, indices):
+    batch_size_old = reference_shape[0]
+    item_shape = tuple(reference_shape[1:])
+    index_tensor = torch.tensor(indices, dtype=torch.long)
+
+    def handler(tensor):
+        if isinstance(tensor, NestedTensor):
+            parts = tensor.unbind()
+            if all(part.shape[0] == batch_size_old for part in parts):
+                return NestedTensor([part.index_select(0, index_tensor.to(part.device)) for part in parts])
+            return tensor
+        if isinstance(tensor, torch.Tensor):
+            batch_dim = tensor.ndim - len(reference_shape)
+            if batch_dim in (0, 1) and tensor.shape[batch_dim] == batch_size_old and tuple(tensor.shape[batch_dim + 1:]) == item_shape:
+                return tensor.index_select(batch_dim, index_tensor.to(tensor.device))
+        return tensor
+    return walk_state_info(state_info, handler)
+
+
+def drop_per_item_state(state_info):
+    kept = {key: value for key, value in state_info.items() if key not in PER_ITEM_STATE_KEYS}
+    kept.pop("item_ids", None)
+    kept.pop("FLOW_STARTED", None)
+    kept.pop("FLOW_STOPPED", None)
+    kept["history_steps"] = 0
+    return kept
+
+
+def align_state_info(state_info, samples):
+    if not state_info:
+        return state_info
+    stored_ids = state_info.get("item_ids")
+    if stored_ids is None:
+        return drop_per_item_state(state_info)
+    item_ids = hash_latent_items(samples)
+    missing_count = sum(1 for item_id in item_ids if item_id not in stored_ids)
+    if missing_count:
+        RESplain(f"state_info dropped: {missing_count} of {len(item_ids)} incoming latent items were not produced by the stored state")
+        return drop_per_item_state(state_info)
+    indices = [stored_ids.index(item_id) for item_id in item_ids]
+    if indices == list(range(len(stored_ids))):
+        return state_info
+    reference = state_info.get("denoised")
+    if reference is None:
+        return drop_per_item_state(state_info)
+    aligned = gather_state_info_items(state_info, reference.shape, indices)
+    aligned["item_ids"] = item_ids
+    return aligned
 
 
 def derive_old_latent_shapes(raw_x, latent_shapes_new):

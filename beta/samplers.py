@@ -21,7 +21,7 @@ import latent_preview
 
 from ..helper               import initialize_or_scale, get_res4lyf_scheduler_list, OptionsManager, ExtraOptions, extract_cond_from_guider
 from ..res4lyf              import RESplain
-from ..latents              import normalize_zscore, get_orthogonal
+from ..latents              import normalize_zscore, get_orthogonal, hash_latent_items
 from ..sigmas               import get_sigmas
 #import ..models              # import ReFluxPatcher
 
@@ -1006,8 +1006,10 @@ class SharkSampler:
                 state_info_out['image_initial'] = x_initial
                 state_info_out['noise_initial'] = noise_initial
 
-            out['state_info'] = state_info_out
+            out['state_info'] = dict(state_info_out)
+            out['state_info']['item_ids'] = hash_latent_items(out["samples"])
             out_denoised['state_info'] = {k: v for k, v in state_info_out.items() if k != 'raw_x'}
+            out_denoised['state_info']['item_ids'] = hash_latent_items(out_denoised["samples"])
 
             return (out, out_denoised, None)
 
