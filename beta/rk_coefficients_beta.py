@@ -1420,6 +1420,7 @@ def get_rk_methods_beta(rk_type       : str,
         requested_stages = int(rk_type[-2]) - 1
         family = "res" if rk_type.startswith("abnorsett") else rk_type[:-3]
         substep_names = {1: f"{family}_2s", 2: f"{family}_3s", 3: "res_4s_strehmel_weiner"}
+        multistep_names = {1: "abnorsett_2m", 2: "abnorsett_3m", 3: "abnorsett_4m"} if rk_type.startswith("abnorsett") else substep_names
         stages = max(0, min(requested_stages, usable_history, distinct_slots))
         if final_step:
             sampler_change_reason = "final"
@@ -1429,7 +1430,7 @@ def get_rk_methods_beta(rk_type       : str,
             rk_type = substep_names[requested_stages] if multistep_classic else "ddim"
             rk_type = multistep_fallback_sampler if multistep_fallback_sampler else rk_type
         elif stages == requested_stages:
-            rk_type = substep_names[requested_stages]
+            rk_type = multistep_names[requested_stages]
             multistep_stages = requested_stages
         elif multistep_classic or stages == 0:
             sampler_change_reason = "initial"
@@ -1437,7 +1438,7 @@ def get_rk_methods_beta(rk_type       : str,
             rk_type = multistep_initial_sampler if multistep_initial_sampler else rk_type
         else:
             sampler_change_reason = "ramp"
-            rk_type = substep_names[stages]
+            rk_type = multistep_names[stages]
             multistep_stages = stages
         if multistep_stages >= 1:
             c2 = (-h_prev1_no_eta / h_no_eta).item()
