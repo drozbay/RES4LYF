@@ -375,8 +375,6 @@ def sample_rk_beta(
     if implicit_sampler_name not in ("use_explicit", "none"):
         rk_type = implicit_sampler_name
     RESplain("rk_type:", rk_type)
-    if rk_type.startswith("abnorsett_"):
-        RESplain(f"{rk_type} currently runs as res_{rk_type[-2:]}. The Adams-Bashforth-Norsett multistep tableau is not wired in yet.")
     if implicit_sampler_name == "none":
         implicit_steps_diag = implicit_steps_full = 0
         
