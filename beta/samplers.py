@@ -21,7 +21,7 @@ import latent_preview
 
 from ..helper               import initialize_or_scale, get_res4lyf_scheduler_list, OptionsManager, ExtraOptions, extract_cond_from_guider
 from ..res4lyf              import RESplain
-from ..latents              import normalize_zscore, get_orthogonal, hash_latent_items
+from ..latents              import normalize_zscore, get_orthogonal, hash_latent_items, align_state_info
 from ..sigmas               import get_sigmas
 #import ..models              # import ReFluxPatcher
 
@@ -434,6 +434,7 @@ class SharkSampler:
                     else:
                         latent_x['noise_mask'] = noise_mask.clone()
                 state_info = copy.deepcopy(latent_image['state_info']) if 'state_info' in latent_image else {}
+                state_info = align_state_info(state_info, samples)
             else:
                 state_info = {}
             state_info_out = {}
@@ -775,6 +776,7 @@ class SharkSampler:
                 sampler.extra_options['noise_initial'] = noise_initial
 
             if rebounds > 0:
+                sampler.extra_options['rebound_handoff'] = {}
                 if has_custom_cfg_handling(guider):
                     RESplain(f"SharkWarning: Rebounds with guider ({guider.__class__.__name__}) that has custom CFG - unsample_cfg will be ignored")
                 has_cfgs = hasattr(guider, 'cfgs')
@@ -844,19 +846,6 @@ class SharkSampler:
             if not has_per_step_factors and (idx_0_factor != 1.0 or idx_1_factor != 1.0):
                 # Normalize x for standard sampling
                 x = apply_nested_normalization(x, idx_0_factor, idx_1_factor)
-                # Also normalize raw_x for chainsampling (rk_sampler_beta replaces x with raw_x)
-                # raw_x is a packed tensor, so we need to unpack, normalize, repack
-                if 'raw_x' in state_info and hasattr(x, 'is_nested') and x.is_nested:
-                    raw_x = state_info['raw_x']
-                    latent_shapes = [t.shape for t in x.unbind()]
-                    tensors = comfy.utils.unpack_latents(raw_x, latent_shapes)
-                    factors = [idx_0_factor, idx_1_factor]
-                    for idx, t in enumerate(tensors):
-                        factor = factors[idx] if idx < len(factors) else 1.0
-                        if factor != 1.0:
-                            tensors[idx] = t * factor
-                    state_info['raw_x'], _ = comfy.utils.pack_latents(tensors)
-                    RESplain(f"Latent normalize: applied to raw_x (packed), idx_0={idx_0_factor}, idx_1={idx_1_factor}", debug=True)
 
             sampler.extra_options['outer_sigmas_len'] = sigmas.shape[-1]
             samples = guider.sample(noise, x_initial, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
@@ -942,6 +931,7 @@ class SharkSampler:
                 sampler.extra_options['eta']          = eta_cached
                 sampler.extra_options['etas_substep'] = etas_substep_cached
                 sampler.extra_options['etas']         = etas_cached
+                del sampler.extra_options['rebound_handoff']
 
             if noise_mask is not None:
                 if hasattr(samples, 'is_nested') and samples.is_nested:
@@ -1008,7 +998,7 @@ class SharkSampler:
 
             out['state_info'] = dict(state_info_out)
             out['state_info']['item_ids'] = hash_latent_items(out["samples"])
-            out_denoised['state_info'] = {k: v for k, v in state_info_out.items() if k != 'raw_x'}
+            out_denoised['state_info'] = dict(state_info_out)
             out_denoised['state_info']['item_ids'] = hash_latent_items(out_denoised["samples"])
 
             return (out, out_denoised, None)

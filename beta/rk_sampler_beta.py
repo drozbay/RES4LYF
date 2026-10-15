@@ -15,8 +15,7 @@ from ..helper               import ExtraOptions, FrameWeightsManager
 from ..latents              import lagrange_interpolation, get_collinear, get_orthogonal, get_cosine_similarity, get_pearson_similarity, \
                                    get_slerp_weight_for_cossim, get_slerp_ratio, slerp_tensor, get_edge_mask, normalize_zscore, \
                                    compute_slerp_ratio_for_target, find_slerp_ratio_grid, \
-                                   is_packed_latent, get_latent, apply_per_step_latent_normalization, LatentHandler, \
-                                   derive_old_latent_shapes, extract_video_tail, extend_state_info_tensors
+                                   is_packed_latent, get_latent, apply_per_step_latent_normalization
 from ..style_transfer       import apply_scattersort_spatial, apply_adain_spatial
 
 from .rk_method_beta        import RK_Method_Beta
@@ -112,6 +111,15 @@ def init_implicit_sampling(
 
     x_, eps_ = RK.newton_iter(x_0, x_, eps_, eps_prev_, data_, s_, 0, h, sigmas, step, "init", SYNC_GUIDE_ACTIVE)
     return x_, eps_, data_
+
+
+def get_safe_state_info_tensor(state_info, key, x):
+    tensor = state_info.get(key)
+    if tensor is None:
+        return None
+    if tensor.shape == x.shape or tensor.shape[1:] == x.shape:
+        return tensor
+    return None
 
 
 @torch.no_grad()
@@ -218,6 +226,7 @@ def sample_rk_beta(
 
         state_info                    : Optional[dict[str, Any]] = None,
         state_info_out                : Optional[dict[str, Any]] = None,
+        rebound_handoff               : Optional[dict]      = None,
         
         rk_swaps                      : list               = [],
         
@@ -289,32 +298,8 @@ def sample_rk_beta(
     
     VE_MODEL = isinstance(model.inner_model.inner_model.model_sampling, EPS)
     
-    RENOISE = False
-    if 'raw_x' in state_info and sampler_mode in {"resample", "unsample"}:
-        if x.shape == state_info['raw_x'].shape:
-            x = state_info['raw_x'].to(work_device)
-            RESplain("Continuing from raw latent from previous sampler.", debug=False)
-        else:
-            shapes_new = latent_shapes if latent_shapes is not None else [x.shape]
-            shapes_old = derive_old_latent_shapes(state_info['raw_x'], shapes_new)
-            can_extend_temporally = (
-                shapes_old is not None
-                and shapes_new[0][-2:] == shapes_old[0][-2:]
-                and shapes_new[0][-3] > shapes_old[0][-3]
-            )
-
-            if can_extend_temporally:
-                extra_T = shapes_new[0][-3] - shapes_old[0][-3]
-                video_tail = extract_video_tail(x, shapes_new, extra_T)
-                state_info = extend_state_info_tensors(state_info, shapes_old, video_tail)
-                x = state_info['raw_x'].to(work_device)
-                RESplain(f"Continuing from raw latent with temporal extension (+{extra_T} video frames).", debug=False)
-            else:
-                x = (LatentHandler(x, latent_shapes)
-                     .map_with(state_info['denoised'], lambda x_t, d_t: comfy.utils.common_upscale(d_t, x_t.shape[-1], x_t.shape[-2], "bislerp", "disabled").to(x_t))
-                     .tensor)
-                RENOISE = True
-                RESplain("Continuing from raw latent from previous sampler (spatial rescale).", debug=False)
+    if rebound_handoff is not None and 'x' in rebound_handoff:
+        x = rebound_handoff['x'].to(work_device)
     
     
     
@@ -453,11 +438,11 @@ def sample_rk_beta(
     data_x_             = None
     z_                  = None # for tracking residual noise for model scattersort/synchronized diffusion
     
-    y0_bongflow         = state_info.get('y0_bongflow')
-    y0_bongflow_orig    = state_info.get('y0_bongflow_orig')
-    noise_bongflow      = state_info.get('noise_bongflow')
-    y0_standard_guide   = state_info.get('y0_standard_guide')
-    y0_inv_standard_guide = state_info.get('y0_inv_standard_guide')
+    y0_bongflow         = get_safe_state_info_tensor(state_info, 'y0_bongflow', x)
+    y0_bongflow_orig    = get_safe_state_info_tensor(state_info, 'y0_bongflow_orig', x)
+    noise_bongflow      = get_safe_state_info_tensor(state_info, 'noise_bongflow', x)
+    y0_standard_guide   = get_safe_state_info_tensor(state_info, 'y0_standard_guide', x)
+    y0_inv_standard_guide = get_safe_state_info_tensor(state_info, 'y0_inv_standard_guide', x)
 
     if y0_bongflow          is not None: y0_bongflow          = y0_bongflow.clone()
     if y0_bongflow_orig     is not None: y0_bongflow_orig     = y0_bongflow_orig.clone()
@@ -465,8 +450,8 @@ def sample_rk_beta(
     if y0_standard_guide    is not None: y0_standard_guide    = y0_standard_guide.clone()
     if y0_inv_standard_guide is not None: y0_inv_standard_guide = y0_inv_standard_guide.clone()
 
-    data_prev_y_        = state_info.get('data_prev_y_')
-    data_prev_x_        = state_info.get('data_prev_x_')
+    data_prev_y_        = get_safe_state_info_tensor(state_info, 'data_prev_y_', x)
+    data_prev_x_        = get_safe_state_info_tensor(state_info, 'data_prev_x_', x)
     data_prev_x2y_      = state_info.get('data_prev_x2y_')
     if data_prev_y_  is not None: data_prev_y_  = data_prev_y_.clone()
     if data_prev_x_  is not None: data_prev_x_  = data_prev_x_.clone()
@@ -502,8 +487,8 @@ def sample_rk_beta(
     LG = LatentGuide(model, sigmas, UNSAMPLE, VE_MODEL, LGW_MASK_RESCALE_MIN, extra_options, device=work_device, dtype=work_dtype, frame_weights_mgr=frame_weights_mgr, latent_shapes=latent_shapes)
     RK.latent_guide = LG
 
-    guide_inversion_y0     = state_info.get('guide_inversion_y0')
-    guide_inversion_y0_inv = state_info.get('guide_inversion_y0_inv')
+    guide_inversion_y0     = get_safe_state_info_tensor(state_info, 'guide_inversion_y0', x)
+    guide_inversion_y0_inv = get_safe_state_info_tensor(state_info, 'guide_inversion_y0_inv', x)
 
     x = LG.init_guides(x, RK.IMPLICIT, guides, NS.noise_sampler, batch_num, sigmas[step], guide_inversion_y0, guide_inversion_y0_inv)
     LG.y0     = y0_standard_guide.clone()     if y0_standard_guide     is not None else LG.y0
@@ -538,10 +523,14 @@ def sample_rk_beta(
     noise_xt, noise_yt = None, None
     FLOW_RESUMED = False
     if state_info.get('FLOW_STARTED', False) and not state_info.get('FLOW_STOPPED', False):
-        FLOW_RESUMED = True
-        y0 = state_info['y0'].clone().to(work_device)
-        data_cached = state_info['data_cached'].clone().to(work_device)
-        data_x_prev_ = state_info['data_x_prev_'].clone().to(work_device)
+        y0_resumed          = get_safe_state_info_tensor(state_info, 'y0', x)
+        data_cached_resumed = get_safe_state_info_tensor(state_info, 'data_cached', x)
+        data_x_prev_resumed = get_safe_state_info_tensor(state_info, 'data_x_prev_', x)
+        if y0_resumed is not None and data_cached_resumed is not None and data_x_prev_resumed is not None:
+            FLOW_RESUMED = True
+            y0           = y0_resumed.clone().to(work_device)
+            data_cached  = data_cached_resumed.clone().to(work_device)
+            data_x_prev_ = data_x_prev_resumed.clone().to(work_device)
 
     if noise_initial is not None:
         x_init = noise_initial.to(x)
@@ -618,11 +607,9 @@ def sample_rk_beta(
         step = 0
         num_steps = 2 * sigma_restarts - 1
         
-    if RENOISE:      # TODO: adapt for noise inversion somehow
-        if VE_MODEL:
-            x = x + sigmas[step] * NS.noise_sampler(sigma=sigmas[step], sigma_next=sigmas[step+1])
-        else:
-            x = (1 - sigmas[step]) * x + sigmas[step] * NS.noise_sampler(sigma=sigmas[step], sigma_next=sigmas[step+1])
+    if sampler_mode == "resample" and EO("add_noise"):
+        noise_start = NS.noise_sampler(sigma=sigmas[step], sigma_next=sigmas[step+1])
+        x = model.inner_model.inner_model.model_sampling.noise_scaling(sigmas[step], noise_start.to(x), x)
     LG.ADAIN_NOISE_MODE = ""
     StyleMMDiT = None
     if guides is not None:
@@ -654,17 +641,9 @@ def sample_rk_beta(
 
     data_prev_sigmas_ = torch.zeros(4, dtype=default_dtype, device=work_device)
     history_steps     = 0
-    if sampler_mode in {"unsample", "resample"} and state_info.get('data_prev_') is not None:
-        if x.shape == state_info['data_prev_'].shape[1:]:
-            data_prev_ = state_info['data_prev_'].clone().to(dtype=work_dtype, device=work_device)
-        else:
-            resized_items = [
-                LatentHandler(prev_item, latent_shapes)
-                .map_with(x, lambda p_t, x_t: comfy.utils.common_upscale(p_t, x_t.shape[-1], x_t.shape[-2], "bislerp", "disabled").to(x_t))
-                .tensor
-                for prev_item in state_info['data_prev_']
-            ]
-            data_prev_ = torch.stack(resized_items).to(x)
+    data_prev_stored  = get_safe_state_info_tensor(state_info, 'data_prev_', x) if sampler_mode in {"unsample", "resample"} else None
+    if data_prev_stored is not None:
+        data_prev_        = data_prev_stored.clone().to(dtype=work_dtype, device=work_device)
         data_prev_sigmas_ = state_info['data_prev_sigmas_'].clone().to(dtype=default_dtype, device=work_device)
         history_steps     = state_info['history_steps']
     else:
@@ -2254,7 +2233,6 @@ def sample_rk_beta(
             state_info_out['guide_inversion_y0']     = guide_inversion_y0
             state_info_out['guide_inversion_y0_inv'] = guide_inversion_y0_inv
 
-        state_info_out['raw_x']             = x.to('cpu')
         state_info_out['denoised']          = denoised.to('cpu')
         state_info_out['data_prev_']        = data_prev_.to('cpu')
         state_info_out['data_prev_sigmas_'] = data_prev_sigmas_.to('cpu')
@@ -2286,6 +2264,9 @@ def sample_rk_beta(
             #state_info_out['y0_inv']       = y0_inv.to('cpu')       # TODO: implement this?
             state_info_out['data_cached']  = data_cached.to('cpu')
             state_info_out['data_x_prev_'] = data_x_prev_.to('cpu')
+
+    if rebound_handoff is not None:
+        rebound_handoff['x'] = x
 
     if REPORT_VRAM:
         RESplain(f"report_vram: peak allocated {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB, "
