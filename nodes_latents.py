@@ -16,7 +16,7 @@ from nodes import MAX_RESOLUTION
 #MAX_RESOLUTION=8192
 
 from .helper             import ExtraOptions, initialize_or_scale, extra_options_flag, get_extra_options_list, extract_cond_from_guider, get_torch_device
-from .latents            import latent_meancenter_channels, latent_stdize_channels, get_edge_mask, apply_to_state_info_tensors
+from .latents            import latent_meancenter_channels, latent_stdize_channels, get_edge_mask, apply_to_state_info_tensors, rehash_latent_item_ids
 from .beta.noise_classes import NOISE_GENERATOR_NAMES, NOISE_GENERATOR_CLASSES, prepare_noise
 
 def fp_or(tensor1, tensor2):
@@ -253,13 +253,11 @@ class latent_to_raw_x:
     RETURN_NAMES = ("latent_raw_x",)
     FUNCTION     = "main"
     CATEGORY     = "RES4LYF/latents"
+    DESCRIPTION  = "Deprecated. Returns the latent unchanged."
+    DEPRECATED   = True
 
     def main(self, latent,):
-        latent_out = latent.copy()
-        latent_out['state_info'] = latent.get('state_info', {}).copy()
-        
-        latent_out['state_info']['raw_x'] = latent['samples'].to(torch.float64)
-        return (latent_out,)
+        return (latent,)
 
 
 # Adapted from https://github.com/comfyanonymous/ComfyUI/blob/5ee381c058d606209dcafb568af20196e7884fc8/comfy_extras/nodes_wan.py
@@ -285,7 +283,7 @@ class TrimVideoLatent_state_info:
     def op(self, samples, trim_amount):
         ref_shape = samples["samples"].shape
         samples_out = apply_to_state_info_tensors(samples, ref_shape, self._trim_tensor, trim_amount)
-        return (samples_out,)
+        return (rehash_latent_item_ids(samples_out),)
 
 
 class LTXVCropGuides_state_info:
@@ -392,6 +390,7 @@ class LTXVCropGuides_state_info:
                 state_info, ref_shape, self._crop_temporal, num_keyframes,
                 latent_shapes=latent_shapes,
             )
+        latent_out = rehash_latent_item_ids(latent_out)
 
         positive = node_helpers.conditioning_set_values(positive, {
             "keyframe_idxs": None,
@@ -420,6 +419,7 @@ class LatentUpscaleBy_state_info:
     FUNCTION = "op"
 
     CATEGORY = "latent"
+    DEPRECATED = True
 
     @staticmethod
     def _upscale_tensor(tensor, upscale_method, scale_by):
@@ -431,7 +431,7 @@ class LatentUpscaleBy_state_info:
     def op(self, samples, upscale_method, scale_by):
         ref_shape = samples["samples"].shape
         samples_out = apply_to_state_info_tensors(samples, ref_shape, self._upscale_tensor, upscale_method, scale_by)
-        return (samples_out,)
+        return (rehash_latent_item_ids(samples_out),)
 
 class latent_clear_state_info:
     def __init__(self):
@@ -496,11 +496,6 @@ class latent_replace_state_info:
                 latent_out['state_info'].pop('end_step', None)
             else:
                 latent_out['state_info']['end_step'] = end_step
-        if replace_raw_x:
-            if raw_x is None and 'raw_x' in latent_out['state_info']:
-                latent_out['state_info'].pop('raw_x', None)
-            else:
-                latent_out['state_info']['raw_x'] = raw_x
         if replace_sigmas:
             if sigmas is None and 'sigmas' in latent_out['state_info']:
                 latent_out['state_info'].pop('sigmas', None)
@@ -880,9 +875,10 @@ class Frame_Select_Latent_Raw:
     RETURN_NAMES = ("latent",)
     FUNCTION     = "main"
     CATEGORY     = "RES4LYF/latents"
+    DEPRECATED   = True
 
     def main(self, frames=None, select=0):
-        frame = frames['state_info']['raw_x'][:,:,select,:,:].clone().unsqueeze(dim=2)
+        frame = frames['samples'][:,:,select,:,:].clone().unsqueeze(dim=2)
         return (frame,)
     
 
@@ -907,9 +903,10 @@ class Frames_Slice_Latent_Raw:
     RETURN_NAMES = ("latent",)
     FUNCTION     = "main"
     CATEGORY     = "RES4LYF/latents"
+    DEPRECATED   = True
 
     def main(self, frames=None, start=0, stop=1):
-        frames_slice = frames['state_info']['raw_x'][:,:,start:stop,:,:].clone()
+        frames_slice = frames['samples'][:,:,start:stop,:,:].clone()
         return (frames_slice,)
 
 

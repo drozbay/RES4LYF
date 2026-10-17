@@ -32,6 +32,7 @@ from .helper                     import get_res4lyf_scheduler_list
 from .sigmas                     import get_sigmas
 from .images                     import image_resize
 from .res4lyf                    import RESplain
+from .latents                    import rehash_latent_item_ids
 
 
 
@@ -355,14 +356,8 @@ class VAEStyleTransferLatent:
         torch     .manual_seed    (42)          
         torch.cuda.manual_seed_all(42)
         
-        denoised = latent   .get('state_info', {}).get('raw_x')
-        y0       = style_ref.get('state_info', {}).get('raw_x')
-        
-        denoised = latent['samples'] if denoised is None else denoised
-        y0       = style_ref['samples'] if y0 is None else y0
-            
-        #denoised = latent.get('state_info', latent['samples'].get('raw_x', latent['samples']))
-        #y0       = style_ref.get('state_info', style_ref['samples'].get('raw_x', style_ref['samples']))
+        denoised = latent['samples']
+        y0       = style_ref['samples']
         
         if denoised.ndim > 4:
             denoised = denoised.squeeze(0)
@@ -405,9 +400,6 @@ class VAEStyleTransferLatent:
         latent_out = latent.copy() 
         #latent_out['state_info'] = copy.deepcopy(latent['state_info'])
 
-        if latent_out.get('state_info', {}).get('raw_x') is not None:
-            latent_out['state_info'] = latent_out['state_info'].copy()
-            latent_out['state_info']['raw_x'] = denoised_styled
         latent_out['samples'] = denoised_styled
         
         return (latent_out, )
@@ -633,6 +625,7 @@ class LatentUpscaleWithVAE:
     RETURN_NAMES = ("latent",)
     FUNCTION     = "main"
     CATEGORY     = "RES4LYF/latents"
+    DEPRECATED   = True
 
     def main(self,
             latent,
@@ -656,7 +649,6 @@ class LatentUpscaleWithVAE:
         images_prev_list, latent_prev_list = [], []
         
         if 'state_info' in latent:
-            #images      = vae.decode(latent['state_info']['raw_x']  ) # .to(latent['samples']) )
             images      = vae.decode(latent['state_info']['denoised']  ) # .to(latent['samples']) )
             
             data_prev_ = latent['state_info']['data_prev_'].squeeze(0)
@@ -682,11 +674,11 @@ class LatentUpscaleWithVAE:
         latent_out = latent.copy()
         if 'state_info' in latent:
             latent_out['state_info'] = latent['state_info'].copy()
-            #latent['state_info']['raw_x']      = latent_tensor
             latent_out['state_info']['denoised']   = latent_tensor
             latent_out['state_info']['data_prev_'] = latent_prev
             
         latent_out['samples'] = latent_tensor.to(latent['samples'])
+        latent_out = rehash_latent_item_ids(latent_out)
 
         return (latent_out,)
 

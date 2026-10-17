@@ -959,6 +959,15 @@ def hash_latent_items(samples):
     return item_ids
 
 
+def rehash_latent_item_ids(latent):
+    if 'state_info' not in latent:
+        return latent
+    latent_out = dict(latent)
+    latent_out['state_info'] = dict(latent['state_info'])
+    latent_out['state_info']['item_ids'] = hash_latent_items(latent_out['samples'])
+    return latent_out
+
+
 def gather_state_info_items(state_info, reference_shape, indices):
     batch_size_old = reference_shape[0]
     item_shape = tuple(reference_shape[1:])
