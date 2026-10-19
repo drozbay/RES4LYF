@@ -1337,6 +1337,14 @@ def count_history(prev_sigmas: Tensor, sigma: Tensor) -> int:
     return distinct_slots
 
 
+def multistep_buffer_size(rk_type: str) -> int:
+    if rk_type[-2:] in ("2m", "3m", "4m"):
+        return int(rk_type[-2])
+    if len(rk_type) >= 4 and rk_type[-3] == "h" and rk_type[-1] == "s":
+        return int(rk_type[-4]) + 1
+    return 1
+
+
 def get_rk_methods_beta(rk_type       : str,
                         h             : Tensor,
                         c1            : float            = 0.0,
@@ -1372,17 +1380,18 @@ def get_rk_methods_beta(rk_type       : str,
     usable_history                = history_steps - multistep_extra_initial_steps
     final_step                    = sigmas[-1] == 0 and sigma_next == sigmas[-2]
 
+    buffer_slots_filled = min(history_steps, len(prev_sigmas) - 1) if prev_sigmas is not None else 0
     if is_exponential(rk_type):
         h_no_eta = -torch.log(sigma_next/sigma)
-        h_prev1_no_eta = -torch.log(sigma/prev_sigmas[1]) if history_steps >= 1 else None
-        h_prev2_no_eta = -torch.log(sigma/prev_sigmas[2]) if history_steps >= 2 else None
-        h_prev3_no_eta = -torch.log(sigma/prev_sigmas[3]) if history_steps >= 3 else None
+        h_prev1_no_eta = -torch.log(sigma/prev_sigmas[1]) if buffer_slots_filled >= 1 else None
+        h_prev2_no_eta = -torch.log(sigma/prev_sigmas[2]) if buffer_slots_filled >= 2 else None
+        h_prev3_no_eta = -torch.log(sigma/prev_sigmas[3]) if buffer_slots_filled >= 3 else None
 
     else:
         h_no_eta = sigma_next - sigma
-        h_prev1_no_eta = sigma - prev_sigmas[1] if history_steps >= 1 else None
-        h_prev2_no_eta = sigma - prev_sigmas[2] if history_steps >= 2 else None
-        h_prev3_no_eta = sigma - prev_sigmas[3] if history_steps >= 3 else None
+        h_prev1_no_eta = sigma - prev_sigmas[1] if buffer_slots_filled >= 1 else None
+        h_prev2_no_eta = sigma - prev_sigmas[2] if buffer_slots_filled >= 2 else None
+        h_prev3_no_eta = sigma - prev_sigmas[3] if buffer_slots_filled >= 3 else None
         
     if type(c1) == torch.Tensor:
         c1 = c1.item()
@@ -1399,7 +1408,7 @@ def get_rk_methods_beta(rk_type       : str,
         c3 = random.uniform(0, 1)
         
     if rk_type[:4] == "deis":
-        requested_stages = int(rk_type[-2]) - 1
+        requested_stages = multistep_buffer_size(rk_type) - 1
         stages = max(0, min(requested_stages, usable_history, distinct_slots))
         if final_step:
             sampler_change_reason = "final"
@@ -1417,7 +1426,7 @@ def get_rk_methods_beta(rk_type       : str,
             multistep_stages = stages
 
     if rk_type[-2:] in ("2m", "3m", "4m"): #multistep method
-        requested_stages = int(rk_type[-2]) - 1
+        requested_stages = multistep_buffer_size(rk_type) - 1
         family = "res" if rk_type.startswith("abnorsett") else rk_type[:-3]
         substep_names = {1: f"{family}_2s", 2: f"{family}_3s", 3: "res_4s_strehmel_weiner"}
         multistep_names = {1: "abnorsett_2m", 2: "abnorsett_3m", 3: "abnorsett_4m"} if rk_type.startswith("abnorsett") else substep_names
@@ -1446,7 +1455,7 @@ def get_rk_methods_beta(rk_type       : str,
             c3 = (-h_prev2_no_eta / h_no_eta).item()
 
     if rk_type[-3] == "h" and rk_type[-1] == "s": #hybrid method
-        hybrid_order = int(rk_type[-4])
+        hybrid_order = multistep_buffer_size(rk_type) - 1
         substep_name = "res_4s_strehmel_weiner" if rk_type.endswith("4s") else "res_" + rk_type[-2:]
         stages = max(0, min(hybrid_order, usable_history, distinct_slots))
         # No step size guard here: on the hybrids the final step rule alone removed the large step grain, the guard changed little.

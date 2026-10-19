@@ -19,6 +19,7 @@ from ..latents              import lagrange_interpolation, get_collinear, get_or
 from ..style_transfer       import apply_scattersort_spatial, apply_adain_spatial
 
 from .rk_method_beta        import RK_Method_Beta
+from .rk_coefficients_beta  import multistep_buffer_size
 from .rk_noise_sampler_beta import RK_NoiseSampler
 from .rk_guide_func_beta    import LatentGuide
 from .phi_functions         import Phi
@@ -643,15 +644,22 @@ def sample_rk_beta(
 
     RK.update_transformer_options({"model_sampling": model.inner_model.inner_model.model_sampling})
 
-    data_prev_sigmas_ = torch.zeros(4, dtype=default_dtype, device=work_device)
+    buffer_size = 4
+    if EO("multistep_minimal_buffer"):
+        buffer_size = 4 if rk_swaps else multistep_buffer_size(rk_type)
+        if EO("implicit_lagrange_init") or EO("implicit_lagrange_skip_model_call_at_start"):
+            buffer_size = max(buffer_size, 2)
+    data_prev_        = torch.zeros(buffer_size, *x.shape, dtype=work_dtype, device=work_device)
+    data_prev_sigmas_ = torch.zeros(buffer_size, dtype=default_dtype, device=work_device)
     history_steps     = 0
     data_prev_stored  = get_safe_state_info_tensor(state_info, 'data_prev_', x) if sampler_mode in {"unsample", "resample"} else None
     if data_prev_stored is not None:
-        data_prev_        = data_prev_stored.clone().to(dtype=work_dtype, device=work_device)
-        data_prev_sigmas_ = state_info['data_prev_sigmas_'].clone().to(dtype=default_dtype, device=work_device)
-        history_steps     = state_info['history_steps']
-    else:
-        data_prev_ = torch.zeros(4, *x.shape, dtype=work_dtype, device=work_device) # multistep max is 4m... so 4 needed
+        copied_slots = min(len(data_prev_stored), buffer_size)
+        data_prev_[:copied_slots]        = data_prev_stored[:copied_slots].to(dtype=work_dtype, device=work_device)
+        data_prev_sigmas_[:copied_slots] = state_info['data_prev_sigmas_'][:copied_slots].to(dtype=default_dtype, device=work_device)
+        history_steps = state_info['history_steps']
+        if copied_slots < buffer_size or copied_slots < len(data_prev_stored):
+            history_steps = min(history_steps, copied_slots - 1)
 
     # BEGIN SAMPLING LOOP
     
@@ -1207,8 +1215,8 @@ def sample_rk_beta(
                                     RUN_X_0_COPY = False
                                     if noise_bongflow is None:
                                         RUN_X_0_COPY = True
-                                        data_prev_x_ = torch.zeros(4, *x.shape, dtype=work_dtype, device=work_device)
-                                        data_prev_y_ = torch.zeros(4, *x.shape, dtype=work_dtype, device=work_device)
+                                        data_prev_x_ = torch.zeros(buffer_size, *x.shape, dtype=work_dtype, device=work_device)
+                                        data_prev_y_ = torch.zeros(buffer_size, *x.shape, dtype=work_dtype, device=work_device)
                                         
                                         noise_bongflow = normalize_zscore(NS.noise_sampler(sigma=sigma, sigma_next=NS.sigma_min), channelwise=True, inplace=True)
 
