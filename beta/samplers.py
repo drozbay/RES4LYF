@@ -850,7 +850,7 @@ class SharkSampler:
                 x = apply_nested_normalization(x, idx_0_factor, idx_1_factor)
 
             sampler.extra_options['outer_sigmas_len'] = sigmas.shape[-1]
-            samples = guider.sample(noise, x_initial, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
+            samples = guider.sample(noise_initial, x_initial, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
 
             if rebounds > 0:
                 noise_seed_cached   = sampler.extra_options['noise_seed']
@@ -911,7 +911,7 @@ class SharkSampler:
                             sampler.extra_options['steps_to_run'] = steps_to_run_cached
 
                     sampler.extra_options['outer_sigmas_len'] = sigmas.shape[-1]
-                    samples = guider.sample(noise, x_initial, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=-1)
+                    samples = guider.sample(noise_initial, x_initial, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=-1)
 
                     eta_substep_decay   *= eta_decay_scale
                     eta_decay           *= eta_decay_scale
@@ -934,32 +934,6 @@ class SharkSampler:
                 sampler.extra_options['etas_substep'] = etas_substep_cached
                 sampler.extra_options['etas']         = etas_cached
                 del sampler.extra_options['rebound_handoff']
-
-            if noise_mask is not None:
-                if hasattr(samples, 'is_nested') and samples.is_nested:
-                    blended = []
-                    x_initial_list = x_initial.unbind() if hasattr(x_initial, 'is_nested') and x_initial.is_nested else [x_initial]
-                    if hasattr(noise_mask, 'is_nested') and noise_mask.is_nested:
-                        mask_list = noise_mask.unbind()
-                    else:
-                        mask_list = [noise_mask]
-                    for idx, s in enumerate(samples.unbind()):
-                        xi = x_initial_list[idx] if idx < len(x_initial_list) else x_initial_list[0]
-                        m = mask_list[idx] if idx < len(mask_list) else mask_list[0]
-                        reshaped_mask = comfy.utils.reshape_mask(m, s.shape).to(s.device)
-                        blended.append(s * reshaped_mask + xi.to(s.device) * (1.0 - reshaped_mask))
-                        # probably don't need to check ndim here, comfy utils handles it
-                        # if s.ndim == m.ndim:
-                        #     reshaped_mask = comfy.utils.reshape_mask(m, s.shape).to(s.device)
-                        #     blended.append(s * reshaped_mask + xi.to(s.device) * (1.0 - reshaped_mask))
-                        # else:
-                        #     blended.append(s)
-                    samples = comfy.nested_tensor.NestedTensor(blended)
-                else:
-                    if hasattr(noise_mask, 'is_nested') and noise_mask.is_nested:
-                        noise_mask = noise_mask.unbind()[0]
-                    reshaped_mask = comfy.utils.reshape_mask(noise_mask, samples.shape).to(samples.device)
-                    samples = samples * reshaped_mask + x_initial.to(samples.device) * (1.0 - reshaped_mask)
 
             samples = samples.to(comfy.model_management.intermediate_device())
 
