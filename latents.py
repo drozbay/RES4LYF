@@ -938,7 +938,7 @@ def apply_to_state_info_tensors(obj, ref_shape, modify_func, *args, latent_shape
 
 
 PER_ITEM_STATE_KEYS = (
-    "denoised", "data_prev_", "data_prev_sigmas_", "data_prev_x_", "data_prev_y_", "data_x_prev_",
+    "denoised", "raw_x", "data_prev_", "data_prev_sigmas_", "data_prev_x_", "data_prev_y_", "data_x_prev_",
     "y0", "data_cached", "image_initial", "noise_initial",
     "y0_bongflow", "y0_bongflow_orig", "noise_bongflow",
     "y0_standard_guide", "y0_inv_standard_guide",

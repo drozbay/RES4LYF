@@ -1000,7 +1000,7 @@ class SharkSampler:
 
             out['state_info'] = dict(state_info_out)
             out['state_info']['item_ids'] = hash_latent_items(out["samples"])
-            out_denoised['state_info'] = dict(state_info_out)
+            out_denoised['state_info'] = {key: value for key, value in state_info_out.items() if key != 'raw_x'}
             out_denoised['state_info']['item_ids'] = hash_latent_items(out_denoised["samples"])
 
             return (out, out_denoised, None)

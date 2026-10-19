@@ -300,6 +300,10 @@ def sample_rk_beta(
     
     if rebound_handoff is not None and 'x' in rebound_handoff:
         x = rebound_handoff['x'].to(work_device)
+    elif sampler_mode in {"resample", "unsample"}:
+        raw_x = get_safe_state_info_tensor(state_info, 'raw_x', x)
+        if raw_x is not None:
+            x = raw_x.to(dtype=work_dtype, device=work_device)
     
     
     
@@ -2254,10 +2258,11 @@ def sample_rk_beta(
         state_info_out['data_prev_y_']           = data_prev_y_.clone().cpu()       if data_prev_y_         is not None else None
         state_info_out['data_prev_x_']           = data_prev_x_.clone().cpu()       if data_prev_x_         is not None else None
 
-        if noise_initial is not None:
-            state_info_out['noise_initial'] = noise_initial.to('cpu')
-        if image_initial is not None:
-            state_info_out['image_initial'] = image_initial.to('cpu')
+        work_dtype_is_wider_than_float32 = torch.finfo(work_dtype).bits > torch.finfo(torch.float32).bits
+        if not RUN_COMPLETED or work_dtype_is_wider_than_float32:
+            state_info_out['raw_x'] = x.to('cpu')
+        else:
+            state_info_out.pop('raw_x', None)
 
         if FLOW_STARTED and not FLOW_STOPPED:
             state_info_out['y0']           = y0.to('cpu')
