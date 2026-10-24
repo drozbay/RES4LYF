@@ -23,7 +23,7 @@ from .rk_coefficients_beta  import multistep_buffer_size
 from .rk_noise_sampler_beta import RK_NoiseSampler
 from .rk_guide_func_beta    import LatentGuide
 from .phi_functions         import Phi
-from .constants             import MAX_STEPS, GUIDE_MODE_NAMES_PSEUDOIMPLICIT
+from .constants             import GUIDE_MODE_NAMES_PSEUDOIMPLICIT
 
 _VRAM_CAP_SET = False
 
@@ -262,12 +262,11 @@ def sample_rk_beta(
         return x
     
     # Precision contract:
-    #   default_dtype (float64): sigmas, schedules, tableau/phi coefficients, RK scalar math —
-    #       the cancellation-sensitive operations. Also the default for noise_dtype.
+    #   default_dtype (float64): sigmas, schedules, tableau/phi coefficients, RK scalar math,
+    #       the cancellation-sensitive operations.
     #   work_dtype (float32): x and all latent-sized buffers, and the model call boundary.
     #       work_dtype=float64 restores the classic full-float64 behavior.
-    #   noise_dtype: the dtype noise is generated at — decides which noise realization a seed
-    #       produces (torch's RNG stream differs per dtype), independent of the math precision.
+    #   noise_dtype (float32) and noise_device (the work device): where the noise is made, same as ComfyUI native.
     EO             = ExtraOptions(extra_options)
     model_device   = model.inner_model.inner_model.device #x.device
     work_device    = 'cpu' if EO("work_device_cpu") else model_device
@@ -352,7 +351,6 @@ def sample_rk_beta(
     cfg_cw                      = EO("cfg_cw"                     , cfg_cw)
     
     noise_seed                  = EO("noise_seed"                 , noise_seed)
-    noise_seed_substep          = EO("noise_seed_substep"         , noise_seed + MAX_STEPS)
     
     pseudoimplicit_row_weights  = EO("pseudoimplicit_row_weights" , [1. for _ in range(100)])
     pseudoimplicit_step_weights = EO("pseudoimplicit_step_weights", [1. for _ in range(max(implicit_steps_diag, implicit_steps_full)+1)])
@@ -404,16 +402,28 @@ def sample_rk_beta(
                 sigma_up_total += sigmas[i+1]
             etas = torch.full_like(sigmas, eta / sigma_up_total)
     
-    if 'last_rng' in state_info and sampler_mode in {"resample", "unsample"}:
-        last_rng         = state_info['last_rng'].clone()
-        last_rng_substep = state_info['last_rng_substep'].clone()
+    seed_from_the_sampler_node = extra_args.get("seed")
+    if seed_from_the_sampler_node is None or seed_from_the_sampler_node < 0:
+        seed_from_the_sampler_node = state_info.get("seed_from_the_sampler_node", 0)
+
+    # minus one or the same seed continues, any other seed starts over
+    sde_noise_seed_from_previous_sampler = state_info.get("sde_noise_seed") if sampler_mode in {"resample", "unsample"} else None
+    if sde_noise_seed_from_previous_sampler is not None and (noise_seed < 0 or noise_seed == sde_noise_seed_from_previous_sampler):
+        sde_noise_seed               = sde_noise_seed_from_previous_sampler
+        sde_noise_times_used         = state_info["sde_noise_times_used"]
+        sde_noise_times_used_substep = state_info["sde_noise_times_used_substep"]
+    elif noise_seed >= 0:
+        sde_noise_seed               = noise_seed
+        sde_noise_times_used         = 0
+        sde_noise_times_used_substep = 0
     else:
-        last_rng         = None
-        last_rng_substep = None
-    
-    NS.init_noise_samplers(x, noise_seed, noise_seed_substep, noise_sampler_type, noise_sampler_type_substep, noise_mode_sde, noise_mode_sde_substep, \
+        sde_noise_seed               = seed_from_the_sampler_node
+        sde_noise_times_used         = 0
+        sde_noise_times_used_substep = 0
+
+    NS.init_noise_samplers(x, sde_noise_seed, sde_noise_times_used, sde_noise_times_used_substep, noise_sampler_type, noise_sampler_type_substep, noise_mode_sde, noise_mode_sde_substep, \
                             overshoot_mode, overshoot_mode_substep, noise_boost_step, noise_boost_substep, alpha, alpha_substep, k, k_substep, \
-                            last_rng=last_rng, last_rng_substep=last_rng_substep, latent_shapes=latent_shapes,)
+                            latent_shapes=latent_shapes,)
 
     data_               = None
     eps_                = None
@@ -2253,8 +2263,10 @@ def sample_rk_beta(
         state_info_out['sigma_next']        = sigma_next.clone()
         state_info_out['sigmas']            = sigmas_scheduled.clone()
         state_info_out['sampler_mode']      = sampler_mode
-        state_info_out['last_rng']          = NS.noise_sampler .generator.get_state().clone()
-        state_info_out['last_rng_substep']  = NS.noise_sampler2.generator.get_state().clone()
+        state_info_out['seed_from_the_sampler_node']   = seed_from_the_sampler_node
+        state_info_out['sde_noise_seed']               = sde_noise_seed
+        state_info_out['sde_noise_times_used']         = NS.noise_sampler.times_used
+        state_info_out['sde_noise_times_used_substep'] = NS.noise_sampler2.times_used
         state_info_out['completed']         = RUN_COMPLETED
         state_info_out['FLOW_STARTED']      = FLOW_STARTED
         state_info_out['FLOW_STOPPED']      = FLOW_STOPPED

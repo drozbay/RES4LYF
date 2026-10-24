@@ -47,6 +47,25 @@ def get_epsilon_from_step(x, x_next, sigma, sigma_next):
 
 
 
+class NoiseGeneratorWithUseCount:
+    # Wraps a noise generator and counts how many times it has been used.
+    def __init__(self, noise_generator, out_dtype, out_device, sigma_max, sigma_min, times_used):
+        self.noise_generator = noise_generator
+        self.out_dtype       = out_dtype
+        self.out_device      = out_device
+        self.times_used      = 0
+        for _ in range(times_used):
+            self(sigma=sigma_max, sigma_next=sigma_min)
+
+    def __call__(self, **kwargs):
+        self.times_used += 1
+        return self.noise_generator(**kwargs).to(dtype=self.out_dtype, device=self.out_device)
+
+    def update(self, **kwargs):
+        self.noise_generator.update(**kwargs)
+
+
+
 class RK_NoiseSampler:
     def __init__(self,
                 RK            : Union["RK_Method_Exponential", "RK_Method_Linear"],
@@ -198,9 +217,10 @@ class RK_NoiseSampler:
         return x_noised
 
     def init_noise_samplers(self,
-                            x                      : Tensor,              
-                            noise_seed             : int,
-                            noise_seed_substep     : int,
+                            x                      : Tensor,
+                            sde_noise_seed         : int,
+                            sde_noise_times_used            : int,
+                            sde_noise_times_used_substep    : int,
                             noise_sampler_type     : str,
                             noise_sampler_type2    : str,
                             noise_mode_sde         : str,
@@ -215,11 +235,9 @@ class RK_NoiseSampler:
                             k2                     : float = 1.0,
                             scale                  : float = 0.1,
                             scale2                 : float = 0.1,
-                            last_rng                       = None,
-                            last_rng_substep               = None,
                             latent_shapes                  = None,
                             ) -> None:
-        
+
         self.noise_sampler_type     = noise_sampler_type
         self.noise_sampler_type2    = noise_sampler_type2
         self.noise_mode_sde         = noise_mode_sde
@@ -230,50 +248,39 @@ class RK_NoiseSampler:
         self.noise_boost_substep    = noise_boost_substep
         self.s_in                   = x.new_ones([1], dtype=self.dtype, device=self.device)
 
-        # torch's RNG stream differs per dtype, so noise_dtype — not the math precision — decides
-        # which noise realization a seed produces; the float64 default keeps seeds stable across work_dtype
-        noise_dtype = clamp_dtype(self.EO("noise_dtype", self.dtype), x.device)
-        if x.dtype != noise_dtype:
-            x = x.to(noise_dtype)
+        noise_dtype  = clamp_dtype(self.EO("noise_dtype", torch.float32), x.device)
+        noise_device = torch.device(self.EO("noise_device", x.device.type))
+        empty_tensor_with_the_noise_dtype_and_device = torch.empty(x.shape, dtype=noise_dtype, device=noise_device)
 
-        if noise_seed >= 0:
-            seed = noise_seed
-            RESplain("SDE noise seed: ", seed, debug=True)
-        elif last_rng is not None:
-            seed = 0
-            RESplain("SDE noise seed: restoring from last_rng state", debug=True)
-        else:
-            seed = torch.initial_seed() + 1
-            RESplain("SDE noise seed: ", seed, " (set via torch.initial_seed()+1)", debug=True)
+        # plus one when on the CPU, same as ComfyUI native
+        seed_for_the_sde_noise_generator = sde_noise_seed + 1 if noise_device.type == "cpu" else sde_noise_seed
+        RESplain(f"SDE noise generator: seed {seed_for_the_sde_noise_generator}, substep generator seed {seed_for_the_sde_noise_generator + 1}, {noise_dtype} on {noise_device}, step generator used {sde_noise_times_used} times before this sampler, substep generator {sde_noise_times_used_substep} times", debug=True)
 
-            
-        #seed2 = seed + MAX_STEPS #for substep noise generation. offset needed to ensure seeds are not reused
-            
         if latent_shapes is None:
             latent_shapes = self.latent_shapes
 
         if noise_sampler_type == "fractal":
-            self.noise_sampler  = self._build_noise_sampler(NOISE_GENERATOR_CLASSES.get(noise_sampler_type), x, seed, latent_shapes)
-            self.noise_sampler.update(alpha=alpha, k=k, scale=scale)
+            sde_noise_generator_for_steps = self._build_noise_generator(NOISE_GENERATOR_CLASSES.get(noise_sampler_type), empty_tensor_with_the_noise_dtype_and_device, seed_for_the_sde_noise_generator, latent_shapes)
+            sde_noise_generator_for_steps.update(alpha=alpha, k=k, scale=scale)
         else:
-            self.noise_sampler  = self._build_noise_sampler(NOISE_GENERATOR_CLASSES_SIMPLE.get(noise_sampler_type), x, seed, latent_shapes)
+            sde_noise_generator_for_steps = self._build_noise_generator(NOISE_GENERATOR_CLASSES_SIMPLE.get(noise_sampler_type), empty_tensor_with_the_noise_dtype_and_device, seed_for_the_sde_noise_generator, latent_shapes)
 
         if noise_sampler_type2 == "fractal":
-            self.noise_sampler2 = self._build_noise_sampler(NOISE_GENERATOR_CLASSES.get(noise_sampler_type2), x, noise_seed_substep, latent_shapes)
-            self.noise_sampler2.update(alpha=alpha2, k=k2, scale=scale2)
+            sde_noise_generator_for_substeps = self._build_noise_generator(NOISE_GENERATOR_CLASSES.get(noise_sampler_type2), empty_tensor_with_the_noise_dtype_and_device, seed_for_the_sde_noise_generator + 1, latent_shapes)
+            sde_noise_generator_for_substeps.update(alpha=alpha2, k=k2, scale=scale2)
         else:
-            self.noise_sampler2 = self._build_noise_sampler(NOISE_GENERATOR_CLASSES_SIMPLE.get(noise_sampler_type2), x, noise_seed_substep, latent_shapes)
-            
-        if last_rng is not None:
-            self.noise_sampler .generator.set_state(last_rng)
-            self.noise_sampler2.generator.set_state(last_rng_substep)
-            
-            
-    def _build_noise_sampler(self, cls, x:Tensor, seed:int, latent_shapes):
+            sde_noise_generator_for_substeps = self._build_noise_generator(NOISE_GENERATOR_CLASSES_SIMPLE.get(noise_sampler_type2), empty_tensor_with_the_noise_dtype_and_device, seed_for_the_sde_noise_generator + 1, latent_shapes)
+
+        self.noise_sampler  = NoiseGeneratorWithUseCount(sde_noise_generator_for_steps,    x.dtype, x.device, self.sigma_max, self.sigma_min, sde_noise_times_used)
+        self.noise_sampler2 = NoiseGeneratorWithUseCount(sde_noise_generator_for_substeps, x.dtype, x.device, self.sigma_max, self.sigma_min, sde_noise_times_used_substep)
+
+
+    def _build_noise_generator(self, cls, x:Tensor, seed:int, latent_shapes):
+        generator = torch.Generator(device=x.device).manual_seed(seed)
         # packed multi-stream latents get one generator per stream so structured noise sees each stream's real shape
         if is_packed_latent(latent_shapes) and x.dim() == 3:
-            return PackedNoiseGenerator(cls, x=x, latent_shapes=latent_shapes, seed=seed, sigma_min=self.sigma_min, sigma_max=self.sigma_max)
-        return cls(x=x, seed=seed, sigma_min=self.sigma_min, sigma_max=self.sigma_max)
+            return PackedNoiseGenerator(cls, x=x, latent_shapes=latent_shapes, seed=seed, generator=generator, sigma_min=self.sigma_min, sigma_max=self.sigma_max)
+        return cls(x=x, seed=seed, generator=generator, sigma_min=self.sigma_min, sigma_max=self.sigma_max)
 
     def set_substep_list(self, RK:Union["RK_Method_Exponential", "RK_Method_Linear"]) -> None:
         

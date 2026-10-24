@@ -153,7 +153,7 @@ class NoiseGenerator:
 
 class BrownianNoiseGenerator(NoiseGenerator):
     def generate(self, *, sigma=None, sigma_next=None, **kwargs):
-        return BrownianTreeNoiseSampler(self.x, self.sigma_min, self.sigma_max, seed=self.seed, cpu = self.device.type=='cpu')(sigma, sigma_next)
+        return BrownianTreeNoiseSampler(self.x, self.sigma_min, self.sigma_max, seed=self.seed, cpu = self.device.type=='cpu')(sigma.to(self.device), sigma_next.to(self.device))
 
 
 
@@ -610,14 +610,14 @@ class PerlinNoiseGenerator(NoiseGenerator):
     
 class PackedNoiseGenerator:
     # one generator per stream of a packed multi-stream latent, outputs repacked to the flat [b, 1, n] layout
-    def __init__(self, cls, x, latent_shapes, seed=42, sigma_min=None, sigma_max=None, **kwargs):
+    def __init__(self, cls, x, latent_shapes, seed=42, generator=None, sigma_min=None, sigma_max=None, **kwargs):
         self.x         = x
         self.size      = x.shape
         self.dtype     = x.dtype
         self.layout    = x.layout
         self.device    = x.device
         self.seed      = seed
-        self.generator = torch.Generator(device=x.device).manual_seed(seed)
+        self.generator = torch.Generator(device=x.device).manual_seed(seed) if generator is None else generator
         self.streams   = []
         for shape in latent_shapes:
             stream_size = (x.shape[0], *shape[1:])
