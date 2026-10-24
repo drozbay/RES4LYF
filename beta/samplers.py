@@ -69,43 +69,50 @@ def has_custom_cfg_handling(guider):
 
 
 def generate_init_noise(x, seed, noise_type_init, noise_stdev, noise_mean, noise_normalize,
-                        sigma_max, sigma_min, alpha_init=None, k_init=None, EO=None):
+                        sigma_max, sigma_min, alpha_init=None, k_init=None, EO=None, batch_inds=None):
     if noise_type_init == "none" or noise_stdev == 0.0:
         return torch.zeros_like(x)
 
-    # generate and normalize at noise_dtype: a seed's realization must not depend on work_dtype
-    out_dtype = x.dtype
-    if EO is not None:
-        noise_dtype = EO("noise_dtype", EO("default_dtype", torch.float64, debugMode=2), debugMode=2)
-    else:
-        noise_dtype = torch.float64
-    noise_dtype = clamp_dtype(noise_dtype, x.device)
-    x = x.to(noise_dtype)
+    noise_dtype  = EO("noise_dtype", torch.float32) if EO is not None else torch.float32
+    noise_dtype  = clamp_dtype(noise_dtype, x.device)
+    noise_device = torch.device(EO("noise_device", "cpu")) if EO is not None else torch.device("cpu")
+    generator    = torch.Generator(device=noise_device).manual_seed(seed)
+    streams      = x.unbind() if isinstance(x, comfy.nested_tensor.NestedTensor) else [x]
 
-    if EO is not None and EO("bypass_noise_norm") and noise_type_init == "gaussian":
-        noise = comfy.sample.prepare_noise(x, seed).to(device=x.device, dtype=x.dtype)
-        RESplain("bypass_noise_norm: init noise from comfy.sample.prepare_noise (bypassing RES4LYF normalization)", debug=False)
-        return noise.to(out_dtype)
+    noises = []
+    for stream in streams:
+        if noise_type_init == "gaussian" and batch_inds is None:
+            noise = torch.randn(stream.shape, dtype=noise_dtype, device=noise_device, generator=generator)
+        elif noise_type_init == "gaussian":
+            # one noise tensor per batch index, same as ComfyUI native
+            unique_inds = sorted(set(batch_inds))
+            noise_by_index = {}
+            for i in range(unique_inds[-1] + 1):
+                noise_for_index = torch.randn([1] + list(stream.shape[1:]), dtype=noise_dtype, device=noise_device, generator=generator)
+                if i in unique_inds:
+                    noise_by_index[i] = noise_for_index
+            noise = torch.cat([noise_by_index[i] for i in batch_inds], dim=0)
+        else:
+            empty_tensor_with_the_noise_dtype_and_device = torch.empty(stream.shape, dtype=noise_dtype, device=noise_device)
+            noise_generator = NOISE_GENERATOR_CLASSES_SIMPLE.get(noise_type_init)(
+                x=empty_tensor_with_the_noise_dtype_and_device, seed=seed, generator=generator, sigma_max=sigma_max, sigma_min=sigma_min
+            )
+            if noise_type_init == "fractal":
+                noise_generator.alpha = alpha_init
+                noise_generator.k = k_init
+                noise_generator.scale = 0.1
+            noise = noise_generator(sigma=sigma_max * noise_stdev, sigma_next=sigma_min)
 
-    noise_sampler_init = NOISE_GENERATOR_CLASSES_SIMPLE.get(noise_type_init)(
-        x=x, seed=seed, sigma_max=sigma_max, sigma_min=sigma_min
-    )
+        if noise_normalize and noise.std() > 0:
+            channelwise = (EO("init_noise_normalize_channelwise", "true") if EO is not None else "true") == "true"
+            noise = normalize_zscore(noise, channelwise=channelwise, inplace=True)
 
-    if noise_type_init == "fractal":
-        noise_sampler_init.alpha = alpha_init
-        noise_sampler_init.k = k_init
-        noise_sampler_init.scale = 0.1
+        noises.append((noise * noise_stdev + noise_mean).to(device=stream.device, dtype=stream.dtype))
 
-    noise = noise_sampler_init(sigma=sigma_max * noise_stdev, sigma_next=sigma_min)
+    if isinstance(x, comfy.nested_tensor.NestedTensor):
+        return comfy.nested_tensor.NestedTensor(noises)
+    return noises[0]
 
-    if noise_normalize and noise.std() > 0:
-        channelwise = EO("init_noise_normalize_channelwise", "true") if EO else "true"
-        channelwise = True if channelwise == "true" else False
-        noise = normalize_zscore(noise, channelwise=channelwise, inplace=True)
-
-    noise *= noise_stdev
-    noise = (noise - noise.mean()) + noise_mean
-    return noise.to(out_dtype)
 
 
 def apply_nested_normalization(x, idx_0_factor, idx_1_factor):
@@ -256,6 +263,7 @@ class SharkSampler:
             noise_stdev     = options_mgr.get('noise_init_stdev', noise_stdev)
             noise_mean      = options_mgr.get('noise_init_mean',  noise_mean)
             noise_type_init = options_mgr.get('noise_type_init',  noise_type_init)
+            noise_normalize = EO("init_noise_normalize", noise_normalize)
             d_noise         = options_mgr.get('d_noise',          d_noise)
             alpha_init      = options_mgr.get('alpha_init',       alpha_init)
             k_init          = options_mgr.get('k_init',           k_init)
@@ -440,6 +448,10 @@ class SharkSampler:
             else:
                 state_info = {}
             state_info_out = {}
+
+            # minus one means the seed the previous sampler used
+            if noise_seed == -1:
+                noise_seed = state_info.get('seed_from_the_sampler_node', 0)
             
             
             
@@ -550,10 +562,7 @@ class SharkSampler:
 
 
             if EO(("cond_noise", "uncond_noise")):
-                if noise_seed == -1:
-                    cond_seed = torch.initial_seed() + 1
-                else:
-                    cond_seed = noise_seed
+                cond_seed = noise_seed
                 
                 t5_seed              = EO("t5_seed"             , cond_seed)
                 clip_seed            = EO("clip_seed"           , cond_seed+1)
@@ -589,11 +598,6 @@ class SharkSampler:
                 neg_cond[0][1]['pooled_output'] = get_orthogonal(neg_cond[0][1]['pooled_output'], pos_cond[0][1]['pooled_output'])
             
 
-            if "noise_seed" in sampler.extra_options:
-                if sampler.extra_options['noise_seed'] == -1 and noise_seed != -1:
-                    sampler.extra_options['noise_seed'] = noise_seed + 1
-                    RESplain("Shark: setting clown noise seed to: ", sampler.extra_options['noise_seed'], debug=True)
-
             if "sampler_mode" in sampler.extra_options:
                 sampler.extra_options['sampler_mode'] = sampler_mode
 
@@ -610,25 +614,14 @@ class SharkSampler:
 
             x = latent_image_batch['samples'].to(work_dtype)
 
-            if isinstance(x, comfy.nested_tensor.NestedTensor):
-                noise = comfy.nested_tensor.NestedTensor([
-                    generate_init_noise(
-                        x=t.clone(), seed=noise_seed + idx,
-                        noise_type_init=noise_type_init, noise_stdev=noise_stdev,
-                        noise_mean=noise_mean, noise_normalize=noise_normalize,
-                        sigma_max=sigma_max, sigma_min=sigma_min,
-                        alpha_init=alpha_init, k_init=k_init, EO=EO
-                    )
-                    for idx, t in enumerate(x.unbind())
-                ])
-            else:
-                noise = generate_init_noise(
-                    x=x.clone(), seed=noise_seed,
-                    noise_type_init=noise_type_init, noise_stdev=noise_stdev,
-                    noise_mean=noise_mean, noise_normalize=noise_normalize,
-                    sigma_max=sigma_max, sigma_min=sigma_min,
-                    alpha_init=alpha_init, k_init=k_init, EO=EO
-                )
+            noise = generate_init_noise(
+                x=x, seed=noise_seed,
+                noise_type_init=noise_type_init, noise_stdev=noise_stdev,
+                noise_mean=noise_mean, noise_normalize=noise_normalize,
+                sigma_max=sigma_max, sigma_min=sigma_min,
+                alpha_init=alpha_init, k_init=k_init, EO=EO,
+                batch_inds=latent_image.get('batch_index') if latent_image is not None else None,
+            )
 
             # SETUP REGIONAL COND
             if pos_cond[0][1] is not None:
@@ -853,7 +846,6 @@ class SharkSampler:
             samples = guider.sample(noise_initial, x_initial, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
 
             if rebounds > 0:
-                noise_seed_cached   = sampler.extra_options['noise_seed']
                 cfgs_cached         = guider.cfgs if has_cfgs else None
                 cfg_cached          = guider.cfg
                 sampler_mode_cached = sampler.extra_options['sampler_mode']
@@ -869,8 +861,6 @@ class SharkSampler:
                         sampler.extra_options['sampler_mode'] = "resample"
                     elif sampler.extra_options['sampler_mode'] == "resample":
                         sampler.extra_options['sampler_mode'] = "unsample"
-
-                    sampler.extra_options['noise_seed'] = -1
 
                     if sampler.extra_options['sampler_mode'] == "unsample":
                         if has_cfgs:
@@ -911,7 +901,7 @@ class SharkSampler:
                             sampler.extra_options['steps_to_run'] = steps_to_run_cached
 
                     sampler.extra_options['outer_sigmas_len'] = sigmas.shape[-1]
-                    samples = guider.sample(noise_initial, x_initial, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=-1)
+                    samples = guider.sample(noise_initial, x_initial, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
 
                     eta_substep_decay   *= eta_decay_scale
                     eta_decay           *= eta_decay_scale
@@ -921,7 +911,6 @@ class SharkSampler:
                     etas_decay          *= eta_decay_scale
                     unsample_etas_decay *= eta_decay_scale
 
-                sampler.extra_options['noise_seed'] = noise_seed_cached
                 if has_cfgs:
                     guider.cfgs = cfgs_cached
                     RESplain(f"Shark: Rebounds complete - restored original CFG (cfgs)", debug=True)

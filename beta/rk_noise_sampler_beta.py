@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 import comfy.model_patcher
 import comfy.supported_models
 
-from .noise_classes import NOISE_GENERATOR_CLASSES, NOISE_GENERATOR_CLASSES_SIMPLE, PackedNoiseGenerator
+from .noise_classes import NOISE_GENERATOR_CLASSES, NOISE_GENERATOR_CLASSES_SIMPLE, PackedNoiseGenerator, GaussianNoiseGenerator
 from .constants     import MAX_STEPS
 
 from ..helper       import ExtraOptions, has_nested_attr, clamp_dtype, get_torch_device
@@ -114,6 +114,7 @@ class RK_NoiseSampler:
         
         self.DOWN_SUBSTEP           = self.EO("down_substep")
         self.DOWN_STEP              = self.EO("down_step")
+        self.SDE_NOISE_NORMALIZE    = self.EO("sde_noise_normalize", True)
 
         self.init_noise             = None
 
@@ -277,10 +278,12 @@ class RK_NoiseSampler:
 
     def _build_noise_generator(self, cls, x:Tensor, seed:int, latent_shapes):
         generator = torch.Generator(device=x.device).manual_seed(seed)
+        # sde_noise_normalize=false also stops the gaussian generator centering its noise, so it matches a bare torch.randn
+        settings = {"normalize": self.SDE_NOISE_NORMALIZE} if cls is GaussianNoiseGenerator else {}
         # packed multi-stream latents get one generator per stream so structured noise sees each stream's real shape
         if is_packed_latent(latent_shapes) and x.dim() == 3:
-            return PackedNoiseGenerator(cls, x=x, latent_shapes=latent_shapes, seed=seed, generator=generator, sigma_min=self.sigma_min, sigma_max=self.sigma_max)
-        return cls(x=x, seed=seed, generator=generator, sigma_min=self.sigma_min, sigma_max=self.sigma_max)
+            return PackedNoiseGenerator(cls, x=x, latent_shapes=latent_shapes, seed=seed, generator=generator, sigma_min=self.sigma_min, sigma_max=self.sigma_max, **settings)
+        return cls(x=x, seed=seed, generator=generator, sigma_min=self.sigma_min, sigma_max=self.sigma_max, **settings)
 
     def set_substep_list(self, RK:Union["RK_Method_Exponential", "RK_Method_Linear"]) -> None:
         
@@ -566,7 +569,8 @@ class RK_NoiseSampler:
             brownian_sigma, brownian_sigma_next = brownian_sigma_next, brownian_sigma
         
         noise = self.noise_sampler(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
-        noise = normalize_zscore(noise, channelwise=True, inplace=True)
+        if self.SDE_NOISE_NORMALIZE:
+            noise = normalize_zscore(noise, channelwise=True, inplace=True)
 
         y_noised = (self.sigma_max - sigma_curr) * y + sigma_curr * noise
         
@@ -597,7 +601,8 @@ class RK_NoiseSampler:
             brownian_sigma, brownian_sigma_next = brownian_sigma_next, brownian_sigma
         
         noise = self.noise_sampler2(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
-        noise = normalize_zscore(noise, channelwise=True, inplace=True)
+        if self.SDE_NOISE_NORMALIZE:
+            noise = normalize_zscore(noise, channelwise=True, inplace=True)
 
         y_noised = (self.sigma_max - sigma_curr) * y + sigma_curr * noise
         
@@ -629,7 +634,8 @@ class RK_NoiseSampler:
             brownian_sigma, brownian_sigma_next = brownian_sigma_next, brownian_sigma
         
         noise = self.noise_sampler(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
-        noise = normalize_zscore(noise, channelwise=True, inplace=True)
+        if self.SDE_NOISE_NORMALIZE:
+            noise = normalize_zscore(noise, channelwise=True, inplace=True)
         noise = self.scale_av_noise(noise, self.sigma, self.sigma_next)
 
         x_noised = self.alpha_ratio_eta * (denoised_next + self.sigma_down_eta * eps_next) + self.sigma_up_eta * noise * self.s_noise
@@ -660,7 +666,8 @@ class RK_NoiseSampler:
             brownian_sigma, brownian_sigma_next = brownian_sigma_next, brownian_sigma
         
         noise = self.noise_sampler2(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
-        noise = normalize_zscore(noise, channelwise=True, inplace=True)
+        if self.SDE_NOISE_NORMALIZE:
+            noise = normalize_zscore(noise, channelwise=True, inplace=True)
         noise = self.scale_av_noise(noise, self.sub_sigma, self.sub_sigma_next)
 
         x_noised = self.sub_alpha_ratio_eta * (denoised_next + self.sub_sigma_down_eta * eps_next) + self.sub_sigma_up_eta * noise * self.s_noise_substep
@@ -693,7 +700,8 @@ class RK_NoiseSampler:
             brownian_sigma, brownian_sigma_next = brownian_sigma_next, brownian_sigma
         
         noise = self.noise_sampler2(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
-        noise = normalize_zscore(noise, channelwise=True, inplace=True)
+        if self.SDE_NOISE_NORMALIZE:
+            noise = normalize_zscore(noise, channelwise=True, inplace=True)
         # inverted-domain (unsampling) injection: audio columns are left unscaled for reverse steps
 
         sub_sigma_up,     sub_sigma,     sub_sigma_down,     sub_alpha_ratio     = self.get_sde_substep(sigma               = 1-self.s_[row],
@@ -751,7 +759,8 @@ class RK_NoiseSampler:
         else:
             noise = self.noise_sampler2(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
             
-        noise = normalize_zscore(noise, channelwise=True, inplace=True)
+        if self.SDE_NOISE_NORMALIZE:
+            noise = normalize_zscore(noise, channelwise=True, inplace=True)
         noise = self.scale_av_noise(noise, sigma, sigma_next)
 
         x = alpha_ratio * (denoised_next + sigma_down * eps_next) + sigma_up * noise * s_noise
@@ -870,7 +879,8 @@ class RK_NoiseSampler:
 
             #noise_ortho = get_orthogonal(noise, x)
             #noise_ortho = noise_ortho / noise_ortho.std()model,
-            noise = normalize_zscore(noise, channelwise=True, inplace=True)
+            if self.SDE_NOISE_NORMALIZE:
+                noise = normalize_zscore(noise, channelwise=True, inplace=True)
 
             if SDE_NOISE_EXTERNAL:
                 noise = (1-s_noise) * noise + s_noise * sde_noise_t

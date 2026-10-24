@@ -406,12 +406,14 @@ def sample_rk_beta(
     if seed_from_the_sampler_node is None or seed_from_the_sampler_node < 0:
         seed_from_the_sampler_node = state_info.get("seed_from_the_sampler_node", 0)
 
-    # minus one or the same seed continues, any other seed starts over
-    sde_noise_seed_from_previous_sampler = state_info.get("sde_noise_seed") if sampler_mode in {"resample", "unsample"} else None
-    if sde_noise_seed_from_previous_sampler is not None and (noise_seed < 0 or noise_seed == sde_noise_seed_from_previous_sampler):
-        sde_noise_seed               = sde_noise_seed_from_previous_sampler
-        sde_noise_times_used         = state_info["sde_noise_times_used"]
-        sde_noise_times_used_substep = state_info["sde_noise_times_used_substep"]
+    # minus one or the same seeds continue, a different seed on the node or on the sampler starts over
+    previous = state_info if sampler_mode in {"resample", "unsample"} and "sde_noise_seed" in state_info else None
+    same_node_seed = previous is not None and seed_from_the_sampler_node == previous["seed_from_the_sampler_node"]
+    same_sde_seed  = previous is not None and (noise_seed < 0 or noise_seed == previous["sde_noise_seed"])
+    if same_node_seed and same_sde_seed:
+        sde_noise_seed               = previous["sde_noise_seed"]
+        sde_noise_times_used         = previous["sde_noise_times_used"]
+        sde_noise_times_used_substep = previous["sde_noise_times_used_substep"]
     elif noise_seed >= 0:
         sde_noise_seed               = noise_seed
         sde_noise_times_used         = 0

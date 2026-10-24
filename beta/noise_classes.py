@@ -368,17 +368,19 @@ class UniformNoiseGenerator(NoiseGenerator):
 
 class GaussianNoiseGenerator(NoiseGenerator):
     def __init__(self, x=None, size=None, dtype=None, layout=None, device=None, seed=42, generator=None, sigma_min=None, sigma_max=None, 
-                mean=0.0, std=1.0):
+                mean=0.0, std=1.0, normalize=True):
         super().__init__(x, size, dtype, layout, device, seed, generator, sigma_min, sigma_max)
-        self.update(mean=mean, std=std)
+        self.update(mean=mean, std=std, normalize=normalize)
 
-    def generate(self, *, mean=None, std=None, **kwargs):
-        self.update(mean=mean, std=std)
+    def generate(self, *, mean=None, std=None, normalize=None, **kwargs):
+        self.update(mean=mean, std=std, normalize=normalize)
         self.last_seed += 1
 
         noise = torch.randn(self.size, dtype=self.dtype, layout=self.layout, device=self.device, generator=self.generator)
 
-        return (noise - noise.mean()) / noise.std()
+        if self.normalize:
+            return (noise - noise.mean()) / noise.std()
+        return noise * self.std + self.mean
 
 class GaussianBackwardsNoiseGenerator(NoiseGenerator):
     def __init__(self, x=None, size=None, dtype=None, layout=None, device=None, seed=42, generator=None, sigma_min=None, sigma_max=None, 
