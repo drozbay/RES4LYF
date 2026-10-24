@@ -105,8 +105,6 @@ class LatentNoised:
         latent_out = latent_image.copy()
         samples = latent_out["samples"].clone()
 
-        torch.manual_seed(noise_seed)
-
         if not add_noise:
             noise = torch.zeros(samples.size(), dtype=samples.dtype, layout=samples.layout, device="cpu")
         elif latent_noise is None:

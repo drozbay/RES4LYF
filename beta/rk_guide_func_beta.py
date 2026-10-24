@@ -188,7 +188,7 @@ class LatentGuide:
             x             : Tensor,
             RK_IMPLICIT   : bool,
             guides        : Optional[Tensor]                   = None,
-            noise_sampler : Optional["NoiseGeneratorSubclass"] = None,
+            noise_generator : Optional["NoiseGeneratorSubclass"] = None,
             batch_num     : int                                = 0,
             sigma_init                                         = None,
             guide_inversion_y0                                 = None,
@@ -902,14 +902,14 @@ class LatentGuide:
             if guide_inversion_y0 is not None:
                 self.y0 = guide_inversion_y0.clone()
             else:
-                self.y0     = noise_sampler(sigma=self.sigma_max, sigma_next=self.sigma_min).to(dtype=self.dtype, device=self.device)
+                self.y0     = noise_generator(sigma=self.sigma_max, sigma_next=self.sigma_min).to(dtype=self.dtype, device=self.device)
                 self.y0     = normalize_zscore(self.y0,     channelwise=True, inplace=True)
                 self.y0    *= self.sigma_max
 
             if guide_inversion_y0_inv is not None:
                 self.y0_inv = guide_inversion_y0_inv.clone()
             else:
-                self.y0_inv = noise_sampler(sigma=self.sigma_max, sigma_next=self.sigma_min).to(dtype=self.dtype, device=self.device)
+                self.y0_inv = noise_generator(sigma=self.sigma_max, sigma_next=self.sigma_min).to(dtype=self.dtype, device=self.device)
                 self.y0_inv = normalize_zscore(self.y0_inv, channelwise=True, inplace=True)
                 self.y0_inv*= self.sigma_max
 

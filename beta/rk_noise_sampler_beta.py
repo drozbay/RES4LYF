@@ -98,8 +98,8 @@ class RK_NoiseSampler:
         
         self.step                   = step
         
-        self.noise_sampler          = None
-        self.noise_sampler2         = None
+        self.noise_generator          = None
+        self.noise_generator_substep         = None
         
         self.noise_mode_sde         = None
         self.noise_mode_sde_substep = None
@@ -217,7 +217,7 @@ class RK_NoiseSampler:
         x_noised[..., self.av_split:] = (1.0 - w) * x_next[..., self.av_split:] + w * x_noised[..., self.av_split:]
         return x_noised
 
-    def init_noise_samplers(self,
+    def init_noise_generators(self,
                             x                      : Tensor,
                             sde_noise_seed         : int,
                             sde_noise_times_used            : int,
@@ -272,8 +272,8 @@ class RK_NoiseSampler:
         else:
             sde_noise_generator_for_substeps = self._build_noise_generator(NOISE_GENERATOR_CLASSES_SIMPLE.get(noise_sampler_type2), empty_tensor_with_the_noise_dtype_and_device, seed_for_the_sde_noise_generator + 1, latent_shapes)
 
-        self.noise_sampler  = NoiseGeneratorWithUseCount(sde_noise_generator_for_steps,    x.dtype, x.device, self.sigma_max, self.sigma_min, sde_noise_times_used)
-        self.noise_sampler2 = NoiseGeneratorWithUseCount(sde_noise_generator_for_substeps, x.dtype, x.device, self.sigma_max, self.sigma_min, sde_noise_times_used_substep)
+        self.noise_generator  = NoiseGeneratorWithUseCount(sde_noise_generator_for_steps,    x.dtype, x.device, self.sigma_max, self.sigma_min, sde_noise_times_used)
+        self.noise_generator_substep = NoiseGeneratorWithUseCount(sde_noise_generator_for_substeps, x.dtype, x.device, self.sigma_max, self.sigma_min, sde_noise_times_used_substep)
 
 
     def _build_noise_generator(self, cls, x:Tensor, seed:int, latent_shapes):
@@ -568,7 +568,7 @@ class RK_NoiseSampler:
         if brownian_sigma_next > brownian_sigma and not self.EO("disable_brownian_swap"): # should this really be done?
             brownian_sigma, brownian_sigma_next = brownian_sigma_next, brownian_sigma
         
-        noise = self.noise_sampler(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
+        noise = self.noise_generator(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
         if self.SDE_NOISE_NORMALIZE:
             noise = normalize_zscore(noise, channelwise=True, inplace=True)
 
@@ -600,7 +600,7 @@ class RK_NoiseSampler:
         if brownian_sigma_next > brownian_sigma and not self.EO("disable_brownian_swap"): # should this really be done?
             brownian_sigma, brownian_sigma_next = brownian_sigma_next, brownian_sigma
         
-        noise = self.noise_sampler2(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
+        noise = self.noise_generator_substep(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
         if self.SDE_NOISE_NORMALIZE:
             noise = normalize_zscore(noise, channelwise=True, inplace=True)
 
@@ -633,7 +633,7 @@ class RK_NoiseSampler:
         if brownian_sigma_next > brownian_sigma and not self.EO("disable_brownian_swap"): # should this really be done?
             brownian_sigma, brownian_sigma_next = brownian_sigma_next, brownian_sigma
         
-        noise = self.noise_sampler(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
+        noise = self.noise_generator(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
         if self.SDE_NOISE_NORMALIZE:
             noise = normalize_zscore(noise, channelwise=True, inplace=True)
         noise = self.scale_av_noise(noise, self.sigma, self.sigma_next)
@@ -665,7 +665,7 @@ class RK_NoiseSampler:
         if brownian_sigma_next > brownian_sigma and not self.EO("disable_brownian_swap"): # should this really be done?
             brownian_sigma, brownian_sigma_next = brownian_sigma_next, brownian_sigma
         
-        noise = self.noise_sampler2(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
+        noise = self.noise_generator_substep(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
         if self.SDE_NOISE_NORMALIZE:
             noise = normalize_zscore(noise, channelwise=True, inplace=True)
         noise = self.scale_av_noise(noise, self.sub_sigma, self.sub_sigma_next)
@@ -699,7 +699,7 @@ class RK_NoiseSampler:
         if brownian_sigma_next > brownian_sigma and not self.EO("disable_brownian_swap"): # should this really be done?
             brownian_sigma, brownian_sigma_next = brownian_sigma_next, brownian_sigma
         
-        noise = self.noise_sampler2(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
+        noise = self.noise_generator_substep(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
         if self.SDE_NOISE_NORMALIZE:
             noise = normalize_zscore(noise, channelwise=True, inplace=True)
         # inverted-domain (unsampling) injection: audio columns are left unscaled for reverse steps
@@ -755,9 +755,9 @@ class RK_NoiseSampler:
             brownian_sigma_next = s_tmp
         
         if not SUBSTEP:
-            noise = self.noise_sampler(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
+            noise = self.noise_generator(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
         else:
-            noise = self.noise_sampler2(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
+            noise = self.noise_generator_substep(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
             
         if self.SDE_NOISE_NORMALIZE:
             noise = normalize_zscore(noise, channelwise=True, inplace=True)
@@ -873,9 +873,9 @@ class RK_NoiseSampler:
             if sigma == sigma_next:
                 sigma_next = sigma * 0.9999
             if not SUBSTEP:
-                noise = self.noise_sampler (sigma=sigma, sigma_next=sigma_next)
+                noise = self.noise_generator (sigma=sigma, sigma_next=sigma_next)
             else:
-                noise = self.noise_sampler2(sigma=sigma, sigma_next=sigma_next)
+                noise = self.noise_generator_substep(sigma=sigma, sigma_next=sigma_next)
 
             #noise_ortho = get_orthogonal(noise, x)
             #noise_ortho = noise_ortho / noise_ortho.std()model,

@@ -423,7 +423,7 @@ def sample_rk_beta(
         sde_noise_times_used         = 0
         sde_noise_times_used_substep = 0
 
-    NS.init_noise_samplers(x, sde_noise_seed, sde_noise_times_used, sde_noise_times_used_substep, noise_sampler_type, noise_sampler_type_substep, noise_mode_sde, noise_mode_sde_substep, \
+    NS.init_noise_generators(x, sde_noise_seed, sde_noise_times_used, sde_noise_times_used_substep, noise_sampler_type, noise_sampler_type_substep, noise_mode_sde, noise_mode_sde_substep, \
                             overshoot_mode, overshoot_mode_substep, noise_boost_step, noise_boost_substep, alpha, alpha_substep, k, k_substep, \
                             latent_shapes=latent_shapes,)
 
@@ -507,7 +507,7 @@ def sample_rk_beta(
     guide_inversion_y0     = get_safe_state_info_tensor(state_info, 'guide_inversion_y0', x)
     guide_inversion_y0_inv = get_safe_state_info_tensor(state_info, 'guide_inversion_y0_inv', x)
 
-    x = LG.init_guides(x, RK.IMPLICIT, guides, NS.noise_sampler, batch_num, sigmas[step], guide_inversion_y0, guide_inversion_y0_inv)
+    x = LG.init_guides(x, RK.IMPLICIT, guides, NS.noise_generator, batch_num, sigmas[step], guide_inversion_y0, guide_inversion_y0_inv)
     LG.y0     = y0_standard_guide.clone()     if y0_standard_guide     is not None else LG.y0
     LG.y0_inv = y0_inv_standard_guide.clone() if y0_inv_standard_guide is not None else LG.y0_inv
     if (LG.mask != 1.0).any()   and  ((LG.y0 == 0).all() or (LG.y0_inv == 0).all()) : #  and   not LG.guide_mode.startswith("flow"):  # (LG.y0.sum() == 0 or LG.y0_inv.sum() == 0):
@@ -625,7 +625,7 @@ def sample_rk_beta(
         num_steps = 2 * sigma_restarts - 1
         
     if sampler_mode == "resample" and EO("add_noise"):
-        noise_start = NS.noise_sampler(sigma=sigmas[step], sigma_next=sigmas[step+1])
+        noise_start = NS.noise_generator(sigma=sigmas[step], sigma_next=sigmas[step+1])
         x = model.inner_model.inner_model.model_sampling.noise_scaling(sigmas[step], noise_start.to(x), x)
     LG.ADAIN_NOISE_MODE = ""
     StyleMMDiT = None
@@ -990,7 +990,7 @@ def sample_rk_beta(
                         elif (full_iter > 0 and RK.row_offset == 1 and row == 0)   or   (full_iter > 0 and RK.row_offset == 0 and row == 0 and EO("fully_implicit_update_x")):
                             if EO("fully_explicit_pogostick_eta"): 
                                 super_alpha_ratio, super_sigma_down, super_sigma_up = NS.get_sde_coeff(sigma, sigma_next, None, eta)
-                                x = super_alpha_ratio * x + super_sigma_up * NS.noise_sampler(sigma=sigma_next, sigma_next=sigma)
+                                x = super_alpha_ratio * x + super_sigma_up * NS.noise_generator(sigma=sigma_next, sigma_next=sigma)
                                 
                                 x_tmp = x
                                 s_tmp = sigma
@@ -1043,7 +1043,7 @@ def sample_rk_beta(
                             if diag_iter > 0: # Diagonally implicit iteration (explicit or implicit)
                                 if EO("diag_explicit_pogostick_eta"): 
                                     super_alpha_ratio, super_sigma_down, super_sigma_up = NS.get_sde_coeff(NS.s_[row], NS.s_[row+RK.row_offset+RK.multistep_stages], None, eta)
-                                    x_[row+RK.row_offset] = super_alpha_ratio * x_[row+RK.row_offset] + super_sigma_up * NS.noise_sampler(sigma=NS.s_[row+RK.row_offset+RK.multistep_stages], sigma_next=NS.s_[row])
+                                    x_[row+RK.row_offset] = super_alpha_ratio * x_[row+RK.row_offset] + super_sigma_up * NS.noise_generator(sigma=NS.s_[row+RK.row_offset+RK.multistep_stages], sigma_next=NS.s_[row])
                                     
                                     x_tmp = x_[row+RK.row_offset]
                                     s_tmp = sigma
@@ -1230,7 +1230,7 @@ def sample_rk_beta(
                                         data_prev_x_ = torch.zeros(buffer_size, *x.shape, dtype=work_dtype, device=work_device)
                                         data_prev_y_ = torch.zeros(buffer_size, *x.shape, dtype=work_dtype, device=work_device)
                                         
-                                        noise_bongflow = normalize_zscore(NS.noise_sampler(sigma=sigma, sigma_next=NS.sigma_min), channelwise=True, inplace=True)
+                                        noise_bongflow = normalize_zscore(NS.noise_generator(sigma=sigma, sigma_next=NS.sigma_min), channelwise=True, inplace=True)
 
                                         _, _ = RK(noise_bongflow, s_tmp/s_tmp, noise_bongflow, sigma/sigma, transformer_options={'latent_type': 'xt'})
 
@@ -1517,12 +1517,12 @@ def sample_rk_beta(
                                 flow_cossim_iter = EO("flow_cossim_iter", 1)
 
                                 if step == 0:
-                                    noise_yt = noise_fn(y0, sigma, sigma_next, NS.noise_sampler, flow_cossim_iter) # normalize_zscore(NS.noise_sampler(sigma=sigma, sigma_next=sigma_next), channelwise=True, inplace=True)
+                                    noise_yt = noise_fn(y0, sigma, sigma_next, NS.noise_generator, flow_cossim_iter) # normalize_zscore(NS.noise_generator(sigma=sigma, sigma_next=sigma_next), channelwise=True, inplace=True)
                                 if not EO("flow_disable_renoise_y0"):
                                     if noise_yt is None:
-                                        noise_yt = noise_fn(x_0, sigma, sigma_next, NS.noise_sampler, flow_cossim_iter)
+                                        noise_yt = noise_fn(x_0, sigma, sigma_next, NS.noise_generator, flow_cossim_iter)
                                     else:
-                                        noise_yt = (1-eta) * noise_yt + eta * noise_fn(x_0, sigma, sigma_next, NS.noise_sampler, flow_cossim_iter)
+                                        noise_yt = (1-eta) * noise_yt + eta * noise_fn(x_0, sigma, sigma_next, NS.noise_generator, flow_cossim_iter)
 
                                 if VE_MODEL:
                                     yt        = y0 + s_tmp * noise_yt
@@ -1530,9 +1530,9 @@ def sample_rk_beta(
                                     yt        = (NS.sigma_max-s_tmp) * y0 + (s_tmp/NS.sigma_max) * noise_yt
                                 if not EO("flow_disable_doublenoise_y0"):
                                     if noise_yt is None:
-                                        noise_yt = noise_fn(x_0, sigma, sigma_next, NS.noise_sampler, flow_cossim_iter)
+                                        noise_yt = noise_fn(x_0, sigma, sigma_next, NS.noise_generator, flow_cossim_iter)
                                     else:
-                                        noise_yt = (1-eta) * noise_yt + eta * noise_fn(x_0, sigma, sigma_next, NS.noise_sampler, flow_cossim_iter)
+                                        noise_yt = (1-eta) * noise_yt + eta * noise_fn(x_0, sigma, sigma_next, NS.noise_generator, flow_cossim_iter)
 
                                 if VE_MODEL:
                                     y0_noised = y0 + sigma * noise_yt
@@ -1540,25 +1540,25 @@ def sample_rk_beta(
                                     y0_noised = (NS.sigma_max-sigma) * y0 + sigma * noise_yt
                                 
                                 if EO("flow_slerp"):
-                                    noise = noise_fn(y0_inv, sigma, sigma_next, NS.noise_sampler, flow_cossim_iter) 
+                                    noise = noise_fn(y0_inv, sigma, sigma_next, NS.noise_generator, flow_cossim_iter) 
                                     yt_inv        = (NS.sigma_max-s_tmp) * y0_inv + (s_tmp/NS.sigma_max) * noise
                                     if not EO("flow_disable_doublenoise_y0_inv"):
-                                        noise = noise_fn(y0_inv, sigma, sigma_next, NS.noise_sampler, flow_cossim_iter) 
+                                        noise = noise_fn(y0_inv, sigma, sigma_next, NS.noise_generator, flow_cossim_iter) 
                                     y0_noised_inv = (NS.sigma_max-sigma) * y0_inv + sigma * noise
                                 
                                 if step == 0:
-                                    noise_xt = noise_fn(yx0, sigma, sigma_next, NS.noise_sampler, flow_cossim_iter) 
+                                    noise_xt = noise_fn(yx0, sigma, sigma_next, NS.noise_generator, flow_cossim_iter) 
                                 if EO("flow_slerp"):
                                     xt         = yx0 + (s_tmp/NS.sigma_max) * (noise - y_slerp)
                                     if not EO("flow_disable_doublenoise_x_0"):
-                                        noise = noise_fn(x_0, sigma, sigma_next, NS.noise_sampler, flow_cossim_iter) 
+                                        noise = noise_fn(x_0, sigma, sigma_next, NS.noise_generator, flow_cossim_iter) 
                                     x_0_noised = x_0 + sigma * (noise - y_slerp)
                                 else:
                                     if not EO("flow_disable_renoise_x_0"):
                                         if noise_xt is None:
-                                            noise_xt = noise_fn(x_0, sigma, sigma_next, NS.noise_sampler, flow_cossim_iter)
+                                            noise_xt = noise_fn(x_0, sigma, sigma_next, NS.noise_generator, flow_cossim_iter)
                                         else:
-                                            noise_xt = (1-eta_substep) * noise_xt + eta_substep * noise_fn(x_0, sigma, sigma_next, NS.noise_sampler, flow_cossim_iter)
+                                            noise_xt = (1-eta_substep) * noise_xt + eta_substep * noise_fn(x_0, sigma, sigma_next, NS.noise_generator, flow_cossim_iter)
 
                                     if VE_MODEL:
                                         xt         = yx0 + (s_tmp) * yx0 + (s_tmp) * (noise_xt - y0)
@@ -1566,9 +1566,9 @@ def sample_rk_beta(
                                         xt         = yx0 + (s_tmp/NS.sigma_max) * (noise_xt - y0)
                                     if not EO("flow_disable_doublenoise_x_0"):
                                         if noise_xt is None:
-                                            noise_xt = noise_fn(x_0, sigma, sigma_next, NS.noise_sampler, flow_cossim_iter)
+                                            noise_xt = noise_fn(x_0, sigma, sigma_next, NS.noise_generator, flow_cossim_iter)
                                         else:
-                                            noise_xt = (1-eta_substep) * noise_xt + eta_substep * noise_fn(x_0, sigma, sigma_next, NS.noise_sampler, flow_cossim_iter)
+                                            noise_xt = (1-eta_substep) * noise_xt + eta_substep * noise_fn(x_0, sigma, sigma_next, NS.noise_generator, flow_cossim_iter)
                                     if VE_MODEL:
                                         x_0_noised = x_0 + (sigma) * x_0 + (sigma) * (noise_xt - y0)
                                     else:
@@ -2023,7 +2023,7 @@ def sample_rk_beta(
                 if SYNC_GUIDE_ACTIVE:
                     yt_0 = yt_[0] = yt_next
                 #elif LG.guide_mode.startswith("sync") and (LG.lgw[step_sched] != 0.0 or LG.lgw_inv[step_sched] != 0.0):
-                #    noise_sync_new = NS.noise_sampler(sigma=sigma, sigma_next=sigma_next)
+                #    noise_sync_new = NS.noise_generator(sigma=sigma, sigma_next=sigma_next)
                 #    x = x_next + sigma * eta * (noise_sync_new - noise_bongflow)
                 #    noise_bongflow += eta * (noise_sync_new - noise_bongflow)
             elif not LG.guide_mode.startswith("flow") or (LG.lgw[step_sched] == 0 and LG.lgw[step+1] == 0   and   LG.lgw_inv[step_sched] == 0 and LG.lgw_inv[step+1] == 0):
@@ -2248,10 +2248,10 @@ def sample_rk_beta(
                 guide_inversion_y0_inv = LG.y0_inv.clone()
                 
             if sampler_mode in {"standard", "resample"} and guide_inversion_y0 is None:
-                guide_inversion_y0 = NS.noise_sampler(sigma=NS.sigma_max, sigma_next=NS.sigma_min).to(x)
+                guide_inversion_y0 = NS.noise_generator(sigma=NS.sigma_max, sigma_next=NS.sigma_min).to(x)
                 guide_inversion_y0 = normalize_zscore(guide_inversion_y0, channelwise=True, inplace=True)
             if sampler_mode in {"standard", "resample"} and guide_inversion_y0_inv is None:
-                guide_inversion_y0_inv = NS.noise_sampler(sigma=NS.sigma_max, sigma_next=NS.sigma_min).to(x)
+                guide_inversion_y0_inv = NS.noise_generator(sigma=NS.sigma_max, sigma_next=NS.sigma_min).to(x)
                 guide_inversion_y0_inv = normalize_zscore(guide_inversion_y0_inv, channelwise=True, inplace=True)
                 
             state_info_out['guide_inversion_y0']     = guide_inversion_y0
@@ -2267,8 +2267,8 @@ def sample_rk_beta(
         state_info_out['sampler_mode']      = sampler_mode
         state_info_out['seed_from_the_sampler_node']   = seed_from_the_sampler_node
         state_info_out['sde_noise_seed']               = sde_noise_seed
-        state_info_out['sde_noise_times_used']         = NS.noise_sampler.times_used
-        state_info_out['sde_noise_times_used_substep'] = NS.noise_sampler2.times_used
+        state_info_out['sde_noise_times_used']         = NS.noise_generator.times_used
+        state_info_out['sde_noise_times_used_substep'] = NS.noise_generator_substep.times_used
         state_info_out['completed']         = RUN_COMPLETED
         state_info_out['FLOW_STARTED']      = FLOW_STARTED
         state_info_out['FLOW_STOPPED']      = FLOW_STOPPED
@@ -2301,13 +2301,13 @@ def sample_rk_beta(
 
     return x
 
-def noise_fn(x, sigma, sigma_next, noise_sampler, cossim_iter=1):
+def noise_fn(x, sigma, sigma_next, noise_generator, cossim_iter=1):
     
-    noise  = normalize_zscore(noise_sampler(sigma=sigma, sigma_next=sigma_next), channelwise=True, inplace=True)
+    noise  = normalize_zscore(noise_generator(sigma=sigma, sigma_next=sigma_next), channelwise=True, inplace=True)
     cossim = get_pearson_similarity(x, noise)
     
     for i in range(cossim_iter):
-        noise_new  = normalize_zscore(noise_sampler(sigma=sigma, sigma_next=sigma_next), channelwise=True, inplace=True)
+        noise_new  = normalize_zscore(noise_generator(sigma=sigma, sigma_next=sigma_next), channelwise=True, inplace=True)
         cossim_new = get_pearson_similarity(x, noise_new)
         
         if cossim_new > cossim:
