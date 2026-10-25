@@ -164,9 +164,6 @@ RK_SAMPLER_NAMES_BETA_FOLDERS = ["none",
                     "fully_implicit/gauss-legendre_2s",
                     "fully_implicit/gauss-legendre_3s", 
                     "fully_implicit/gauss-legendre_4s",
-                    "fully_implicit/gauss-legendre_4s_alternating_a",
-                    "fully_implicit/gauss-legendre_4s_ascending_a",
-                    "fully_implicit/gauss-legendre_4s_alt",
                     "fully_implicit/gauss-legendre_5s",                    
                     "fully_implicit/gauss-legendre_5s_ascending",
                     #"gauss-legendre_diag_8s",
@@ -196,7 +193,7 @@ RK_SAMPLER_NAMES_BETA_FOLDERS = ["none",
 
                     "fully_implicit/lobatto_iiic_star_2s",
                     "fully_implicit/lobatto_iiic_star_3s",
-                    "fully_implicit/lobatto_iiid_2s",
+                    #"fully_implicit/lobatto_iiid_2s",  # builds each stage a full step away from its node, which a sigma-conditioned model cannot follow
                     "fully_implicit/lobatto_iiid_3s",
                     
                     ]
@@ -520,103 +517,52 @@ rk_coeff = {
         1 / 2 + 99 * (739**0.5) / 10000,  # largest
     ]
     ),
-    "gauss-legendre_4s_alt": ( # https://ijstre.com/Publish/072016/371428231.pdf Four Point Gauss Quadrature Runge – Kuta Method Of Order 8 For Ordinary Differential Equations
-        [
-            [1633/18780 - 71*206**0.5/96717000,
-            134689/939000 - 927*206**0.5/78250,
-            171511/939000 - 927*206**0.5/78250,
-            1633/18780 - 121979*206**0.5/19343400,],            
-            [7623/78250 - 1629507*206**0.5/257912000,
-            347013/21284000,
-            -118701/4256800,
-            7623/78250 + 1629507*206**0.5/257912000,],          
-            [8978/117375 + 1629507*206**0.5/257912000,
-            4520423/12770400,
-            10410661/63852000,
-            8978/117375 + 1629507*206**0.5/257912000,],            
-            [1633/18780 + 121979*206**0.5/19343400,
-            134689/939000 + 927*206**0.5/78250,
-            171511/939000 + 927*206**0.5/78250,
-            1633/18780 + 71*206**0.5/96717000,],       
-        ],
-        [    
-            [1633/9390,
-            1531/4695,
-            1531/4695,
-            1633/9390,]                                        
-        ],
-        [
-            1/2 - 3*206**0.5 / 100,  # 0.06941899716778028758987101075583196                          
-            33/100,                                         
-            67/100,                                        
-            1/2 + 3*206**0.5 / 100,                                         
-        ]
-    ),
     "gauss-legendre_4s": (
+        # Four-stage Gauss-Legendre implicit Runge-Kutta method, order 8.
+        #
+        # This tableau is not copied from a source. It is derived from the definition of the
+        # Gauss-Legendre family (Gauss collocation), with the assistance of Claude Fable 5.1,
+        # and every number below follows from that definition:
+        #
+        #   1. The nodes c are the four roots of the Legendre polynomial P4 shifted to [0, 1],
+        #      the same points Gaussian quadrature uses. In closed form:
+        #          c = 1/2 -+ sqrt(525 + 70 sqrt(30)) / 70   (the outer pair, 0.0694 and 0.9306)
+        #          c = 1/2 -+ sqrt(525 - 70 sqrt(30)) / 70   (the inner pair, 0.3300 and 0.6700)
+        #   2. Row i of A is the integral from 0 to c_i of the Lagrange basis polynomials through
+        #      the four nodes. a_ij is the weight of the prediction at node j in the state at node i.
+        #   3. b is the same integral taken from 0 to 1. In closed form:
+        #          b = (18 -+ sqrt(30)) / 72   (outer nodes 0.1739, inner nodes 0.3261)
+        #
+        # Checks that hold for this tableau and for every valid tableau in this family, and that
+        # can be rerun on the numbers below with a few lines of arithmetic:
+        #   - each row of A sums to its own node:  sum_j a_ij == c_i
+        #   - sum b == 1, sum b c == 1/2, sum b c^2 == 1/3, sum b c^3 == 1/4
+        # The derivation script, which recomputes the tableau from the Legendre roots and verifies
+        # these to machine precision, is ComfyUI/.claude/docs/res4lyf-gauss-legendre-4s-derivation.py.
+        #
+        # References for the definition: Butcher, "Implicit Runge-Kutta processes", Mathematics of
+        # Computation 18 (1964); Hairer, Norsett and Wanner, "Solving Ordinary Differential Equations I",
+        # section II.7 (collocation methods); Butcher, "Numerical Methods for Ordinary Differential
+        # Equations", the Gauss methods.
+        #
+        # The A entries are written as decimals: their closed forms are nested radicals in sqrt(30)
+        # that add nothing a reader can check by eye.
         [
-            [1/4, 1/4 - 15**0.5 / 6, 1/4 + 15**0.5 / 6, 1/4],            
-            [1/4 + 15**0.5 / 6, 1/4, 1/4 - 15**0.5 / 6, 1/4],          
-            [1/4, 1/4 + 15**0.5 / 6, 1/4, 1/4 - 15**0.5 / 6],            
-            [1/4 - 15**0.5 / 6, 1/4, 1/4 + 15**0.5 / 6, 1/4],       
-        ],
-        [    
-            [
-            1/8, 
-            3/8, 
-            3/8, 
-            1/8,]                                        
+            [0.08696371128436325, -0.026604180084998704, 0.012627462689404682, -0.003555149685795665],
+            [0.18811811749986787, 0.16303628871563677, -0.027880428602471023, 0.006735500594538165],
+            [0.16719192197418847, 0.35395300603374424, 0.16303628871563627, -0.014190694931141064],
+            [0.1774825722545219, 0.31344511474186915, 0.3526767575162717, 0.08696371128436386],
         ],
         [
-            1/2 - 15**0.5 / 10,      # 0.11270166537925831148207346002176004                               
-            1/2 + 15**0.5 / 10,                                         
-            1/2 + 15**0.5 / 10,                                        
-            1/2 - 15**0.5 / 10                                         
+            [(18 - 30**0.5) / 72, (18 + 30**0.5) / 72, (18 + 30**0.5) / 72, (18 - 30**0.5) / 72],
+        ],
+        [
+            1/2 - (525 + 70 * 30**0.5)**0.5 / 70,
+            1/2 - (525 - 70 * 30**0.5)**0.5 / 70,
+            1/2 + (525 - 70 * 30**0.5)**0.5 / 70,
+            1/2 + (525 + 70 * 30**0.5)**0.5 / 70,
         ]
     ),
-    "gauss-legendre_4s_alternating_a": (
-        [
-            [1/4, 1/4 - 15**0.5 / 6, 1/4 + 15**0.5 / 6, 1/4],            
-            [1/4 + 15**0.5 / 6, 1/4, 1/4 - 15**0.5 / 6, 1/4],   
-            [1/4 - 15**0.5 / 6, 1/4, 1/4 + 15**0.5 / 6, 1/4],       
-            [1/4, 1/4 + 15**0.5 / 6, 1/4, 1/4 - 15**0.5 / 6],            
-        ],
-        [    
-            [
-            1/8, 
-            3/8, 
-            1/8, 
-            3/8,]                                        
-        ],
-        [
-            1/2 - 15**0.5 / 10,      # 0.11270166537925831148207346002176004                               
-            1/2 + 15**0.5 / 10,     
-            1/2 - 15**0.5 / 10,                                         
-            1/2 + 15**0.5 / 10,                                        
-        ]
-    ),
-    "gauss-legendre_4s_ascending_a": (
-        [
-            [1/4 - 15**0.5 / 6,   1/4,               1/4 + 15**0.5 / 6, 1/4],              
-            [1/4,                 1/4 - 15**0.5 / 6, 1/4 + 15**0.5 / 6, 1/4],            
-            [1/4,                 1/4 + 15**0.5 / 6, 1/4,               1/4 - 15**0.5 / 6],    
-            [1/4 + 15**0.5 / 6,   1/4,               1/4 - 15**0.5 / 6, 1/4],          
-
-        ],
-        [
-            [
-            1/8, 
-            3/8, 
-            1/8,
-            3/8,]                                        
-        ],
-        [
-            1/2 - 15**0.5 / 10,                                         
-            1/2 - 15**0.5 / 10,                                     
-            1/2 + 15**0.5 / 10,                                         
-            1/2 + 15**0.5 / 10,                                        
-        ]
-    ),
-
     "gauss-legendre_3s": ( # Kunzmann-Butcher, IRK, order 6 https://www.math.umd.edu/~mariakc/SymplecticMethods.pdf
         [
             [5/36, 2/9 - 15**0.5 / 15, 5/36 - 15**0.5 / 30],
@@ -761,7 +707,7 @@ rk_coeff = {
         [    
             [1/9, (-1-6**0.5)/18, (-1+6**0.5)/18],
             [1/9, 11/45 + 7*6**0.5/360, 11/45-43*6**0.5/360],
-            [1/9, 11/45-43*6**0.5/360, 11/45 + 7*6**0.5/360],
+            [1/9, 11/45 + 43*6**0.5/360, 11/45 - 7*6**0.5/360],
         ],
         [
             [1/9, 4/9 + 6**0.5/36, 4/9 - 6**0.5/36],
@@ -1157,12 +1103,12 @@ rk_coeff = {
             [1/5],
             [3/40, 9/40],
             [44/45, -56/15, 32/9],
-            [19372/6561, -25360/2187, 64448/6561, 212/729], #flipped 212 sign
-            [-9017/3168, -355/33, 46732/5247, 49/176, -5103/18656],
+            [19372/6561, -25360/2187, 64448/6561, -212/729],
+            [9017/3168, -355/33, 46732/5247, 49/176, -5103/18656],
             [35/384, 0, 500/1113, 125/192, -2187/6784, 11/84],
         ],
         [
-            [5179/57600, 0, 7571/16695, 393/640, -92097/339200, 187/2100, 1/40],
+            [35/384, 0, 500/1113, 125/192, -2187/6784, 11/84, 0],
         ],
         [0, 1/5, 3/10, 4/5, 8/9, 1, 1],
     ),
