@@ -279,8 +279,10 @@ class TrimVideoLatent_state_info:
         return tensor
     
     def op(self, samples, trim_amount):
+        from comfy.nested_tensor import NestedTensor
         ref_shape = samples["samples"].shape
-        samples_out = apply_to_state_info_tensors(samples, ref_shape, self._trim_tensor, trim_amount)
+        latent_shapes = [t.shape for t in samples["samples"].unbind()] if isinstance(samples["samples"], NestedTensor) else None
+        samples_out = apply_to_state_info_tensors(samples, ref_shape, self._trim_tensor, trim_amount, latent_shapes=latent_shapes)
         return (rehash_latent_item_ids(samples_out),)
 
 
