@@ -929,28 +929,33 @@ class SharkSampler:
             out = latent_x.copy()
             out["samples"] = samples
 
-            if "x0" in x0_output:
-                # x0 from the callback is either a flat packed tensor or an already-unpacked NestedTensor
-                x0_raw = x0_output["x0"]
-                if (hasattr(samples, 'is_nested') and samples.is_nested
-                        and not (hasattr(x0_raw, 'is_nested') and x0_raw.is_nested)):
-                    latent_shapes = [t.shape for t in samples.unbind()]
-                    x0_raw = comfy.nested_tensor.NestedTensor(
-                        comfy.utils.unpack_latents(x0_raw, latent_shapes)
-                    )
-                x0_out = work_model.model.process_latent_out(x0_raw.cpu())
-                if hasattr(x0_out, 'is_nested') and x0_out.is_nested:
-                    x0_out = comfy.nested_tensor.NestedTensor([t.to(torch.float32) for t in x0_out.unbind()])
-                else:
-                    x0_out = x0_out.to(torch.float32)
-                out_denoised = latent_x.copy()
-                out_denoised["samples"] = x0_out
+            if EO("denoised_output_classic"):
+                denoised_loop_latent = x0_output.get("x0")   # the last preview callback tensor
+            elif state_info_out.get('completed'):
+                denoised_loop_latent = None   # the output latent itself on a completed run
             else:
-                out_denoised = latent_x.copy()
+                denoised_loop_latent = state_info_out.get('denoised')
+
+            out_denoised = latent_x.copy()
+            if denoised_loop_latent is None:
                 if hasattr(samples, 'is_nested') and samples.is_nested:
                     out_denoised["samples"] = comfy.nested_tensor.NestedTensor([t.to(torch.float32) for t in samples.unbind()])
                 else:
                     out_denoised["samples"] = samples.to(torch.float32)
+            else:
+                # the loop latent is either a flat packed tensor or an already-unpacked NestedTensor
+                if (hasattr(samples, 'is_nested') and samples.is_nested
+                        and not (hasattr(denoised_loop_latent, 'is_nested') and denoised_loop_latent.is_nested)):
+                    latent_shapes = [t.shape for t in samples.unbind()]
+                    denoised_loop_latent = comfy.nested_tensor.NestedTensor(
+                        comfy.utils.unpack_latents(denoised_loop_latent, latent_shapes)
+                    )
+                denoised_out = work_model.model.process_latent_out(denoised_loop_latent.cpu())
+                if hasattr(denoised_out, 'is_nested') and denoised_out.is_nested:
+                    denoised_out = comfy.nested_tensor.NestedTensor([t.to(torch.float32) for t in denoised_out.unbind()])
+                else:
+                    denoised_out = denoised_out.to(torch.float32)
+                out_denoised["samples"] = denoised_out
 
             out['sampler'] = sampler
             out['guider'] = guider
