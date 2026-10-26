@@ -85,7 +85,7 @@ RK_SAMPLER_NAMES_BETA_FOLDERS = ["none",
 
                     "exponential/res_10s",
                     "exponential/res_15s",
-                    "exponential/res_16s",
+                    #"exponential/res_16s",  # correct ExpRK6s16 tableau, but its final step combines the stage predictions with coefficients so large that the model's prediction noise swamps the output
                     
                     "exponential/etdrk2_2s",
                     "exponential/etdrk3_a_3s",
@@ -2956,7 +2956,7 @@ def get_rk_methods_beta(rk_type       : str,
             ci = [c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15]
             
 
-        case "res_16s": # 6th order without weakened order conditions
+        case "res_16s": # ExpRK6s16, Luan and Alhsmy, arXiv 2311.08600, sixth order with every stiff order condition in the strong form
                 
             c1 = 0
             c2 = c3 = c5 = c8 = c12 = 1/2
@@ -2993,29 +2993,21 @@ def get_rk_methods_beta(rk_type       : str,
                     numerator = -ci[i-1]**2  *  ci[d-1]*ci[k-1]*ci[l-1]  *  φ(2,i)     +     2*ci[i-1]**3  *  (ci[d-1]*ci[k-1] + ci[d-1]*ci[l-1] + ci[k-1]*ci[l-1])  *  φ(3,i)     -     6*ci[i-1]**4  *  (ci[d-1] + ci[k-1] + ci[l-1])  *  φ(4,i)     +     24*ci[i-1]**5  *  φ(5,i)
                     a[i-1][j-1] = numerator / prod_diff(ci[j-1], ci[k-1], ci[l-1], ci[d-1])
             
-            """ijdkl = list(permutations([12,13,14,15,16], 5)) 
-            for i,j,d,k,l in ijdkl:
-                #numerator = -ci[j-1]*ci[k-1]*ci[l-1]*φ(2)   +   2*(ci[j-1]*ci[k-1]   +   ci[j-1]*ci[l-1]   +   ci[k-1]*ci[l-1])*φ(3)   -   6*(ci[j-1] + ci[k-1]   +   ci[l-1])*φ(4)   +   24*φ(5)
-                b[0][i-1] = theta(2, ci[d-1], ci[i-1], ci[k-1], ci[j-1], ci[l-1]) * φ(2)   +  theta(3, ci[d-1], ci[i-1], ci[k-1], ci[j-1], ci[l-1])*φ(3)   +   theta(4, ci[d-1], ci[i-1], ci[k-1], ci[j-1], ci[l-1])*φ(4)   +   theta(5, ci[d-1], ci[i-1], ci[k-1], ci[j-1], ci[l-1])*φ(5)    +    theta(6, ci[d-1], ci[i-1], ci[k-1], ci[j-1], ci[l-1]) * φ(6)
-                #b[0][i-1] = numerator / prod_diff(ci[i-1], ci[j-1], ci[k-1], ci[l-1])"""
-                    
-                
-            ijdkl = list(permutations([12,13,14,15,16], 5)) 
-            for i,j,d,k,l in ijdkl:
-                #numerator = -ci[j-1]*ci[k-1]*ci[l-1]*φ(2)   +   2*(ci[j-1]*ci[k-1]   +   ci[j-1]*ci[l-1]   +   ci[k-1]*ci[l-1])*φ(3)   -   6*(ci[j-1] + ci[k-1]   +   ci[l-1])*φ(4)   +   24*φ(5)
-                #numerator = theta_numerator(2, ci[d-1], ci[i-1], ci[k-1], ci[j-1], ci[l-1]) * φ(2)   +  theta_numerator(3, ci[d-1], ci[i-1], ci[k-1], ci[j-1], ci[l-1])*φ(3)   +   theta_numerator(4, ci[d-1], ci[i-1], ci[k-1], ci[j-1], ci[l-1])*φ(4)   +   theta_numerator(5, ci[d-1], ci[i-1], ci[k-1], ci[j-1], ci[l-1])*φ(5)    +    theta_numerator(6, ci[d-1], ci[i-1], ci[k-1], ci[j-1], ci[l-1]) * φ(6)
-                #b[0][i-1] = numerator / (ci[i-1] *, ci[d-1], ci[j-1], ci[k-1], ci[l-1])
-                #b[0][i-1] = numerator / denominator(ci[i-1], ci[d-1], ci[j-1], ci[k-1], ci[l-1])
-                b[0][i-1] = theta(2, ci[d-1], ci[i-1], ci[k-1], ci[j-1], ci[l-1]) * φ(2)   +  theta(3, ci[d-1], ci[i-1], ci[k-1], ci[j-1], ci[l-1])*φ(3)   +   theta(4, ci[d-1], ci[i-1], ci[k-1], ci[j-1], ci[l-1])*φ(4)   +   theta(5, ci[d-1], ci[i-1], ci[k-1], ci[j-1], ci[l-1])*φ(5)    +    theta(6, ci[d-1], ci[i-1], ci[k-1], ci[j-1], ci[l-1]) * φ(6)
-
-            
-            ijdkl = list(permutations([12,13,14,15,16], 5)) 
-            for i,j,d,k,l in ijdkl:
-                numerator = 0
-                for jjj in range(2, 7):  # 2, 3, 4, 5, 6
-                    numerator += theta_numerator(jjj, ci[d-1], ci[i-1], ci[k-1], ci[j-1], ci[l-1]) * φ(jjj)
-                #print(i,j,d,k,l)
-                b[0][i-1] = numerator / (ci[i-1] *   (ci[i-1] - ci[k-1])   *   (ci[i-1] - ci[j-1]   *   (ci[i-1] - ci[d-1])   *   (ci[i-1] - ci[l-1])))
+            # Final weights of ExpRK6s16 (Luan and Alhsmy, arXiv 2311.08600, the strong form of the
+            # scheme whose weak form is res_15s). The update combines stages 12 to 16, at nodes 1/2,
+            # 1/5, 1/4, 1/3 and 1, and the stiff order conditions on the weights read
+            #     sum_i b_i c_i^(k-1) / (k-1)! = phi_k(-h)   for k = 2 to 6,
+            # five conditions on five weights, so the weights are the unique solution of that linear
+            # system (the paper's theta formulas are this solution in closed form), and b_1 follows
+            # from the k = 1 condition in gen_first_col_exp below. To re-verify: the five residuals
+            # above are zero at any h, and the stiff order check in the dev notes reports order 6.
+            # Derived with the assistance of Claude Fable 5.1.
+            weight_nodes = ci[11:16]
+            weight_conditions = mp.matrix([[c ** (k - 1) / factorial(k - 1) for c in weight_nodes] for k in range(2, 7)])
+            weight_targets = mp.matrix([φ(k) for k in range(2, 7)])
+            weight_values = mp.lu_solve(weight_conditions, weight_targets)
+            for stage, weight in zip(range(11, 16), weight_values):
+                b[0][stage] = weight
 
             gen_first_col_exp(a, b, ci, φ)
 
@@ -3134,35 +3126,6 @@ def mu_numerator(j, cd, ci, ck, cl):
         numerator = 24
     return numerator #/ denominator(ci, cd, ck, cl)
 
-
-
-def theta_numerator(j, cd, ci, ck, cj, cl):
-    if j == 2:
-        numerator = -cj * cd * ck * cl
-    if j == 3:
-        numerator = 2 * (cj * ck * cd + cj*ck*cl + ck*cd*cl + cd*cl*cj)
-    if j == 4:
-        numerator = -6*(cj*ck + cj*cd + cj*cl + ck*cd + ck*cl + cd*cl)
-    if j == 5:
-        numerator = 24 * (cj + ck + cl + cd)
-    if j == 6:
-        numerator = -120
-    return numerator # / denominator(ci, cj, ck, cl, cd)
-
-
-def theta(j, cd, ci, ck, cj, cl):
-    if j == 2:
-        numerator = -cj * cd * ck * cl
-    if j == 3:
-        numerator = 2 * (cj * ck * cd + cj*ck*cl + ck*cd*cl + cd*cl*cj)
-    if j == 4:
-        numerator = -6*(cj*ck + cj*cd + cj*cl + ck*cd + ck*cl + cd*cl)
-    if j == 5:
-        numerator = 24 * (cj + ck + cl + cd)
-    if j == 6:
-        numerator = -120
-    return numerator / ( ci * (ci - cj) * (ci - ck) * (ci - cl) * (ci - cd))
-    return numerator / denominator(ci, cj, ck, cl, cd)
 
 
 def prod_diff(cj, ck, cl=None, cd=None):
