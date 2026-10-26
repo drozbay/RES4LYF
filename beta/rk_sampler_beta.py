@@ -802,7 +802,11 @@ def sample_rk_beta(
         s_noise_substep      = s_noises_substep     [step_sched].to(x)  if s_noises_substep      is not None else s_noise_substep
         noise_scaling_eta    = noise_scaling_etas   [step_sched].to(x)  if noise_scaling_etas    is not None else noise_scaling_eta
         noise_scaling_weight = noise_scaling_weights[step_sched].to(x)  if noise_scaling_weights is not None else noise_scaling_weight
-        
+
+        if sigmas[-1] == 0 and step == len(sigmas) - 3:   # no SDE noise on the final step down to sigma_min
+            eta         = 0.
+            eta_substep = 0.
+
         NS.set_sde_step(sigma, sigma_next, eta, overshoot, s_noise)
         RK.set_coeff(rk_type, NS.h, c1, c2, c3, step, sigmas, NS.sigma_down, history_steps, data_prev_sigmas_)
         NS.set_substep_list(RK)
