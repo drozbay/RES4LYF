@@ -435,7 +435,7 @@ def extract_cond_from_guider(guider, cond_type):
 
 def initialize_or_scale(tensor, value, steps):
     if tensor is None:
-        return torch.full((steps,), value)
+        return torch.full((steps,), value, dtype=torch.float64)
     else:
         return value * tensor
 
