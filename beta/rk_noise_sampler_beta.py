@@ -907,12 +907,16 @@ class RK_NoiseSampler:
         return x_next
 
     def rebound_overshoot_step(self, x_0:Tensor, x:Tensor) -> Tensor:
+        if self.sigma_down == self.sigma_next:
+            return x
         eps      = (x_0 - x) / (self.sigma - self.sigma_down)
         denoised =  x_0 - self.sigma * eps
         x        = denoised + self.sigma_next * eps
         return x
     
     def rebound_overshoot_substep(self, x_0:Tensor, x:Tensor) -> Tensor:
+        if self.sub_sigma_down == self.sub_sigma_next:
+            return x
         if self.sigma - self.sub_sigma_down > 0:
             sub_eps      = (x_0 - x) / (self.sigma - self.sub_sigma_down)
             sub_denoised =  x_0 - self.sigma * sub_eps
