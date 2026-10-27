@@ -1286,7 +1286,7 @@ class LatentGuide:
                                     NS.h_new_orig,
                                     )
 
-            x_[row] = NS.rebound_overshoot_substep(x_0, x_[row])
+            x_[row] = NS.undo_overshoot_substep(x_0, x_[row])
 
             if row > 0:
                 x_[row] = NS.swap_noise_substep(x_0, x_[row])
@@ -1446,7 +1446,7 @@ class LatentGuide:
                                             NS.h_new_orig,
                                             )
 
-                    x_[r] = NS.rebound_overshoot_substep(x_0, x_[r])
+                    x_[r] = NS.undo_overshoot_substep(x_0, x_[r])
 
                     if r > 0:
                         x_[r] = NS.swap_noise_substep(x_0, x_[r])

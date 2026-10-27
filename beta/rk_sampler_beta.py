@@ -1056,7 +1056,7 @@ def sample_rk_beta(
                                     eps_[row], data_[row] = RK(x_[row+RK.row_offset], NS.s_[row+RK.row_offset+RK.multistep_stages], x_0, sigma)
                                     
                                     x_ = RK.update_substep(x_0, x_, eps_, eps_prev_, row, RK.row_offset, NS.h_new, NS.h_new_orig)
-                                    x_[row+RK.row_offset] = NS.rebound_overshoot_substep(x_0, x_[row+RK.row_offset])
+                                    x_[row+RK.row_offset] = NS.undo_overshoot_substep(x_0, x_[row+RK.row_offset])
 
                                     x_[row+RK.row_offset] = NS.sigma_from_to(x_0,    x_[row+RK.row_offset],    sigma,    NS.s_[row+RK.row_offset+RK.multistep_stages],    NS.s_[row])
                                     x_tmp = x_[row+RK.row_offset]
@@ -1091,7 +1091,7 @@ def sample_rk_beta(
                                     pass
                                 else:
                                     x_[row+RK.row_offset] = x_0 + NS.h_new * RK.zum(row+RK.row_offset, eps_, eps_prev_)
-                                    x_[row+RK.row_offset] = NS.rebound_overshoot_substep(x_0, x_[row+RK.row_offset])
+                                    x_[row+RK.row_offset] = NS.undo_overshoot_substep(x_0, x_[row+RK.row_offset])
                                     if row > 0:
                                         if not LG.guide_mode.startswith("flow") or (LG.lgw[step_sched] == 0 and LG.lgw[step+1] == 0   and   LG.lgw_inv[step_sched] == 0 and LG.lgw_inv[step+1] == 0):
                                             x_row_tmp = NS.swap_noise_substep(x_0, x_[row+RK.row_offset], mask=sde_mask, guide=LG.y0)
@@ -1864,12 +1864,12 @@ def sample_rk_beta(
                     else:
                         x_ = RK.update_substep(x_0, x_, eps_, eps_prev_, row, RK.row_offset, NS.h_new, NS.h_new_orig, lying_eps_row_factor=lying_eps_row_factor)   #modifies eps_[row] if lying_eps_row_factor != 1.0
                     
-                    x_[row+RK.row_offset] = NS.rebound_overshoot_substep(x_0, x_[row+RK.row_offset])
+                    x_[row+RK.row_offset] = NS.undo_overshoot_substep(x_0, x_[row+RK.row_offset])
                     
                     if SYNC_GUIDE_ACTIVE: #yt_ is not None:
                         #yt_ = RK.update_substep(yt_0, yt_, eps_y_, eps_prev_y_, row, RK.row_offset, NS.h_new, NS.h_new_orig, lying_eps_row_factor=lying_eps_row_factor)   #modifies eps_[row] if lying_eps_row_factor != 1.0
                         yt_ = RK.update_substep(yt_0, yt_, eps_yt_, eps_prev_y_, row, RK.row_offset, NS.h_new, NS.h_new_orig, lying_eps_row_factor=lying_eps_row_factor, sigma=sigma)   #modifies eps_[row] if lying_eps_row_factor != 1.0
-                        yt_[row+RK.row_offset] = NS.rebound_overshoot_substep(yt_0, yt_[row+RK.row_offset])
+                        yt_[row+RK.row_offset] = NS.undo_overshoot_substep(yt_0, yt_[row+RK.row_offset])
                     
                     if not RK.IMPLICIT and NS.noise_mode_sde_substep != "hard_sq":
 
@@ -1995,11 +1995,11 @@ def sample_rk_beta(
                     #progress_bar.update(float(f"{step_update:.2f}")) 
 
             x_next = x_[RK.rows - RK.multistep_stages - RK.row_offset + 1]
-            x_next = NS.rebound_overshoot_step(x_0, x_next)
+            x_next = NS.undo_overshoot_step(x_0, x_next)
             
             if SYNC_GUIDE_ACTIVE:           # YT_NEXT UPDATE STEP --------------------------------------
                 yt_next = yt_[RK.rows - RK.multistep_stages - RK.row_offset + 1]
-                yt_next = NS.rebound_overshoot_step(yt_0, yt_next)
+                yt_next = NS.undo_overshoot_step(yt_0, yt_next)
             
             eps = (x_0 - x_next) / (sigma - sigma_next)
             denoised = x_0 - sigma * eps
