@@ -469,10 +469,8 @@ def sample_rk_beta(
 
     data_prev_y_        = get_safe_state_info_tensor(state_info, 'data_prev_y_', x)
     data_prev_x_        = get_safe_state_info_tensor(state_info, 'data_prev_x_', x)
-    data_prev_x2y_      = state_info.get('data_prev_x2y_')
     if data_prev_y_  is not None: data_prev_y_  = data_prev_y_.clone()
     if data_prev_x_  is not None: data_prev_x_  = data_prev_x_.clone()
-    if data_prev_x2y_ is not None: data_prev_x2y_ = data_prev_x2y_.clone()
 
     # BEGIN SAMPLING LOOP
     try:
