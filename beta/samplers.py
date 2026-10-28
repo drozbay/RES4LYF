@@ -746,6 +746,16 @@ class SharkSampler:
             except TypeError:
                 callback = latent_preview.prepare_callback(work_model, steps_len, x0_output)
 
+            factors_0_steps = options_mgr.get('latent_normalize_idx_0_steps', [1.0])
+            factors_1_steps = options_mgr.get('latent_normalize_idx_1_steps', [1.0])
+            has_per_step_factors = len(factors_0_steps) > 1 or len(factors_1_steps) > 1
+            if isinstance(x, comfy.nested_tensor.NestedTensor) and 'rk_type' in sampler.extra_options:
+                sampler.extra_options['latent_shapes'] = [t.shape for t in x.unbind()]
+                sampler.extra_options['latent_normalize_idx_0_steps'] = factors_0_steps if has_per_step_factors else None
+                sampler.extra_options['latent_normalize_idx_1_steps'] = factors_1_steps if has_per_step_factors else None
+            if not has_per_step_factors:
+                x = apply_nested_normalization(x, factors_0_steps[0], factors_1_steps[0])
+
             noise_mask = latent_image_batch.get("noise_mask", None)
 
             if noise_mask is not None and sampler_mode in {"resample", "unsample"}:
@@ -822,25 +832,6 @@ class SharkSampler:
                 etas_decay          = etas_cached
                 etas_substep_decay  = etas_substep_cached
                 unsample_etas_decay = unsample_etas
-
-            # Apply pre-sampling latent normalization for NestedTensors
-            idx_0_factor = options_mgr.get('latent_normalize_idx_0', 1.0)
-            idx_1_factor = options_mgr.get('latent_normalize_idx_1', 1.0)
-            factors_0_steps = options_mgr.get('latent_normalize_idx_0_steps', [1.0])
-            factors_1_steps = options_mgr.get('latent_normalize_idx_1_steps', [1.0])
-
-            # Per-step normalization: pass shapes and factors to inner sampler
-            has_per_step_factors = len(factors_0_steps) > 1 or len(factors_1_steps) > 1
-            if isinstance(x, comfy.nested_tensor.NestedTensor) and 'rk_type' in sampler.extra_options:
-                sampler.extra_options['latent_shapes'] = [t.shape for t in x.unbind()]
-                sampler.extra_options['latent_normalize_idx_0_steps'] = factors_0_steps
-                sampler.extra_options['latent_normalize_idx_1_steps'] = factors_1_steps
-
-            # Node-level normalization only for single-value factors (backward compat)
-            # Per-step factors are applied in the inner loop instead
-            if not has_per_step_factors and (idx_0_factor != 1.0 or idx_1_factor != 1.0):
-                # Normalize x for standard sampling
-                x = apply_nested_normalization(x, idx_0_factor, idx_1_factor)
 
             sampler.extra_options['outer_sigmas_len'] = sigmas.shape[-1]
             samples = guider.sample(noise_initial, x_initial, sampler, sigmas, denoise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=noise_seed)
