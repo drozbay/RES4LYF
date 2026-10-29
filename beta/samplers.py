@@ -259,6 +259,8 @@ class SharkSampler:
             extra_options  += "\n" + options_mgr.get('extra_options', "")
             EO              = ExtraOptions(extra_options)
             default_device  = EO("work_device", str(get_torch_device()))
+            if EO("work_device_cpu"):
+                default_device = "cpu"
             
             noise_stdev     = options_mgr.get('noise_init_stdev', noise_stdev)
             noise_mean      = options_mgr.get('noise_init_mean',  noise_mean)

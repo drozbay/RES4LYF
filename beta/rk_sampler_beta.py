@@ -286,10 +286,8 @@ def sample_rk_beta(
     #       work_dtype=float64 restores the classic full-float64 behavior.
     #   noise_dtype (float32) and noise_device (the work device): where the noise is made, same as ComfyUI native.
     EO             = ExtraOptions(extra_options)
-    model_device   = model.inner_model.inner_model.device #x.device
-    work_device    = 'cpu' if EO("work_device_cpu") else model_device
-    default_dtype  = clamp_dtype(EO("default_dtype", torch.float64), work_device)
-    work_dtype     = clamp_dtype(EO("work_dtype",    torch.float32), work_device)
+    default_dtype  = EO("default_dtype", torch.float64)
+    work_dtype     = EO("work_dtype",    torch.float32)
 
     REPORT_VRAM    = EO("report_vram") and torch.cuda.is_available()
     if REPORT_VRAM:
@@ -310,6 +308,12 @@ def sample_rk_beta(
             _VRAM_CAP_SET = False
 
     extra_args     = {} if extra_args     is None else extra_args
+    model_device   = model.inner_model.inner_model.device #x.device
+    work_device    = EO("work_device", "") or model_device
+    if EO("work_device_cpu"):
+        work_device = 'cpu'
+    default_dtype  = clamp_dtype(default_dtype, work_device)
+    work_dtype     = clamp_dtype(work_dtype, work_device)
 
     state_info     = {} if state_info     is None else state_info
     state_info_out = {} if state_info_out is None else state_info_out
