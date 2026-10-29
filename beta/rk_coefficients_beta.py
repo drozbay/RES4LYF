@@ -97,10 +97,10 @@ RK_SAMPLER_NAMES_BETA_FOLDERS = ["none",
                     "exponential/dpmpp_sde_2s",
                     "exponential/dpmpp_3s",
                     
-                    "exponential/lawson2a_2s",
-                    "exponential/lawson2b_2s",
+                    #"exponential/lawson2a_2s",  # Lawson coefficients, which scale x_0 by e^(-c h) on their own; the pack's stage form cannot express that, so these leave noise behind on large steps
+                    #"exponential/lawson2b_2s",  # Lawson coefficients, which scale x_0 by e^(-c h) on their own; the pack's stage form cannot express that, so these leave noise behind on large steps
 
-                    "exponential/lawson4_4s",
+                    #"exponential/lawson4_4s",  # Lawson coefficients, which scale x_0 by e^(-c h) on their own; the pack's stage form cannot express that, so these leave noise behind on large steps
                     "exponential/lawson41-gen_4s",
                     "exponential/lawson41-gen-mod_4s",
 
