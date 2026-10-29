@@ -124,6 +124,24 @@ def get_safe_state_info_tensor(state_info, key, x):
 
 
 @torch.no_grad()
+def build_start_latent(model, sigmas, image_initial, noise_initial, work_dtype, work_device):
+    base_model     = model.inner_model.inner_model
+    model_sampling = base_model.model_sampling
+    if getattr(image_initial, 'is_nested', False):
+        image_initial, _ = comfy.utils.pack_latents(image_initial.unbind())
+    if getattr(noise_initial, 'is_nested', False):
+        noise_initial, _ = comfy.utils.pack_latents(noise_initial.unbind())
+    latent = image_initial.to(dtype=work_dtype, device=work_device)
+    if torch.count_nonzero(latent) > 0:
+        latent = base_model.process_latent_in(latent)
+    noise = noise_initial.to(dtype=work_dtype, device=work_device)
+    sigma_max   = float(model_sampling.sigma_max)
+    sigma_start = float(sigmas[0])
+    max_denoise = math.isclose(sigma_max, sigma_start, rel_tol=1e-05) or sigma_start > sigma_max
+    return model_sampling.noise_scaling(sigmas[0], noise, latent, max_denoise)
+
+
+@torch.no_grad()
 def sample_rk_beta(
         model,
         x                             : Tensor,
@@ -338,6 +356,10 @@ def sample_rk_beta(
 
     x      = x     .to(dtype=work_dtype,    device=work_device)
     sigmas = sigmas.to(dtype=default_dtype, device=work_device)
+
+    resumed_from_handoff = rebound_handoff is not None and 'x' in rebound_handoff
+    if sampler_mode == "standard" and not resumed_from_handoff and image_initial is not None and noise_initial is not None:
+        x = build_start_latent(model, sigmas, image_initial, noise_initial, work_dtype, work_device)
 
     # sync sample_sigmas in model_options to the effective (unpadded) schedule.
     if 'model_options' in extra_args:
