@@ -606,9 +606,12 @@ class RK_Method_Beta:
             for swap in sorted(rk_swaps, key=lambda s: s['step']):
                 if step_sched < swap['step'] and swap['threshold'] > 0:
                     threshold = swap['threshold']
-                    if x_0 is not None and history_steps >= 3 and count_history(data_prev_sigmas_, sigmas[step]) >= 2 and sigmas[step+1] > 0 and self.rk_type != swap['type']:
-                        x_res_2m, denoised_res_2m = self.calculate_res_2m_step(x_0, data_prev_, NS.sigma_down, sigmas[step], data_prev_sigmas_)
-                        x_res_3m, denoised_res_3m = self.calculate_res_3m_step(x_0, data_prev_, NS.sigma_down, sigmas[step], data_prev_sigmas_)
+                    history_data_   = data_prev_[1:]
+                    history_sigmas_ = data_prev_sigmas_[1:]
+                    sigma_completed = history_sigmas_[0]
+                    if x_0 is not None and history_steps >= 3 and count_history(history_sigmas_, sigma_completed) >= 2 and sigmas[step+1] > 0 and self.rk_type != swap['type']:
+                        x_res_2m, denoised_res_2m = self.calculate_res_2m_step(x_0, history_data_, NS.sigma_down, sigma_completed, history_sigmas_)
+                        x_res_3m, denoised_res_3m = self.calculate_res_3m_step(x_0, history_data_, NS.sigma_down, sigma_completed, history_sigmas_)
                         if swap['print']:
                             RESplain("res_3m - res_2m:", torch.norm(denoised_res_3m - denoised_res_2m).item())
                         if threshold > torch.norm(denoised_res_2m - denoised_res_3m):
