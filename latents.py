@@ -258,7 +258,7 @@ def normalize_zscore(x, channelwise=False, inplace=False):
             return x.sub_(x.mean()).div_(x.std())
     else:
         if channelwise:
-            return (x - x.mean(dim=(-2,-1), keepdim=True) / x.std(dim=(-2,-1), keepdim=True))
+            return (x - x.mean(dim=(-2,-1), keepdim=True)) / x.std(dim=(-2,-1), keepdim=True)
         else:
             return (x - x.mean()) / x.std()
 
