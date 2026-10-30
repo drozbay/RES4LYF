@@ -112,6 +112,7 @@ class RK_Method_Beta:
                                 "etdrk", 
                                 "lawson", 
                                 "abnorsett",
+                                "irk_exp_diag",
                                 )): 
             return True
         else:

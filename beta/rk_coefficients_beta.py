@@ -37,6 +37,7 @@ RK_EXPONENTIAL_PREFIXES = (
     "etdrk", 
     "lawson", 
     "abnorsett",
+    "irk_exp_diag",
     )
 
 def is_exponential(rk_type:str) -> bool:
@@ -3020,11 +3021,23 @@ def get_rk_methods_beta(rk_type       : str,
             c2 = 2/3
             c1 = float(get_extra_options_kv("c1", str(c1), extra_options))
             c2 = float(get_extra_options_kv("c2", str(c2), extra_options))
-            
-            lam = (1 - torch.exp(-c1 * h)) / h
-            a2_1 = ( torch.exp(c2*h) - torch.exp(c1*h))    /    (h * torch.exp(2*c1*h))
-            b1 =  (1 + c2*h + torch.exp(h) * (-1 + h - c2*h)) / ((c1-c2) * h**2 * torch.exp(c1*h))
-            b2 = -(1 + c1*h - torch.exp(h) * ( 1 - h + c1*h)) / ((c1-c2) * h**2 * torch.exp(c2*h))
+
+            ci = [c1, c2]
+            φ = Phi(h, ci, use_analytic_solution)
+
+            # Exponential SDIRK with nodes c1, c2 and one diagonal. In the stage form
+            # x_i = x_0 + h sum_j a_ij (D_j - x_0), row i must sum to c_i phi_1(-c_i h) so that
+            # x_0 keeps e^(-c_i h); the diagonal is exponential Euler at c1 and the off-diagonal
+            # entry is the remainder of row 2. The weights are the exponential collocation
+            # weights for the two nodes, b_i = integral_0^1 e^(-h(1-t)) l_i(t) dt with l_i the
+            # Lagrange basis, in closed form through phi_1(-h) and phi_2(-h). Checks: b1 + b2 =
+            # phi_1(-h), b1 c1 + b2 c2 = phi_2(-h) (stiff order 2), c1 = 0 gives the res_2s
+            # weights. The original entries carried the same forms with one exponent sign
+            # flipped in a2_1 and a factor e^((1-c_i) h) on b_i. Derived by Claude, 2026-10-29.
+            lam  = c1 * φ(1,1)
+            a2_1 = c2 * φ(1,2) - lam
+            b1   = (φ(2) - c2 * φ(1)) / (c1 - c2)
+            b2   = (φ(2) - c1 * φ(1)) / (c2 - c1)
 
             a = [
                     [lam, 0],
@@ -3033,7 +3046,6 @@ def get_rk_methods_beta(rk_type       : str,
             b = [
                     [b1, b2],
             ]
-            ci = [c1, c2]
 
     ci = ci[:]
     #if rk_type.startswith("lob") == False:
