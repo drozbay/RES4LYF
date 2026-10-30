@@ -379,7 +379,9 @@ class RK_NoiseSampler:
         self.overshoot_substep   = overshoot_substep
 
 
-        if row < self.rows   and   self.s_[row+self.row_offset+multistep_stages] > 0:
+        sub_sigma_target     = self.s_[row+self.row_offset+multistep_stages]
+        stage_beyond_start   = (sub_sigma_target - self.sigma) * (self.sigma_next - self.sigma) < 0
+        if row < self.rows   and   sub_sigma_target > 0   and   not stage_beyond_start:
             if   diag_iter > 0 and diag_iter == implicit_steps_diag and self.EO("implicit_substep_skip_final_eta"):
                 pass
             elif diag_iter > 0 and                                      self.EO("implicit_substep_only_first_eta"):
