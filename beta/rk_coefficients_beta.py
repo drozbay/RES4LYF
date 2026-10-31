@@ -1408,7 +1408,9 @@ def get_rk_methods_beta(rk_type       : str,
     if rk_type[-3] == "h" and rk_type[-1] == "s": #hybrid method
         hybrid_order = multistep_buffer_size(rk_type) - 1
         substep_name = "res_4s_strehmel_weiner" if rk_type.endswith("4s") else "res_" + rk_type[-2:]
-        stages = max(0, min(hybrid_order, usable_history, distinct_slots))
+        if rk_type.startswith(("pec", "lawson")): # a stored prediction at the step's end is a coincident node for these
+            distinct_slots = min(distinct_slots, count_history(prev_sigmas, sigma_down))
+        stages = max(0, min(hybrid_order, history_limit, distinct_slots))
         # No step size guard here: on the hybrids the final step rule alone removed the large step grain, the guard changed little.
         if final_step:
             sampler_change_reason = "final"
@@ -1543,8 +1545,12 @@ def get_rk_methods_beta(rk_type       : str,
             c1, c2 = 0, 1
             ci = [c1, c2]
             φ = Phi(h, ci, use_analytic_solution)
+            s1 = (torch.log(sigma / prev_sigmas[1]) / h).item()
 
-            b1 = φ(1) #+ φ(2)
+            # b1 = φ(1) #+ φ(2)
+
+            u2_1 = φ(2) / s1
+            v1 = u2_1
 
             a = [
                     [0, 0],
@@ -1553,21 +1559,15 @@ def get_rk_methods_beta(rk_type       : str,
             b = [
                     [0, 0],
             ]
-
-
-            u1 = -φ(2)
-            v1 = -φ(2)
-
             u = [
                     [0, 0],
-                    [u1, 0],
+                    [u2_1, 0],
             ]
             v = [
                     [v1, 0],
             ]
 
-            gen_first_col_exp_uv(a, b, ci, u, v, φ) 
-
+            gen_first_col_exp_uv(a, b, ci, u, v, φ)
 
 
         case "abnorsett_2m":
@@ -1575,16 +1575,19 @@ def get_rk_methods_beta(rk_type       : str,
             c1, c2 = 0, 1
             ci = [c1, c2]
             φ = Phi(h, ci, use_analytic_solution)
+            s1 = (torch.log(sigma / prev_sigmas[1]) / h).item()
+
+            b2 = φ(2) / s1
 
             a = [
                     [0, 0],
                     [0, 0],
             ]
             b = [
-                    [0, -φ(2)],
+                    [0, b2],
             ]
 
-            gen_first_col_exp(a, b, ci, φ) 
+            gen_first_col_exp(a, b, ci, φ)
 
 
         case "abnorsett_3m":
@@ -1592,6 +1595,11 @@ def get_rk_methods_beta(rk_type       : str,
             c1, c2, c3 = 0, 0, 1
             ci = [c1, c2, c3]
             φ = Phi(h, ci, use_analytic_solution)
+            s1 = (torch.log(sigma / prev_sigmas[1]) / h).item()
+            s2 = (torch.log(sigma / prev_sigmas[2]) / h).item()
+
+            b2 = (2*φ(3) - s2*φ(2)) / (s1*(s1 - s2))
+            b3 = (2*φ(3) - s1*φ(2)) / (s2*(s2 - s1))
 
             a = [
                     [0, 0, 0],
@@ -1599,11 +1607,10 @@ def get_rk_methods_beta(rk_type       : str,
                     [0, 0, 0],
             ]
             b = [
-                    [0, -2*φ(2) - 2*φ(3), (1/2)*φ(2) + φ(3)],
+                    [0, b2, b3],
             ]
 
-            gen_first_col_exp(a, b, ci, φ) 
-
+            gen_first_col_exp(a, b, ci, φ)
 
 
         case "abnorsett_4m":
@@ -1611,6 +1618,13 @@ def get_rk_methods_beta(rk_type       : str,
             c1, c2, c3, c4 = 0, 0, 0, 1
             ci = [c1, c2, c3, c4]
             φ = Phi(h, ci, use_analytic_solution)
+            s1 = (torch.log(sigma / prev_sigmas[1]) / h).item()
+            s2 = (torch.log(sigma / prev_sigmas[2]) / h).item()
+            s3 = (torch.log(sigma / prev_sigmas[3]) / h).item()
+
+            b2 = (6*φ(4) - 2*(s2 + s3)*φ(3) + s2*s3*φ(2)) / (s1*(s1 - s2)*(s1 - s3))
+            b3 = (6*φ(4) - 2*(s1 + s3)*φ(3) + s1*s3*φ(2)) / (s2*(s2 - s1)*(s2 - s3))
+            b4 = (6*φ(4) - 2*(s1 + s2)*φ(3) + s1*s2*φ(2)) / (s3*(s3 - s1)*(s3 - s2))
 
             a = [
                     [0, 0, 0, 0],
@@ -1619,23 +1633,26 @@ def get_rk_methods_beta(rk_type       : str,
                     [0, 0, 0, 0],
             ]
             b = [
-                    [0, 
-                    -3*φ(2) - 5*φ(3) - 3*φ(4),
-                    (3/2)*φ(2) + 4*φ(3) + 3*φ(4),
-                    (-1/3)*φ(2) - φ(3) - φ(4),
-                    ],
+                    [0, b2, b3, b4],
             ]
 
-            gen_first_col_exp(a, b, ci, φ) 
+            gen_first_col_exp(a, b, ci, φ)
 
 
         case "abnorsett3_2h2s":
-            
-            c1,c2 = 0,1
+
+            c1, c2 = 0, 1
             ci = [c1, c2]
             φ = Phi(h, ci, use_analytic_solution)
-            
-            b2 = 0
+            s1 = (torch.log(sigma / prev_sigmas[1]) / h).item()
+            s2 = (torch.log(sigma / prev_sigmas[2]) / h).item()
+
+            # b2 = 0
+
+            u2_1 = (2*φ(3) - s2*φ(2)) / (s1*(s1 - s2))
+            u2_2 = (2*φ(3) - s1*φ(2)) / (s2*(s2 - s1))
+            v1 = u2_1
+            v2 = u2_2
 
             a = [
                     [0, 0],
@@ -1644,13 +1661,6 @@ def get_rk_methods_beta(rk_type       : str,
             b = [
                     [0, 0],
             ]
-            
-            u2_1 = -2*φ(2) - 2*φ(3)
-            u2_2 = (1/2)*φ(2) + φ(3)
-            
-            v1 = u2_1
-            v2 = u2_2
-            
             u = [
                     [   0,    0],
                     [u2_1, u2_2],
@@ -1658,9 +1668,8 @@ def get_rk_methods_beta(rk_type       : str,
             v = [
                     [v1, v2],
             ]
-            
+
             gen_first_col_exp_uv(a, b, ci, u, v, φ)
-            
 
 
         case "abnorsett4_3h2s":
@@ -1668,6 +1677,16 @@ def get_rk_methods_beta(rk_type       : str,
             c1, c2 = 0, 1
             ci = [c1, c2]
             φ = Phi(h, ci, use_analytic_solution)
+            s1 = (torch.log(sigma / prev_sigmas[1]) / h).item()
+            s2 = (torch.log(sigma / prev_sigmas[2]) / h).item()
+            s3 = (torch.log(sigma / prev_sigmas[3]) / h).item()
+
+            u2_1 = (6*φ(4) - 2*(s2 + s3)*φ(3) + s2*s3*φ(2)) / (s1*(s1 - s2)*(s1 - s3))
+            u2_2 = (6*φ(4) - 2*(s1 + s3)*φ(3) + s1*s3*φ(2)) / (s2*(s2 - s1)*(s2 - s3))
+            u2_3 = (6*φ(4) - 2*(s1 + s2)*φ(3) + s1*s2*φ(2)) / (s3*(s3 - s1)*(s3 - s2))
+            v1 = u2_1
+            v2 = u2_2
+            v3 = u2_3
 
             a = [
                     [0, 0],
@@ -1676,16 +1695,6 @@ def get_rk_methods_beta(rk_type       : str,
             b = [
                     [0, 0],
             ]
-
-
-            u2_1 = -3*φ(2) - 5*φ(3) - 3*φ(4)
-            u2_2 = (3/2)*φ(2) + 4*φ(3) + 3*φ(4)
-            u2_3 = (-1/3)*φ(2) - φ(3) - φ(4)
-
-            v1 = u2_1
-            v2 = u2_2
-            v3 = u2_3
-
             u = [
                     [   0,    0,    0],
                     [u2_1, u2_2, u2_3],
@@ -1696,13 +1705,22 @@ def get_rk_methods_beta(rk_type       : str,
 
             gen_first_col_exp_uv(a, b, ci, u, v, φ)
 
-        case "pec423_2h2s": #https://ora.ox.ac.uk/objects/uuid:cc001282-4285-4ca2-ad06-31787b540c61/files/m611df1a355ca243beb09824b70e5e774
-            
-            c1,c2 = 0,1
+
+        case "pec423_2h2s": # https://ora.ox.ac.uk/objects/uuid:cc001282-4285-4ca2-ad06-31787b540c61/files/m611df1a355ca243beb09824b70e5e774
+
+            c1, c2 = 0, 1
             ci = [c1, c2]
             φ = Phi(h, ci, use_analytic_solution)
-            
-            b2 = (1/3)*φ(2) + φ(3) + φ(4)
+            s1 = (torch.log(sigma / prev_sigmas[1]) / h).item()
+            s2 = (torch.log(sigma / prev_sigmas[2]) / h).item()
+
+            b2 = (6*φ(4) - 2*(s1 + s2)*φ(3) + s1*s2*φ(2)) / ((1 - s1)*(1 - s2))
+
+            u2_1 = (2*φ(3) - s2*φ(2)) / (s1*(s1 - s2))
+            u2_2 = (2*φ(3) - s1*φ(2)) / (s2*(s2 - s1))
+
+            v1 = (6*φ(4) - 2*(1 + s2)*φ(3) + s2*φ(2)) / (s1*(s1 - 1)*(s1 - s2))
+            v2 = (6*φ(4) - 2*(1 + s1)*φ(3) + s1*φ(2)) / (s2*(s2 - 1)*(s2 - s1))
 
             a = [
                     [0, 0],
@@ -1711,13 +1729,6 @@ def get_rk_methods_beta(rk_type       : str,
             b = [
                     [0, b2],
             ]
-            
-            u2_1 = -2*φ(2) - 2*φ(3)
-            u2_2 = (1/2)*φ(2) + φ(3)
-            
-            v1 = -φ(2) + φ(3) + 3*φ(4)
-            v2 = (1/6)*φ(2) - φ(4)
-            
             u = [
                     [   0,    0],
                     [u2_1, u2_2],
@@ -1725,22 +1736,30 @@ def get_rk_methods_beta(rk_type       : str,
             v = [
                     [v1, v2],
             ]
-            
+
             gen_first_col_exp_uv(a, b, ci, u, v, φ)
-            
 
 
+        case "pec433_2h3s": # https://ora.ox.ac.uk/objects/uuid:cc001282-4285-4ca2-ad06-31787b540c61/files/m611df1a355ca243beb09824b70e5e774
 
-        case "pec433_2h3s": #https://ora.ox.ac.uk/objects/uuid:cc001282-4285-4ca2-ad06-31787b540c61/files/m611df1a355ca243beb09824b70e5e774
-            
-            c1,c2,c3 = 0, 1, 1
-            ci = [c1,c2,c3]
+            c1, c2, c3 = 0, 1, 1
+            ci = [c1, c2, c3]
             φ = Phi(h, ci, use_analytic_solution)
-            
-            a3_2 = (1/3)*φ(2) + φ(3) + φ(4)
-            
+            s1 = (torch.log(sigma / prev_sigmas[1]) / h).item()
+            s2 = (torch.log(sigma / prev_sigmas[2]) / h).item()
+
+            a3_2 = (6*φ(4) - 2*(s1 + s2)*φ(3) + s1*s2*φ(2)) / ((1 - s1)*(1 - s2))
+
             b2 = 0
-            b3 = (1/3)*φ(2) + φ(3) + φ(4)
+            b3 = a3_2
+
+            u2_1 = (2*φ(3) - s2*φ(2)) / (s1*(s1 - s2))
+            u2_2 = (2*φ(3) - s1*φ(2)) / (s2*(s2 - s1))
+            u3_1 = (6*φ(4) - 2*(1 + s2)*φ(3) + s2*φ(2)) / (s1*(s1 - 1)*(s1 - s2))
+            u3_2 = (6*φ(4) - 2*(1 + s1)*φ(3) + s1*φ(2)) / (s2*(s2 - 1)*(s2 - s1))
+
+            v1 = u3_1
+            v2 = u3_2
 
             a = [
                     [0,    0, 0],
@@ -1750,16 +1769,6 @@ def get_rk_methods_beta(rk_type       : str,
             b = [
                     [0, b2, b3],
             ]
-            
-            u2_1 = -2*φ(2) - 2*φ(3)
-            u3_1 =   -φ(2) +   φ(3) + 3*φ(4)
-            v1   =   -φ(2) +   φ(3) + 3*φ(4)
-            
-            u2_2 = (1/2)*φ(2) + φ(3)
-            u3_2 = (1/6)*φ(2) - φ(4)
-            v2   = (1/6)*φ(2) - φ(4)
-
-            
             u = [
                     [   0,    0, 0],
                     [u2_1, u2_2, 0],
@@ -1768,11 +1777,10 @@ def get_rk_methods_beta(rk_type       : str,
             v = [
                     [v1, v2, 0],
             ]
-            
+
             gen_first_col_exp_uv(a, b, ci, u, v, φ)
 
 
-            
         case "res_3s":
             c2 = float(get_extra_options_kv("c2", str(c2), extra_options))
             c3 = float(get_extra_options_kv("c3", str(c3), extra_options))
@@ -2256,18 +2264,25 @@ def get_rk_methods_beta(rk_type       : str,
 
 
 
-        case "lawson42-gen-mod_1h4s": # GenLawson4 https://ora.ox.ac.uk/objects/uuid:cc001282-4285-4ca2-ad06-31787b540c61/files/m611df1a355ca243beb09824b70e5e774
-            c1,c2,c3,c4 = 0, 1/2, 1/2, 1
-            ci = [c1,c2,c3,c4]
+        case "lawson42-gen-mod_1h4s": # ModGenLawson42 https://ora.ox.ac.uk/objects/uuid:cc001282-4285-4ca2-ad06-31787b540c61/files/m611df1a355ca243beb09824b70e5e774
+
+            c1, c2, c3, c4 = 0, 1/2, 1/2, 1
+            ci = [c1, c2, c3, c4]
             φ = Phi(h, ci, use_analytic_solution)
             ψ = φ.psi
+            s1 = (torch.log(sigma / prev_sigmas[1]) / h).item()
 
             a3_2 = 1/2
             a4_3 = ψ(0,2)
-            
+
             b2 = (1/3) * ψ(0,2)
             b3 = (1/3) * ψ(0,2)
-            b4 = (1/2)*φ(2) + φ(3) - (1/4)*ψ(0,2)
+            b4 = (2*φ(3) - s1*φ(2) - (b2 + b3)*c2*(c2 - s1)) / (1 - s1)
+
+            u2_1 = ψ(2,2) / s1
+            u3_1 = u2_1 - a3_2*c2 / s1
+            u4_1 = (φ(2) - a4_3*c2) / s1
+            v1 = (2*φ(3) - φ(2) - (b2 + b3)*c2*(c2 - 1)) / (s1*(s1 - 1))
 
             a = [
                     [0, 0,    0, 0],
@@ -2278,13 +2293,6 @@ def get_rk_methods_beta(rk_type       : str,
             b = [
                     [0, b2, b3, b4,],
             ]
-
-
-            u2_1 = -ψ(2,2)
-            u3_1 = u2_1 + 1/4
-            u4_1 = -φ(2) + (1/2)*ψ(0,2)
-            v1 = -(1/2)*φ(2) + φ(3) + (1/12)*ψ(0,2)
-
             u = [
                     [   0, 0, 0, 0],
                     [u2_1, 0, 0, 0],
@@ -2295,21 +2303,34 @@ def get_rk_methods_beta(rk_type       : str,
                     [v1, 0, 0, 0,],
             ]
 
-            a, b = gen_first_col_exp_uv(a,b,ci,u,v,φ)
+            a, b = gen_first_col_exp_uv(a, b, ci, u, v, φ)
 
 
+        case "lawson43-gen-mod_2h4s": # ModGenLawson43 https://ora.ox.ac.uk/objects/uuid:cc001282-4285-4ca2-ad06-31787b540c61/files/m611df1a355ca243beb09824b70e5e774
 
-        case "lawson43-gen-mod_2h4s": # GenLawson4 https://ora.ox.ac.uk/objects/uuid:cc001282-4285-4ca2-ad06-31787b540c61/files/m611df1a355ca243beb09824b70e5e774
-            c1,c2,c3,c4 = 0, 1/2, 1/2, 1
-            ci = [c1,c2,c3,c4]
+            c1, c2, c3, c4 = 0, 1/2, 1/2, 1
+            ci = [c1, c2, c3, c4]
             φ = Phi(h, ci, use_analytic_solution)
             ψ = φ.psi
+            s1 = (torch.log(sigma / prev_sigmas[1]) / h).item()
+            s2 = (torch.log(sigma / prev_sigmas[2]) / h).item()
 
             a3_2 = 1/2
             a4_3 = ψ(0,2)
-            
-            b3 = b2 = (1/3) * a4_3
-            b4 = (1/3)*φ(2) + φ(3) + φ(4) - (5/24)*ψ(0,2)
+
+            b2 = (1/3) * ψ(0,2)
+            b3 = (1/3) * ψ(0,2)
+            b4 = (6*φ(4) - 2*(s1 + s2)*φ(3) + s1*s2*φ(2) - (b2 + b3)*c2*(c2 - s1)*(c2 - s2)) / ((1 - s1)*(1 - s2))
+
+            u2_1 = (2*ψ(3,2) - s2*ψ(2,2)) / (s1*(s1 - s2))
+            u3_1 = u2_1 - a3_2*c2*(c2 - s2) / (s1*(s1 - s2))
+            u4_1 = (2*φ(3) - s2*φ(2) - a4_3*c2*(c2 - s2)) / (s1*(s1 - s2))
+            v1 = (6*φ(4) - 2*(1 + s2)*φ(3) + s2*φ(2) - (b2 + b3)*c2*(c2 - 1)*(c2 - s2)) / (s1*(s1 - 1)*(s1 - s2))
+
+            u2_2 = (2*ψ(3,2) - s1*ψ(2,2)) / (s2*(s2 - s1))
+            u3_2 = u2_2 - a3_2*c2*(c2 - s1) / (s2*(s2 - s1))
+            u4_2 = (2*φ(3) - s1*φ(2) - a4_3*c2*(c2 - s1)) / (s2*(s2 - s1))
+            v2 = (6*φ(4) - 2*(1 + s1)*φ(3) + s1*φ(2) - (b2 + b3)*c2*(c2 - 1)*(c2 - s1)) / (s2*(s2 - 1)*(s2 - s1))
 
             a = [
                     [0, 0,    0, 0],
@@ -2320,18 +2341,6 @@ def get_rk_methods_beta(rk_type       : str,
             b = [
                     [0, b2, b3, b4,],
             ]
-
-
-            u2_1 = -2*ψ(2,2) - 2*ψ(3,2)
-            u3_1 = u2_1 + 5/8
-            u4_1 = -2*φ(2) - 2*φ(3) + (5/4)*ψ(0,2)
-            v1 = -φ(2) + φ(3) + 3*φ(4) + (5/24)*ψ(0,2)
-            
-            u2_2 = (1/2)*ψ(2,2) + ψ(3,2)
-            u3_2 = u2_2 - 3/16
-            u4_2 = (1/2)*φ(2) + φ(3) - (3/8)*ψ(0,2)
-            v2 = (1/6)*φ(2) - φ(4) - (1/24)*ψ(0,2)
-            
             u = [
                     [   0,    0, 0, 0],
                     [u2_1, u2_2, 0, 0],
@@ -2342,20 +2351,40 @@ def get_rk_methods_beta(rk_type       : str,
                     [v1, v2, 0, 0,],
             ]
 
-            a, b = gen_first_col_exp_uv(a,b,ci,u,v,φ)
+            a, b = gen_first_col_exp_uv(a, b, ci, u, v, φ)
 
 
-        case "lawson44-gen-mod_3h4s": # GenLawson4 https://ora.ox.ac.uk/objects/uuid:cc001282-4285-4ca2-ad06-31787b540c61/files/m611df1a355ca243beb09824b70e5e774
-            c1,c2,c3,c4 = 0, 1/2, 1/2, 1
-            ci = [c1,c2,c3,c4]
+        case "lawson44-gen-mod_3h4s": # ModGenLawson44 https://ora.ox.ac.uk/objects/uuid:cc001282-4285-4ca2-ad06-31787b540c61/files/m611df1a355ca243beb09824b70e5e774
+
+            c1, c2, c3, c4 = 0, 1/2, 1/2, 1
+            ci = [c1, c2, c3, c4]
             φ = Phi(h, ci, use_analytic_solution)
             ψ = φ.psi
+            s1 = (torch.log(sigma / prev_sigmas[1]) / h).item()
+            s2 = (torch.log(sigma / prev_sigmas[2]) / h).item()
+            s3 = (torch.log(sigma / prev_sigmas[3]) / h).item()
 
             a3_2 = 1/2
             a4_3 = ψ(0,2)
-            
-            b3 = b2 = (1/3) * a4_3
-            b4 = (1/4)*φ(2) + (11/12)*φ(3) + (3/2)*φ(4) + φ(5) - (35/192)*ψ(0,2)
+
+            b2 = (1/3) * ψ(0,2)
+            b3 = (1/3) * ψ(0,2)
+            b4 = (24*φ(5) - 6*(s1 + s2 + s3)*φ(4) + 2*(s1*s2 + s1*s3 + s2*s3)*φ(3) - s1*s2*s3*φ(2) - (b2 + b3)*c2*(c2 - s1)*(c2 - s2)*(c2 - s3)) / ((1 - s1)*(1 - s2)*(1 - s3))
+
+            u2_1 = (6*ψ(4,2) - 2*(s2 + s3)*ψ(3,2) + s2*s3*ψ(2,2)) / (s1*(s1 - s2)*(s1 - s3))
+            u3_1 = u2_1 - a3_2*c2*(c2 - s2)*(c2 - s3) / (s1*(s1 - s2)*(s1 - s3))
+            u4_1 = (6*φ(4) - 2*(s2 + s3)*φ(3) + s2*s3*φ(2) - a4_3*c2*(c2 - s2)*(c2 - s3)) / (s1*(s1 - s2)*(s1 - s3))
+            v1 = (24*φ(5) - 6*(1 + s2 + s3)*φ(4) + 2*(s2 + s3 + s2*s3)*φ(3) - s2*s3*φ(2) - (b2 + b3)*c2*(c2 - 1)*(c2 - s2)*(c2 - s3)) / (s1*(s1 - 1)*(s1 - s2)*(s1 - s3))
+
+            u2_2 = (6*ψ(4,2) - 2*(s1 + s3)*ψ(3,2) + s1*s3*ψ(2,2)) / (s2*(s2 - s1)*(s2 - s3))
+            u3_2 = u2_2 - a3_2*c2*(c2 - s1)*(c2 - s3) / (s2*(s2 - s1)*(s2 - s3))
+            u4_2 = (6*φ(4) - 2*(s1 + s3)*φ(3) + s1*s3*φ(2) - a4_3*c2*(c2 - s1)*(c2 - s3)) / (s2*(s2 - s1)*(s2 - s3))
+            v2 = (24*φ(5) - 6*(1 + s1 + s3)*φ(4) + 2*(s1 + s3 + s1*s3)*φ(3) - s1*s3*φ(2) - (b2 + b3)*c2*(c2 - 1)*(c2 - s1)*(c2 - s3)) / (s2*(s2 - 1)*(s2 - s1)*(s2 - s3))
+
+            u2_3 = (6*ψ(4,2) - 2*(s1 + s2)*ψ(3,2) + s1*s2*ψ(2,2)) / (s3*(s3 - s1)*(s3 - s2))
+            u3_3 = u2_3 - a3_2*c2*(c2 - s1)*(c2 - s2) / (s3*(s3 - s1)*(s3 - s2))
+            u4_3 = (6*φ(4) - 2*(s1 + s2)*φ(3) + s1*s2*φ(2) - a4_3*c2*(c2 - s1)*(c2 - s2)) / (s3*(s3 - s1)*(s3 - s2))
+            v3 = (24*φ(5) - 6*(1 + s1 + s2)*φ(4) + 2*(s1 + s2 + s1*s2)*φ(3) - s1*s2*φ(2) - (b2 + b3)*c2*(c2 - 1)*(c2 - s1)*(c2 - s2)) / (s3*(s3 - 1)*(s3 - s1)*(s3 - s2))
 
             a = [
                     [0, 0,    0, 0],
@@ -2366,22 +2395,6 @@ def get_rk_methods_beta(rk_type       : str,
             b = [
                     [0, b2, b3, b4,],
             ]
-
-            u2_1 = -3*ψ(2,2) - 5*ψ(3,2) - 3*ψ(4,2)
-            u3_1 = u2_1 + 35/32
-            u4_1 = -3*φ(2) - 5*φ(3) - 3*φ(4) + (35/16)*ψ(0,2)
-            v1 = -(3/2)*φ(2) + (1/2)*φ(3) + 6*φ(4) + 6*φ(5) + (35/96)*ψ(0,2)
-            
-            u2_2 = (3/2)*ψ(2,2) + 4*ψ(3,2) + 3*ψ(4,2)
-            u3_2 = u2_2 - 21/32
-            u4_2 = (3/2)*φ(2) + 4*φ(3) + 3*φ(4) - (21/16)*ψ(0,2)
-            v2 = (1/2)*φ(2) + (1/3)*φ(3) - 3*φ(4) - 4*φ(5) - (7/48)*ψ(0,2)
-            
-            u2_3 = (-1/3)*ψ(2,2) - ψ(3,2) - ψ(4,2)
-            u3_3 = u2_3 + 5/32
-            u4_3 = -(1/3)*φ(2) - φ(3) - φ(4) + (5/16)*ψ(0,2)
-            v3 = -(1/12)*φ(2) - (1/12)*φ(3) + (1/2)*φ(4) + φ(5) + (5/192)*ψ(0,2)
-            
             u = [
                     [   0,    0,    0, 0],
                     [u2_1, u2_2, u2_3, 0],
@@ -2392,23 +2405,48 @@ def get_rk_methods_beta(rk_type       : str,
                     [v1, v2, v3, 0,],
             ]
 
-            a, b = gen_first_col_exp_uv(a,b,ci,u,v,φ)
+            a, b = gen_first_col_exp_uv(a, b, ci, u, v, φ)
 
 
         # !! Lawson45 is disabled !!
         # because the current implementation of multistep buffer doesn't have the four slots needed
-        case "lawson45-gen-mod_4h4s": # GenLawson4 https://ora.ox.ac.uk/objects/uuid:cc001282-4285-4ca2-ad06-31787b540c61/files/m611df1a355ca243beb09824b70e5e774
-            c1,c2,c3,c4 = 0, 1/2, 1/2, 1
-            ci = [c1,c2,c3,c4]
+        case "lawson45-gen-mod_4h4s": # ModGenLawson45 https://ora.ox.ac.uk/objects/uuid:cc001282-4285-4ca2-ad06-31787b540c61/files/m611df1a355ca243beb09824b70e5e774
+
+            c1, c2, c3, c4 = 0, 1/2, 1/2, 1
+            ci = [c1, c2, c3, c4]
             φ = Phi(h, ci, use_analytic_solution)
             ψ = φ.psi
+            s1 = (torch.log(sigma / prev_sigmas[1]) / h).item()
+            s2 = (torch.log(sigma / prev_sigmas[2]) / h).item()
+            s3 = (torch.log(sigma / prev_sigmas[3]) / h).item()
+            s4 = (torch.log(sigma / prev_sigmas[4]) / h).item()
 
             a3_2 = 1/2
             a4_3 = ψ(0,2)
-            
+
             b2 = (1/3) * ψ(0,2)
             b3 = (1/3) * ψ(0,2)
-            b4 = (12/59)*φ(2) + (50/59)*φ(3) + (105/59)*φ(4) + (120/59)*φ(5) - (60/59)*φ(6) - (157/944)*ψ(0,2)
+            b4 = (120*φ(6) - 24*(s1 + s2 + s3 + s4)*φ(5) + 6*(s1*s2 + s1*s3 + s1*s4 + s2*s3 + s2*s4 + s3*s4)*φ(4) - 2*(s1*s2*s3 + s1*s2*s4 + s1*s3*s4 + s2*s3*s4)*φ(3) + s1*s2*s3*s4*φ(2) - (b2 + b3)*c2*(c2 - s1)*(c2 - s2)*(c2 - s3)*(c2 - s4)) / ((1 - s1)*(1 - s2)*(1 - s3)*(1 - s4))
+
+            u2_1 = (24*ψ(5,2) - 6*(s2 + s3 + s4)*ψ(4,2) + 2*(s2*s3 + s2*s4 + s3*s4)*ψ(3,2) - s2*s3*s4*ψ(2,2)) / (s1*(s1 - s2)*(s1 - s3)*(s1 - s4))
+            u3_1 = u2_1 - a3_2*c2*(c2 - s2)*(c2 - s3)*(c2 - s4) / (s1*(s1 - s2)*(s1 - s3)*(s1 - s4))
+            u4_1 = (24*φ(5) - 6*(s2 + s3 + s4)*φ(4) + 2*(s2*s3 + s2*s4 + s3*s4)*φ(3) - s2*s3*s4*φ(2) - a4_3*c2*(c2 - s2)*(c2 - s3)*(c2 - s4)) / (s1*(s1 - s2)*(s1 - s3)*(s1 - s4))
+            v1 = (120*φ(6) - 24*(1 + s2 + s3 + s4)*φ(5) + 6*(s2 + s3 + s4 + s2*s3 + s2*s4 + s3*s4)*φ(4) - 2*(s2*s3 + s2*s4 + s3*s4 + s2*s3*s4)*φ(3) + s2*s3*s4*φ(2) - (b2 + b3)*c2*(c2 - 1)*(c2 - s2)*(c2 - s3)*(c2 - s4)) / (s1*(s1 - 1)*(s1 - s2)*(s1 - s3)*(s1 - s4))
+
+            u2_2 = (24*ψ(5,2) - 6*(s1 + s3 + s4)*ψ(4,2) + 2*(s1*s3 + s1*s4 + s3*s4)*ψ(3,2) - s1*s3*s4*ψ(2,2)) / (s2*(s2 - s1)*(s2 - s3)*(s2 - s4))
+            u3_2 = u2_2 - a3_2*c2*(c2 - s1)*(c2 - s3)*(c2 - s4) / (s2*(s2 - s1)*(s2 - s3)*(s2 - s4))
+            u4_2 = (24*φ(5) - 6*(s1 + s3 + s4)*φ(4) + 2*(s1*s3 + s1*s4 + s3*s4)*φ(3) - s1*s3*s4*φ(2) - a4_3*c2*(c2 - s1)*(c2 - s3)*(c2 - s4)) / (s2*(s2 - s1)*(s2 - s3)*(s2 - s4))
+            v2 = (120*φ(6) - 24*(1 + s1 + s3 + s4)*φ(5) + 6*(s1 + s3 + s4 + s1*s3 + s1*s4 + s3*s4)*φ(4) - 2*(s1*s3 + s1*s4 + s3*s4 + s1*s3*s4)*φ(3) + s1*s3*s4*φ(2) - (b2 + b3)*c2*(c2 - 1)*(c2 - s1)*(c2 - s3)*(c2 - s4)) / (s2*(s2 - 1)*(s2 - s1)*(s2 - s3)*(s2 - s4))
+
+            u2_3 = (24*ψ(5,2) - 6*(s1 + s2 + s4)*ψ(4,2) + 2*(s1*s2 + s1*s4 + s2*s4)*ψ(3,2) - s1*s2*s4*ψ(2,2)) / (s3*(s3 - s1)*(s3 - s2)*(s3 - s4))
+            u3_3 = u2_3 - a3_2*c2*(c2 - s1)*(c2 - s2)*(c2 - s4) / (s3*(s3 - s1)*(s3 - s2)*(s3 - s4))
+            u4_3 = (24*φ(5) - 6*(s1 + s2 + s4)*φ(4) + 2*(s1*s2 + s1*s4 + s2*s4)*φ(3) - s1*s2*s4*φ(2) - a4_3*c2*(c2 - s1)*(c2 - s2)*(c2 - s4)) / (s3*(s3 - s1)*(s3 - s2)*(s3 - s4))
+            v3 = (120*φ(6) - 24*(1 + s1 + s2 + s4)*φ(5) + 6*(s1 + s2 + s4 + s1*s2 + s1*s4 + s2*s4)*φ(4) - 2*(s1*s2 + s1*s4 + s2*s4 + s1*s2*s4)*φ(3) + s1*s2*s4*φ(2) - (b2 + b3)*c2*(c2 - 1)*(c2 - s1)*(c2 - s2)*(c2 - s4)) / (s3*(s3 - 1)*(s3 - s1)*(s3 - s2)*(s3 - s4))
+
+            u2_4 = (24*ψ(5,2) - 6*(s1 + s2 + s3)*ψ(4,2) + 2*(s1*s2 + s1*s3 + s2*s3)*ψ(3,2) - s1*s2*s3*ψ(2,2)) / (s4*(s4 - s1)*(s4 - s2)*(s4 - s3))
+            u3_4 = u2_4 - a3_2*c2*(c2 - s1)*(c2 - s2)*(c2 - s3) / (s4*(s4 - s1)*(s4 - s2)*(s4 - s3))
+            u4_4 = (24*φ(5) - 6*(s1 + s2 + s3)*φ(4) + 2*(s1*s2 + s1*s3 + s2*s3)*φ(3) - s1*s2*s3*φ(2) - a4_3*c2*(c2 - s1)*(c2 - s2)*(c2 - s3)) / (s4*(s4 - s1)*(s4 - s2)*(s4 - s3))
+            v4 = (120*φ(6) - 24*(1 + s1 + s2 + s3)*φ(5) + 6*(s1 + s2 + s3 + s1*s2 + s1*s3 + s2*s3)*φ(4) - 2*(s1*s2 + s1*s3 + s2*s3 + s1*s2*s3)*φ(3) + s1*s2*s3*φ(2) - (b2 + b3)*c2*(c2 - 1)*(c2 - s1)*(c2 - s2)*(c2 - s3)) / (s4*(s4 - 1)*(s4 - s1)*(s4 - s2)*(s4 - s3))
 
             a = [
                     [0, 0,    0, 0],
@@ -2419,27 +2457,6 @@ def get_rk_methods_beta(rk_type       : str,
             b = [
                     [0, b2, b3, b4,],
             ]
-
-            u2_1 = -4*ψ(2,2) - (26/3)*ψ(3,2) - 9*ψ(4,2) - 4*ψ(5,2)
-            u3_1 = u2_1 + 105/64
-            u4_1 = -4*φ(2) - (26/3)*φ(3) - 9*φ(4) - 4*φ(5) + (105/32)*ψ(0,2)
-            v1 = -(116/59)*φ(2) -  (34/177)*φ(3) + (519/59)*φ(4) + (964/59)*φ(5) - (600/59)*φ(6) +   (495/944)*ψ(0,2)
-            
-            u2_2 = 3*ψ(2,2) + (19/2)*ψ(3,2) + 12*ψ(4,2) + 6*ψ(5,2)
-            u3_2 = u2_2 - 189/128
-            u4_2 = 3*φ(2) + (19/2)*φ(3) + 12*φ(4) + 6*φ(5) - (189/64)*ψ(0,2)
-            v2 =  (57/59)*φ(2) + (121/118)*φ(3) - (342/59)*φ(4) - (846/59)*φ(5) + (600/59)*φ(6) -  (577/1888)*ψ(0,2)
-            
-            u2_3 = -(4/3)*ψ(2,2) - (14/3)*ψ(3,2) - 7*ψ(4,2) - 4*ψ(5,2)
-            u3_3 = u2_3 + 45/64
-            u4_3 = -(4/3)*φ(2) - (14/3)*φ(3) - 7*φ(4) - 4*φ(5) +(45/32)*ψ(0,2)
-            v3 = -(56/177)*φ(2) -  (76/177)*φ(3) + (112/59)*φ(4) + (364/59)*φ(5) - (300/59)*φ(6) +    (25/236)*ψ(0,2)
-            
-            u2_4 = (1/4)*ψ(2,2) + (88/96)*ψ(3,2) + (3/2)*ψ(4,2) + ψ(5,2)
-            u3_4 = u2_4 - 35/256
-            u4_4 = (1/4)*φ(2) + (11/12)*φ(3) + (3/2)*φ(4) + φ(5) - (35/128)*ψ(0,2)
-            v4 =  (11/236)*φ(2) +  (49/708)*φ(3) - (33/118)*φ(4) -  (61/59)*φ(5) + ( 60/59)*φ(6) - (181/11328)*ψ(0,2)
-
             u = [
                     [   0,    0,    0,    0],
                     [u2_1, u2_2, u2_3, u2_4],
@@ -2450,8 +2467,7 @@ def get_rk_methods_beta(rk_type       : str,
                     [v1, v2, v3, v4,],
             ]
 
-            a, b = gen_first_col_exp_uv(a,b,ci,u,v,φ)
-
+            a, b = gen_first_col_exp_uv(a, b, ci, u, v, φ)
 
 
         case "etdrk2_2s": # https://arxiv.org/pdf/2402.15142v1
@@ -3060,12 +3076,17 @@ def get_rk_methods_beta(rk_type       : str,
         b = scale_all(b, -sigma.item())
 
     history_weight_limit = EO("multistep_history_weight_limit", 8.0)
-    if multistep_stages >= 1 and history_weight_limit > 0 and is_exponential(primary_rk_type):
-        history_weight_size = sum(abs(float(weight)) for weight in b[0])
+    history_stages = max(multistep_stages, hybrid_stages)
+    if history_stages >= 1 and history_weight_limit > 0 and is_exponential(primary_rk_type):
+        if hybrid_stages >= 1:
+            history_rows = [list(row_a) + list(row_u) for row_a, row_u in zip(a, u)] + [list(b[0]) + list(v[0])]
+            history_weight_size = max(sum(abs(float(weight)) for weight in row) for row in history_rows)
+        else:
+            history_weight_size = sum(abs(float(weight)) for weight in b[0])
         if history_weight_size > history_weight_limit:
             RESplain(f"step {step}: {primary_rk_type} history weights {history_weight_size:.2f} over {history_weight_limit}, one history point fewer", debug='debug')
             return get_rk_methods_beta(primary_rk_type, h, c1_requested, c2_requested, c3_requested, h_prev, step, history_steps, prev_sigmas, sigmas, sigma, sigma_next, sigma_down, extra_options,
-                                       history_cap=multistep_stages - 1)
+                                       history_cap=history_stages - 1)
 
     # Log when sampler differs from primary
     is_normal_multistep = (
