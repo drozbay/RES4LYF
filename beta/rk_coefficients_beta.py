@@ -1305,7 +1305,8 @@ def get_rk_methods_beta(rk_type       : str,
                         sigma         : Optional[Tensor] = None,
                         sigma_next    : Optional[Tensor] = None,
                         sigma_down    : Optional[Tensor] = None,
-                        extra_options : Optional[str]    = None
+                        extra_options : Optional[str]    = None,
+                        history_cap   : Optional[int]    = None
                         ):
     
     FSAL             = False
@@ -1325,6 +1326,7 @@ def get_rk_methods_beta(rk_type       : str,
     multistep_extra_initial_steps = EO("multistep_extra_initial_steps", 1 if multistep_classic else 0, debugMode=1)
     distinct_slots                = count_history(prev_sigmas, sigma) if prev_sigmas is not None else 0
     usable_history                = history_steps - multistep_extra_initial_steps
+    history_limit                 = usable_history if history_cap is None else min(usable_history, history_cap)
     final_step                    = sigmas[-1] == 0 and sigma_next == sigmas[-2]
 
     buffer_slots_filled = min(history_steps, len(prev_sigmas) - 1) if prev_sigmas is not None else 0
@@ -1354,9 +1356,11 @@ def get_rk_methods_beta(rk_type       : str,
     if c3 == -1:
         c3 = random.uniform(0, 1)
         
+    c1_requested, c2_requested, c3_requested = c1, c2, c3
+
     if rk_type[:4] == "deis":
         requested_stages = multistep_buffer_size(rk_type) - 1
-        stages = max(0, min(requested_stages, usable_history, distinct_slots))
+        stages = max(0, min(requested_stages, history_limit, distinct_slots))
         if final_step:
             sampler_change_reason = "final"
             rk_type = multistep_final_sampler if multistep_final_sampler else "euler"
@@ -1377,7 +1381,7 @@ def get_rk_methods_beta(rk_type       : str,
         family = "res" if rk_type.startswith("abnorsett") else rk_type[:-3]
         substep_names = {1: f"{family}_2s", 2: f"{family}_3s", 3: "res_4s_strehmel_weiner"}
         multistep_names = {1: "abnorsett_2m", 2: "abnorsett_3m", 3: "abnorsett_4m"} if rk_type.startswith("abnorsett") else substep_names
-        stages = max(0, min(requested_stages, usable_history, distinct_slots))
+        stages = max(0, min(requested_stages, history_limit, distinct_slots))
         if final_step:
             sampler_change_reason = "final"
             rk_type = multistep_final_sampler if multistep_final_sampler else "ddim"
@@ -3054,6 +3058,14 @@ def get_rk_methods_beta(rk_type       : str,
     if EO("exp2lin_override_coeff") and is_exponential(rk_type):
         a = scale_all(a, -sigma.item())
         b = scale_all(b, -sigma.item())
+
+    history_weight_limit = EO("multistep_history_weight_limit", 8.0)
+    if multistep_stages >= 1 and history_weight_limit > 0 and is_exponential(primary_rk_type):
+        history_weight_size = sum(abs(float(weight)) for weight in b[0])
+        if history_weight_size > history_weight_limit:
+            RESplain(f"step {step}: {primary_rk_type} history weights {history_weight_size:.2f} over {history_weight_limit}, one history point fewer", debug='debug')
+            return get_rk_methods_beta(primary_rk_type, h, c1_requested, c2_requested, c3_requested, h_prev, step, history_steps, prev_sigmas, sigmas, sigma, sigma_next, sigma_down, extra_options,
+                                       history_cap=multistep_stages - 1)
 
     # Log when sampler differs from primary
     is_normal_multistep = (

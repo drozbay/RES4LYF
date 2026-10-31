@@ -1201,7 +1201,7 @@ if EO("bong3m") and RK.multistep_stages > 0 and step < len(sigmas)-10:
     φ = Phi(h_prev2_no_eta, [0.,c3_prev, c3_prev])
     
     def calculate_gamma(c2_prev, c3_prev):
-        return (3*(c3_prev**3) - 2*c3_prev) / (c2_prev*(2 - 3*c2_prev))
+        return (3*(c3_prev**2) - 2*c3_prev) / (c2_prev*(2 - 3*c2_prev))
     gamma = calculate_gamma(c2_prev, c3_prev)
     
     a2_1 = c2_prev * φ(1,2)
