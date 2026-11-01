@@ -291,6 +291,7 @@ class RK_NoiseSampler:
         self.rows = RK.rows
         self.C    = RK.C
         self.s_ = self.sigma_fn(self.t_fn(self.sigma) + self.h * self.C)
+        self.s_ = torch.where(self.C > 1, torch.maximum(self.s_, self.sigma_min.to(self.s_)), self.s_)
     
     
     def get_substep_list(self, RK:Union["RK_Method_Exponential", "RK_Method_Linear"], sigma, h) -> None:
