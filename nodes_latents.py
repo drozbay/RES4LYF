@@ -863,7 +863,7 @@ class Frame_Select_Latent_Raw:
         return {
 
             "required": {
-                "frames": ("IMAGE",),
+                "frames": ("LATENT",),
                 "select": ("INT",  {"default": 0, "min": 0, "max": 10000}),
                 
             },
@@ -879,7 +879,7 @@ class Frame_Select_Latent_Raw:
 
     def main(self, frames=None, select=0):
         frame = frames['samples'][:,:,select,:,:].clone().unsqueeze(dim=2)
-        return (frame,)
+        return ({"samples": frame},)
     
 
 class Frames_Slice_Latent_Raw:
@@ -907,7 +907,7 @@ class Frames_Slice_Latent_Raw:
 
     def main(self, frames=None, start=0, stop=1):
         frames_slice = frames['samples'][:,:,start:stop,:,:].clone()
-        return (frames_slice,)
+        return ({"samples": frames_slice},)
 
 
 class Frames_Concat_Latent_Raw:
@@ -932,8 +932,8 @@ class Frames_Concat_Latent_Raw:
     CATEGORY     = "RES4LYF/latents"
 
     def main(self, frames_0, frames_1):
-        frames_concat = torch.cat((frames_0, frames_1), dim=2).clone()
-        return (frames_concat,)
+        frames_concat = torch.cat((frames_0['samples'], frames_1['samples']), dim=2).clone()
+        return ({"samples": frames_concat},)
     
 
 
@@ -946,7 +946,7 @@ class Frame_Select_Latent:
         return {
 
             "required": {
-                "frames": ("IMAGE",),
+                "frames": ("LATENT",),
                 "select": ("INT",  {"default": 0, "min": 0, "max": 10000}),
                 
             },

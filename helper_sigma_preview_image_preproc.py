@@ -648,12 +648,14 @@ class LatentUpscaleWithVAE:
         
         images_prev_list, latent_prev_list = [], []
         
-        if 'state_info' in latent:
-            images      = vae.decode(latent['state_info']['denoised']  ) # .to(latent['samples']) )
+        state_info = latent.get('state_info', {})
+        if 'denoised' in state_info:
+            images      = vae.decode(state_info['denoised']  ) # .to(latent['samples']) )
             
-            data_prev_ = latent['state_info']['data_prev_'].squeeze(0)
-            for i in range(data_prev_.shape[0]):
-                images_prev_list.append(   vae.decode(data_prev_[i])  ) # .to(latent['samples'])  )
+            data_prev_ = state_info.get('data_prev_')
+            if data_prev_ is not None:
+                for i in range(data_prev_.shape[0]):
+                    images_prev_list.append(   vae.decode(data_prev_[i])  ) # .to(latent['samples'])  )
         else:
             images = vae.decode(latent['samples'])
             
@@ -667,15 +669,17 @@ class LatentUpscaleWithVAE:
             for i in range(data_prev_.shape[0]):
                 image_data_p = image_resize(images_prev_list[i], width, height, method, interpolation, condition, multiple_of, keep_proportion)
                 latent_prev_list.append(   vae.encode(image_data_p[:,:,:,:3])   )
-            latent_prev = torch.stack(latent_prev_list).unsqueeze(0)     #.view_as(latent['state_info']['data_prev_'])
+            latent_prev = torch.stack(latent_prev_list)     #.view_as(latent['state_info']['data_prev_'])
             #images_prev = image_resize(images_prev, width, height, method, interpolation, condition, multiple_of, keep_proportion)
             #latent_tensor = vae.encode(image_1[:,:,:,:3])
         
         latent_out = latent.copy()
         if 'state_info' in latent:
             latent_out['state_info'] = latent['state_info'].copy()
-            latent_out['state_info']['denoised']   = latent_tensor
-            latent_out['state_info']['data_prev_'] = latent_prev
+            if 'denoised' in state_info:
+                latent_out['state_info']['denoised']   = latent_tensor
+            if images_prev_list:
+                latent_out['state_info']['data_prev_'] = latent_prev
             
         latent_out['samples'] = latent_tensor.to(latent['samples'])
         latent_out = rehash_latent_item_ids(latent_out)

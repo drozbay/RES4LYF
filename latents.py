@@ -914,24 +914,26 @@ def apply_to_state_info_tensors(obj, ref_shape, modify_func, *args, latent_shape
     Apply modify_func to every video-sized tensor in obj. Handles:
       - NestedTensor: modify_func applied to modality 0 (video); others pass through.
       - Packed 3D+ tensor (requires latent_shapes with len > 1): unpack, modify video, repack.
-      - Regular tensor with last 5 dims matching ref_shape[-5:]: modify_func applied directly.
+      - Regular tensor whose trailing dims match the reference shape (its last 4 for an image latent,
+        its last 5 for a video latent): modify_func applied directly.
 
     latent_shapes defaults to [ref_shape] (single-modality, no packing).
     """
     from comfy.nested_tensor import NestedTensor
-    ref_last5 = ref_shape[-5:] if len(ref_shape) >= 5 else ref_shape
+    ref_rank = min(len(ref_shape), 5)
+    ref_tail = ref_shape[-ref_rank:]
     ls = latent_shapes if latent_shapes is not None else [ref_shape]
 
     def handler(t):
         if isinstance(t, NestedTensor):
             c = t.unbind()
-            if c[0].ndim >= 5 and c[0].shape[-5:] == ref_last5:
+            if c[0].ndim >= ref_rank and c[0].shape[-ref_rank:] == ref_tail:
                 return NestedTensor([modify_func(c[0], *args, **kwargs)] + list(c[1:]))
             return t
         if isinstance(t, torch.Tensor):
             if _is_packed_match(t, ls):
                 return LatentHandler(t, ls).map_first(lambda v: modify_func(v, *args, **kwargs)).tensor
-            if t.ndim >= 5 and t.shape[-5:] == ref_last5:
+            if t.ndim >= ref_rank and t.shape[-ref_rank:] == ref_tail:
                 return modify_func(t, *args, **kwargs)
         return t
     return walk_state_info(obj, handler)
