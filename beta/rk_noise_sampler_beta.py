@@ -338,6 +338,7 @@ class RK_NoiseSampler:
     def set_sde_step(self, sigma:Tensor, sigma_next:Tensor, eta:float, overshoot:float, s_noise:float) -> None:
         self.sigma_0    = sigma
         self.sigma_next = sigma_next
+        self.substep_noise = None
         
         self.s_noise    = s_noise
         self.eta        = eta
@@ -652,6 +653,13 @@ class RK_NoiseSampler:
         return x
 
 
+    def get_substep_noise(self, sigma:Tensor, sigma_next:Tensor) -> Tensor:
+        if self.EO(("substep_noise_independent", "classic_noise")):
+            return self.noise_generator_substep(sigma=sigma, sigma_next=sigma_next)
+        if self.substep_noise is None:
+            self.substep_noise = self.noise_generator_substep(sigma=sigma, sigma_next=sigma_next)
+        return self.substep_noise.clone()
+
     def swap_noise_substep(self, x_0:Tensor, x_next:Tensor, brownian_sigma:Optional[Tensor]=None, brownian_sigma_next:Optional[Tensor]=None, mask:Optional[Tensor]=None, guide:Optional[Tensor]=None) -> Tensor:
         if self.sub_sigma_up_eta == 0   or   self.sub_sigma_next == 0:
             return x_next
@@ -668,7 +676,7 @@ class RK_NoiseSampler:
         if brownian_sigma_next > brownian_sigma and not self.EO("disable_brownian_swap"): # should this really be done?
             brownian_sigma, brownian_sigma_next = brownian_sigma_next, brownian_sigma
         
-        noise = self.noise_generator_substep(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
+        noise = self.get_substep_noise(brownian_sigma, brownian_sigma_next)
         if self.SDE_NOISE_NORMALIZE:
             noise = normalize_zscore(noise, channelwise=True, inplace=True)
         noise = self.scale_av_noise(noise, self.sub_sigma, self.sub_sigma_next)
@@ -702,7 +710,7 @@ class RK_NoiseSampler:
         if brownian_sigma_next > brownian_sigma and not self.EO("disable_brownian_swap"): # should this really be done?
             brownian_sigma, brownian_sigma_next = brownian_sigma_next, brownian_sigma
         
-        noise = self.noise_generator_substep(sigma=brownian_sigma, sigma_next=brownian_sigma_next)
+        noise = self.get_substep_noise(brownian_sigma, brownian_sigma_next)
         if self.SDE_NOISE_NORMALIZE:
             noise = normalize_zscore(noise, channelwise=True, inplace=True)
         # inverted-domain (unsampling) injection: audio columns are left unscaled for reverse steps
