@@ -2201,12 +2201,16 @@ def sample_rk_beta(
 
         if d_noise_start_step     == step:
             sigmas = sigmas.clone() * d_noise
+            data_prev_sigmas_ = data_prev_sigmas_ * d_noise
             if sigmas.max() > NS.sigma_max:
                 sigmas = sigmas / NS.sigma_max
+                data_prev_sigmas_ = data_prev_sigmas_ / NS.sigma_max
         if d_noise_inv_start_step == step:
             sigmas = sigmas.clone() / d_noise_inv
+            data_prev_sigmas_ = data_prev_sigmas_ / d_noise_inv
             if sigmas.max() > NS.sigma_max:
                 sigmas = sigmas / NS.sigma_max
+                data_prev_sigmas_ = data_prev_sigmas_ / NS.sigma_max
         
         if LG.lgw[step_sched] > 0 and step >= EO("guide_step_cutoff_start_step", 0) and cossim_counter < EO("guide_step_cutoff_max_iter", 10) and (EO("guide_step_cutoff") or EO("guide_step_min")):
             if x.ndim == 3:  # packed NestedTensor
